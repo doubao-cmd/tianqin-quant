@@ -1,3 +1,5 @@
+import os
+import sys
 # -*- coding: utf-8 -*-
 """
 补齐 05_摆动线 —— 只跑「缺的」品种（跳过已完整出报告的）
@@ -11,8 +13,13 @@
 """
 import subprocess, os, time, datetime, glob, re
 
-ROOT = r"C:/Users/cc/Desktop/天勤量化"
-PY = r"C:/Users/cc/.workbuddy/binaries/python/envs/tqsdk/Scripts/python.exe"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.exists(os.path.join(ROOT, "config_symbols.py")):
+    _up = os.path.dirname(ROOT)
+    if _up == ROOT:
+        raise RuntimeError("未找到项目根（config_symbols.py）")
+    ROOT = _up
+PY = sys.executable
 LOGDIR = os.path.join(ROOT, "工具/_输出/_补齐摆动线")
 os.makedirs(LOGDIR, exist_ok=True)
 

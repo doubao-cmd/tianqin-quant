@@ -1,3 +1,4 @@
+import os
 # -*- coding: utf-8 -*-
 """MA13 验证 runner：单品种跑 4 个窗口 + 1 个成本压测，输出 JSON 一行。
 供 ma13_validate_2345.py 以子进程方式调用（每品种一个进程，隔离 tqsdk 会话）。
@@ -5,7 +6,12 @@
 import sys, os, json, importlib.util
 import pandas as pd
 
-ROOT = r"C:/Users/cc/Desktop/天勤量化"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.exists(os.path.join(ROOT, "config_symbols.py")):
+    _up = os.path.dirname(ROOT)
+    if _up == ROOT:
+        raise RuntimeError("未找到项目根（config_symbols.py）")
+    ROOT = _up
 
 # 窗口：(标签, 起始, 结束)
 WINDOWS = [

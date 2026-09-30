@@ -1,8 +1,13 @@
 # -*- coding: utf-8 -*-
 """回滚 MA13 全策略到「扁平 8 手封顶」安全地基：HAND_MAX=8，去掉权益缩放与保证金约束。"""
-import os, re, glob, py_compile
+import os, sys, re, glob, py_compile
 
-ROOT = r"C:/Users/cc/Desktop/天勤量化"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.exists(os.path.join(ROOT, "config_symbols.py")):
+    _up = os.path.dirname(ROOT)
+    if _up == ROOT:
+        raise RuntimeError("未找到项目根（config_symbols.py）")
+    ROOT = _up
 files = glob.glob(os.path.join(ROOT, "策略/06_MA13超短线/回测/*/MA13超短线_回测.py"))
 
 new_block = '''# ---- 动态仓位（回滚到安全地基：本金保本基准块 + 封顶 8 手，不上杠杆）----

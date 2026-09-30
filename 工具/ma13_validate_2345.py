@@ -7,10 +7,15 @@
 每品种一个子进程，隔离 tqsdk 会话（禁并发、每进程 <20 会话）。
 汇总落 JSON + 末尾打印可读矩阵。
 """
-import os, sys, json, glob, subprocess
+import os, sys, sys, json, glob, subprocess
 
-ROOT = r"C:/Users/cc/Desktop/天勤量化"
-PY = r"C:/Users/cc/.workbuddy/binaries/python/versions/3.13.12/python.exe"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.exists(os.path.join(ROOT, "config_symbols.py")):
+    _up = os.path.dirname(ROOT)
+    if _up == ROOT:
+        raise RuntimeError("未找到项目根（config_symbols.py）")
+    ROOT = _up
+PY = sys.executable
 RUNNER = os.path.join(ROOT, "工具/ma13_validate_runner.py")
 OUT_JSON = os.path.join(ROOT, "工具/ma13_validate_2345.json")
 

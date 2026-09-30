@@ -2,6 +2,7 @@
 chcp 65001 >nul
 title 生猪 MA13超短线 模拟盘台账
 cd /d "%~dp0"
+for %%I in ("%~dp0..\..\..\..") do set "ROOT=%%~fI\"
 set "PYTHONUTF8=1"
 set "PY="
 set "_VENV_TQ=%USERPROFILE%\.workbuddy\binaries\python\envs\tqsdk\Scripts\python.exe"

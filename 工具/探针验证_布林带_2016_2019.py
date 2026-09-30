@@ -16,7 +16,12 @@ import sys
 import importlib.util
 from datetime import date, timedelta
 
-ROOT = "C:/Users/cc/Desktop/天勤量化"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.exists(os.path.join(ROOT, "config_symbols.py")):
+    _up = os.path.dirname(ROOT)
+    if _up == ROOT:
+        raise RuntimeError("未找到项目根（config_symbols.py）")
+    ROOT = _up
 sys.path.insert(0, ROOT)
 from lib import engine  # noqa: E402
 

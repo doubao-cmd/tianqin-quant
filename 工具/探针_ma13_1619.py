@@ -1,9 +1,15 @@
+import os
 # -*- coding: utf-8 -*-
 """MA13 死亡窗探针：16-19 年，3 个品种串行跑（禁并发）。只取指标、不写报告。"""
 import sys, os, importlib.util
 import pandas as pd
 
-ROOT = r"C:/Users/cc/Desktop/天勤量化"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.exists(os.path.join(ROOT, "config_symbols.py")):
+    _up = os.path.dirname(ROOT)
+    if _up == ROOT:
+        raise RuntimeError("未找到项目根（config_symbols.py）")
+    ROOT = _up
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 

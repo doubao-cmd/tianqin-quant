@@ -1,3 +1,4 @@
+import os
 # -*- coding: utf-8 -*-
 """05_摆动线 / 07_布林带 体检 runner
 ==========================================================
@@ -15,7 +16,12 @@
 """
 import sys, os, re, json, subprocess
 
-ROOT = r"C:/Users/cc/Desktop/天勤量化"
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.exists(os.path.join(ROOT, "config_symbols.py")):
+    _up = os.path.dirname(ROOT)
+    if _up == ROOT:
+        raise RuntimeError("未找到项目根（config_symbols.py）")
+    ROOT = _up
 OUT_JSON = os.path.join(ROOT, "工具", "体检_05_07.json")
 
 WINDOWS = [  # (tag, start, end, slip_ticks)
