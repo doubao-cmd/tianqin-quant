@@ -27,8 +27,10 @@ OUT_JSON = os.path.join(ROOT, "工具", "体检_05_07.json")
 WINDOWS = [  # (tag, start, end, slip_ticks)
     ("dev",      "2021-01-01", "2023-12-31", 1),
     ("oos",      "2024-01-01", "2025-12-31", 1),
-    ("trend20",  "2020-01-01", "2020-12-31", 1),
-    ("death",    "2016-01-01", "2019-12-31", 1),
+    # 2026-09-30 用户拍板轻量化：砍 trend20 / death 两窗（仅服务死因归类，
+    # 不影响「给不给模拟盘席位」的裁决链 dev→oos→devslip3）。已跑完的窗保留。
+    # ("trend20",  "2020-01-01", "2020-12-31", 1),
+    # ("death",    "2016-01-01", "2019-12-31", 1),
     ("devslip3", "2021-01-01", "2023-12-31", 3),   # 成本压测：费用层 3 跳
 ]
 
@@ -101,34 +103,50 @@ def driver(strategy, key, tag, start, end, slip):
 def main():
     keys = discover_keys()
     print(f"[体检] 品种 {len(keys)} 个: {keys}", flush=True)
+    # 断点续跑（2026-09-30 轻量化新增）：旧结果先装回来，跑完的不再重跑
     results = {}
-    total = len(STRATEGIES) * len(keys) * len(WINDOWS)
-    done = 0
+    if os.path.isfile(OUT_JSON):
+        try:
+            with open(OUT_JSON, "r", encoding="utf-8") as f:
+                results = json.load(f)
+            print(f"[体检] 续跑：已有 {len(results)} 条结果", flush=True)
+        except Exception as ex:
+            print(f"[体检] ⚠️ 旧结果读不了（已备份），从头跑：{ex}", flush=True)
+            results = {}
+    # 只排还没跑完的活：error 条目视为未完成，重试
+    任务 = []
     for strat in STRATEGIES:
         for key in keys:
             for tag, s, e, slip in WINDOWS:
                 rkey = f"{strat}_{key}_{tag}"
-                done += 1
-                print(f"[{done}/{total}] {rkey} ...", flush=True)
-                try:
-                    p = subprocess.run(
-                        [sys.executable, "-u", os.path.abspath(__file__),
-                         "driver", strat, key, tag, s, e, str(slip)],
-                        capture_output=True, text=True, timeout=1800, cwd=ROOT)
-                    line = next((ln for ln in p.stdout.splitlines()
-                                 if ln.startswith("RESULT_JSON:")), None)
-                    if line:
-                        results[rkey] = json.loads(line[len("RESULT_JSON:"):])
-                    else:
-                        tail = (p.stdout or "").strip().splitlines()[-3:]
-                        results[rkey] = {"error": "no_result_json",
-                                         "stdout_tail": tail[-1][:200] if tail else "",
-                                         "stderr_tail": (p.stderr or "")[-200:]}
-                except Exception as ex:
-                    results[rkey] = {"error": f"{type(ex).__name__}: {str(ex)[:180]}"}
-                # 每步落盘：崩了也不丢已跑完的
-                with open(OUT_JSON, "w", encoding="utf-8") as f:
-                    json.dump(results, f, ensure_ascii=False, indent=1)
+                if rkey in results and "error" not in results[rkey]:
+                    continue
+                任务.append((strat, key, rkey, tag, s, e, slip))
+    total = len(任务)
+    print(f"[体检] 待跑 {total} 次（轻量窗口：{[w[0] for w in WINDOWS]}）", flush=True)
+    done = 0
+    for strat, key, rkey, tag, s, e, slip in 任务:
+        done += 1
+        print(f"[{done}/{total}] {rkey} ...", flush=True)
+        try:
+            p = subprocess.run(
+                [sys.executable, "-u", os.path.abspath(__file__),
+                 "driver", strat, key, tag, s, e, str(slip)],
+                capture_output=True, text=True, timeout=1800, cwd=ROOT)
+            line = next((ln for ln in p.stdout.splitlines()
+                         if ln.startswith("RESULT_JSON:")), None)
+            if line:
+                results[rkey] = json.loads(line[len("RESULT_JSON:"):])
+            else:
+                tail = (p.stdout or "").strip().splitlines()[-3:]
+                results[rkey] = {"error": "no_result_json",
+                                 "stdout_tail": tail[-1][:200] if tail else "",
+                                 "stderr_tail": (p.stderr or "")[-200:]}
+        except Exception as ex:
+            results[rkey] = {"error": f"{type(ex).__name__}: {str(ex)[:180]}"}
+        # 每步落盘：崩了也不丢已跑完的
+        with open(OUT_JSON, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=1)
     print(f"[体检] 全部完成 -> {OUT_JSON}", flush=True)
 
 
