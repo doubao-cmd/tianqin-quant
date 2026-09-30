@@ -1,0 +1,33 @@
+{
+  "symbol": "KQ.m@CZCE.MA",
+  "period": "5min",
+  "strategy": "MA13顺势回踩",
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK": 2000.0,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ]
+  },
+  "start": "2021-01-01",
+  "end": "2023-12-31",
+  "bars": 52682,
+  "trades": 3450,
+  "wins": 1441,
+  "win_rate": 0.4177,
+  "sharpe": 1.9008,
+  "final_equity": 484820.0,
+  "total_return": 1.4241,
+  "max_drawdown": 0.108,
+  "bar_avg_drawdown": 0.023,
+  "blown": false,
+  "cost_assumption": "滑点1跳+佣金2元/手/边; 本金200000; 目标风险2000; 手数1-8ATR预算"
+}

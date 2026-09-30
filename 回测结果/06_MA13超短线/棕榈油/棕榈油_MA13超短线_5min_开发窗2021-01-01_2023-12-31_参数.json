@@ -1,0 +1,40 @@
+{
+  "symbol": "KQ.m@DCE.p",
+  "symbol_cn": "棕榈油",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK": 2000.0,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0
+  },
+  "start": "2021-01-01",
+  "end": "2023-12-31",
+  "bars": 53003,
+  "annual_bars": 16703.1,
+  "trades": 3119,
+  "wins": 1505,
+  "win_rate": 0.4825,
+  "sharpe": 4.679,
+  "sharpe_11500": 3.8825,
+  "final_equity": 2567920.0,
+  "total_return": 11.8396,
+  "max_drawdown": 0.0799,
+  "bar_avg_drawdown": 0.0076,
+  "blown": false,
+  "commission": 123080.0,
+  "cost_assumption": "滑点1跳+佣金2.5元/手/边; 本金200000; 目标风险2000; 手数1-8ATR预算; 乘数10; 一跳1.0"
+}

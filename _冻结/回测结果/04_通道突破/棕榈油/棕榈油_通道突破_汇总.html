@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>棕榈油 通道突破 修改记录汇总</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif;
+         background:#f5f7fa; color:#222; margin:0; padding:24px; }
+  .wrap { max-width:880px; margin:0 auto; background:#fff;
+          border:1px solid #e3e8ef; border-radius:12px; padding:22px 26px; }
+  h1 { font-size:19px; margin:0 0 3px; }
+  .sub { color:#788; font-size:12.5px; margin-bottom:18px; }
+  .ver { border:1px solid #eef2f7; border-left:4px solid #cdd6e3; border-radius:9px;
+         padding:12px 15px; margin-bottom:12px; background:#fcfdff; }
+  .ver.now { border-left-color:#4c8bf5; background:#f8fbff; }
+  .vhead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .badge { background:#eef2f7; color:#667; font-size:11.5px; font-weight:700;
+           padding:2px 8px; border-radius:20px; }
+  .badge.now { background:#4c8bf5; color:#fff; }
+  .vtitle { font-size:14.5px; font-weight:700; }
+  .vdate { color:#99a; font-size:11.5px; margin-left:auto; }
+  .chg { margin:7px 0 0; font-size:13px; line-height:1.7; color:#334; }
+  .chg span { color:#8a94a6; margin-right:5px; }
+  .why { margin:5px 0 0; font-size:13px; line-height:1.7; color:#556; }
+  .why span { color:#8a94a6; margin-right:5px; }
+  .bar { display:flex; border:1px solid #eef2f7; border-radius:8px;
+         background:#f8fafc; overflow:hidden; margin:10px 0 6px; }
+  .bar .cell { flex:1; text-align:center; padding:7px 2px; border-right:1px solid #eef2f7; }
+  .bar .cell:last-child { border-right:0; }
+  .bar .k { font-size:11px; color:#8a94a6; margin-bottom:2px; }
+  .bar .v { font-size:15px; font-weight:700; }
+  .pos { color:#d4380d; } .neg { color:#198755; }
+  .ret { font-size:13px; font-weight:700; }
+  .warnbox { font-size:12.5px; line-height:1.7; color:#8a5a00; background:#fffbf0;
+             border:1px solid #f0d9a8; border-radius:8px; padding:8px 11px; margin:8px 0 4px; }
+  .warnbox code { background:#fff; border:1px solid #f0e2c4; border-radius:4px;
+                  padding:0 4px; font-size:12px; }
+  /* 历史版本：默认收起成一行，点开才展开 */
+  details.hist { border:1px solid #eef2f7; border-left:4px solid #cdd6e3; border-radius:9px;
+                 background:#fcfdff; margin-bottom:8px; }
+  details.hist > summary { padding:9px 14px; cursor:pointer; font-size:13px; color:#334;
+                           display:flex; align-items:center; gap:8px; list-style:none; }
+  details.hist > summary::-webkit-details-marker { display:none; }
+  details.hist > summary::after { content:"▾"; color:#99a; font-size:11px; }
+  details.hist[open] > summary::after { content:"▴"; }
+  details.hist[open] > summary { border-bottom:1px solid #eef2f7; }
+  details.hist .inner { padding:10px 15px 12px; }
+  .vs { font-size:12px; color:#667; background:#f8fafc; border-radius:7px;
+        padding:6px 10px; margin:0 0 2px; }
+  .vs b { color:#222; }
+  details { margin-top:7px; }
+  summary { cursor:pointer; color:#4c8bf5; font-size:12px; outline:none; }
+  details .dt { font-size:12.5px; color:#667; line-height:1.75; margin-top:6px;
+                padding-left:10px; border-left:2px solid #eef2f7; }
+  .wait { font-size:13px; color:#c2790a; background:#fffbf0; border:1px dashed #f0d9a8;
+          border-radius:8px; padding:9px 11px; margin-top:9px; }
+  .foot { margin-top:20px; font-size:11.5px; color:#aab; border-top:1px solid #eef2f7;
+          padding-top:10px; }
+  .cost { font-size:12px; color:#b45309; background:#fffbf0; border:1px solid #f5e3c0;
+          border-radius:8px; padding:8px 11px; margin:10px 0 2px; line-height:1.7; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>棕榈油 · 通道突破 修改记录汇总</h1>
+    <div class="sub">周期 30分钟 ｜ 练习区间 2016-01-01 ~ 2019-12-31 ｜ 共 1 次修改 ｜ 更新于 2026-09-28 14:09</div>
+    <div class="cost">成本口径（全部版本一致）：TqSim <b>对价成交</b>（价格层 1 跳：买 +1 / 卖 −1）＋ 脚本 <b>slip_ticks = 1</b>（费用层 1 跳）→ <b>等效实盘滑点假设 2 跳/次</b>。与「01 双均线」<b>口径一致</b> —— 周期 30 分钟、区间 2026-03-13~09-13、波动率预算手数、ATR 止损、成本模型五项全部相同，因此两页收益率<b>可直接横向比较，差异即「信号源」的贡献</b>。</div>
+<div class="ver now"><div class="vhead"><span class="badge now">v0 · 当前</span><span class="vtitle">补建账本 + 12 品种模拟盘入口（本品种尚无落盘实验）</span><span class="vdate">2026-09-27</span></div>
+    <div class="chg"><span>改动</span>· 补建 通道突破_模拟盘.py / 模拟盘.bat<br>· 口径逐字沿用 PVC 回测脚本（System 1）<br>· 观察模式 ALLOW_TRADE=False</div>
+    <div class="why"><span>原因</span>用户要求把 04 的模拟盘补齐，使『所有策略 × 所有品种』都可用。</div>
+    <div class="bar"><div class="cell"><div class="k">收益率</div><div class="v neg">-51.41%</div></div><div class="cell"><div class="k">最大回撤</div><div class="v neg">70.61%</div></div><div class="cell"><div class="k">胜率</div><div class="v ">32.01%</div></div><div class="cell"><div class="k">盈亏比</div><div class="v ">1.73</div></div><div class="cell"><div class="k">结束权益</div><div class="v ">97,175</div></div><div class="cell"><div class="k">开仓次数</div><div class="v ">318</div></div></div>
+    <div class="warnbox">本次修改为<b>负收益</b>（-51.41%）。若判定这次改动不成立，可一键回退：还原上一版代码 + 删掉本条记录 + 本次报告进回收站。双击 <code>工具\回滚.bat</code>，或跑 <code>python 工具/回滚.py P 通道突破 --go</code>。</div>
+    
+    <details><summary>详细说明</summary><div class="dt">更多指标：年化收益 -16.88% ｜ 夏普率 -0.62 ｜ 总手续费 37,225 ｜ 平仓次数 317 ｜ 卡玛比率 -0.02 ｜ 索提诺比率 -0.63 ｜ 交易天数 976 ｜ 最大连盈天数 7 ｜ 最大连亏天数 9 ｜ 初始资金 200,000<br><br>【本品种的状态】此前**从未跑过** 04 通道突破的回测 —— 04 的历史结论（v0~v4 四轮实验全部否定）全部出自 PVC 一个品种。本品种的回测/模拟盘入口是 2026-09-27 批量补齐的，但**还没有任何实测数字**。
+【口径】逐字沿用 PVC 的回测脚本：海龟 System 1（入场 20 根 / 出场 10 根 / failsafe 过滤开）、30 分钟 K 线、1 跳滑点、初始 2×ATR 止损、保本关闭、波动率预算 1%（HAND_MAX 8）、**不用开盘保护**（04 从来没用过）。
+【本次为 04 补的引擎能力】engine 的 run_live 此前只接均线式信号，没有 channel 分支、也没有 turtle_failsafe 参数 —— 这正是 04 长期缺模拟盘的原因。2026-09-27 两处都补上了（纯新增，默认值保证老策略逐字不变），否则模拟盘与回测的信号会分叉（回测跳过的突破，模拟盘会开进去）。
+【failsafe 的实时局限】只活在进程内存里，重启即忘（按未盈利起步）；回测里全程连续，没有这个断点。属实时版的固有差异，不是缺陷。<br><br>数据来源：回测结果/04_通道突破/棕榈油/棕榈油_通道突破_30min_in.html ｜ 抓取于 2026-09-28 14:09</div></details></div>
+
+    <div class="foot">本页由「每次回测结束后自动刷新」，数字取自最新一次回测报告；
+    修改说明为人工记录。仅用于策略历史回测展示，不构成任何投资建议。</div>
+  </div>
+</body>
+</html>

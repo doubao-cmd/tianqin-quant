@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>鸡蛋 摆动线 修改记录汇总</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif;
+         background:#f5f7fa; color:#222; margin:0; padding:24px; }
+  .wrap { max-width:880px; margin:0 auto; background:#fff;
+          border:1px solid #e3e8ef; border-radius:12px; padding:22px 26px; }
+  h1 { font-size:19px; margin:0 0 3px; }
+  .sub { color:#788; font-size:12.5px; margin-bottom:18px; }
+  .ver { border:1px solid #eef2f7; border-left:4px solid #cdd6e3; border-radius:9px;
+         padding:12px 15px; margin-bottom:12px; background:#fcfdff; }
+  .ver.now { border-left-color:#4c8bf5; background:#f8fbff; }
+  .vhead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .badge { background:#eef2f7; color:#667; font-size:11.5px; font-weight:700;
+           padding:2px 8px; border-radius:20px; }
+  .badge.now { background:#4c8bf5; color:#fff; }
+  .vtitle { font-size:14.5px; font-weight:700; }
+  .vdate { color:#99a; font-size:11.5px; margin-left:auto; }
+  .chg { margin:7px 0 0; font-size:13px; line-height:1.7; color:#334; }
+  .chg span { color:#8a94a6; margin-right:5px; }
+  .why { margin:5px 0 0; font-size:13px; line-height:1.7; color:#556; }
+  .why span { color:#8a94a6; margin-right:5px; }
+  .bar { display:flex; border:1px solid #eef2f7; border-radius:8px;
+         background:#f8fafc; overflow:hidden; margin:10px 0 6px; }
+  .bar .cell { flex:1; text-align:center; padding:7px 2px; border-right:1px solid #eef2f7; }
+  .bar .cell:last-child { border-right:0; }
+  .bar .k { font-size:11px; color:#8a94a6; margin-bottom:2px; }
+  .bar .v { font-size:15px; font-weight:700; }
+  .pos { color:#d4380d; } .neg { color:#198755; }
+  .ret { font-size:13px; font-weight:700; }
+  .warnbox { font-size:12.5px; line-height:1.7; color:#8a5a00; background:#fffbf0;
+             border:1px solid #f0d9a8; border-radius:8px; padding:8px 11px; margin:8px 0 4px; }
+  .warnbox code { background:#fff; border:1px solid #f0e2c4; border-radius:4px;
+                  padding:0 4px; font-size:12px; }
+  /* 历史版本：默认收起成一行，点开才展开 */
+  details.hist { border:1px solid #eef2f7; border-left:4px solid #cdd6e3; border-radius:9px;
+                 background:#fcfdff; margin-bottom:8px; }
+  details.hist > summary { padding:9px 14px; cursor:pointer; font-size:13px; color:#334;
+                           display:flex; align-items:center; gap:8px; list-style:none; }
+  details.hist > summary::-webkit-details-marker { display:none; }
+  details.hist > summary::after { content:"▾"; color:#99a; font-size:11px; }
+  details.hist[open] > summary::after { content:"▴"; }
+  details.hist[open] > summary { border-bottom:1px solid #eef2f7; }
+  details.hist .inner { padding:10px 15px 12px; }
+  .vs { font-size:12px; color:#667; background:#f8fafc; border-radius:7px;
+        padding:6px 10px; margin:0 0 2px; }
+  .vs b { color:#222; }
+  details { margin-top:7px; }
+  summary { cursor:pointer; color:#4c8bf5; font-size:12px; outline:none; }
+  details .dt { font-size:12.5px; color:#667; line-height:1.75; margin-top:6px;
+                padding-left:10px; border-left:2px solid #eef2f7; }
+  .wait { font-size:13px; color:#c2790a; background:#fffbf0; border:1px dashed #f0d9a8;
+          border-radius:8px; padding:9px 11px; margin-top:9px; }
+  .foot { margin-top:20px; font-size:11.5px; color:#aab; border-top:1px solid #eef2f7;
+          padding-top:10px; }
+  .cost { font-size:12px; color:#b45309; background:#fffbf0; border:1px solid #f5e3c0;
+          border-radius:8px; padding:8px 11px; margin:10px 0 2px; line-height:1.7; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>鸡蛋 · 摆动线 修改记录汇总</h1>
+    <div class="sub">周期 30分钟 ｜ 练习区间 2016-01-01 ~ 2019-12-31 ｜ 共 1 次修改 ｜ 更新于 2026-09-28 13:53</div>
+    <div class="cost">成本口径（全部版本一致）：TqSim <b>对价成交</b>（价格层 1 跳：买 +1 / 卖 −1）＋ 脚本 <b>slip_ticks = 1</b>（费用层 1 跳）→ <b>等效实盘滑点假设 2 跳/次</b>。与「01 双均线 / 04 通道突破」<b>口径一致</b>，收益率可横向比较。手数口径：v0 固定 1 手；<b>v1 起改为波动率预算 1~8 手</b>（与 01/03 同一把尺子），故 v0 与 v1 之后的收益率<b>不可直接比大小</b>（读数变大先看手数，不是信号变好）。周期口径：全程 <b>30 分钟</b>（曾试 15 分钟，结论明确更差、已回滚作废，未留档；曾试「只平不反+等结构重建」，机制性失效、已回滚作废，未留档）。止损：v2 起叠 2.0×ATR 固定止损（仅灾难保险，出场仍归结构）。出场口径：全部在档版本均为<b>穿越即反手</b>（结构反向穿越 = 平仓+反手，永远在场）。</div>
+<div class="ver now"><div class="vhead"><span class="badge now">v0 · 当前</span><span class="vtitle">补建账本（本品种此前从未跑过 05 摆动线回测）</span><span class="vdate">2026-09-27</span></div>
+    <div class="chg"><span>改动</span>· 补建 鸡蛋_摆动线.json（此前缺失）<br>· 回测 / 模拟盘入口与 PVC 同口径<br>· 累计试验次数起始 0</div>
+    <div class="why"><span>原因</span>5 策略扩编 12 品种时账本漏建，跑完回测的汇总环节会报『账本不存在』。</div>
+    <div class="bar"><div class="cell"><div class="k">收益率</div><div class="v neg">-65.46%</div></div><div class="cell"><div class="k">最大回撤</div><div class="v neg">74.75%</div></div><div class="cell"><div class="k">胜率</div><div class="v ">32.19%</div></div><div class="cell"><div class="k">盈亏比</div><div class="v ">1.90</div></div><div class="cell"><div class="k">结束权益</div><div class="v ">69,086</div></div><div class="cell"><div class="k">开仓次数</div><div class="v ">544</div></div></div>
+    <div class="warnbox">本次修改为<b>负收益</b>（-65.46%）。若判定这次改动不成立，可一键回退：还原上一版代码 + 删掉本条记录 + 本次报告进回收站。双击 <code>工具\回滚.bat</code>，或跑 <code>python 工具/回滚.py JD 摆动线 --go</code>。</div>
+    
+    <details><summary>详细说明</summary><div class="dt">更多指标：年化收益 -23.84% ｜ 夏普率 -0.74 ｜ 总手续费 77,534 ｜ 平仓次数 543 ｜ 卡玛比率 -0.02 ｜ 索提诺比率 -0.62 ｜ 交易天数 976 ｜ 最大连盈天数 7 ｜ 最大连亏天数 11 ｜ 初始资金 200,000<br><br>【本品种的状态】本品种此前**从未跑过** 05 摆动线的任何回测 —— 05 的历史实验（账本 3 个落盘版本 + 10 次零落盘实验、跨年四窗）**全部出自 PVC**（05 建档时用户指定「摆动点跑 PVC 就行」）。
+【本次补建的原因】5 个策略扩到 12 品种时，**脚本复制了、账本没跟着建** —— 本品种跑完回测后，末尾的「汇总报告」环节读不到账本，只会打出一行 `[汇总] 刷新失败（不影响回测结果）`。⚠️ 其实**回测报告一直是正常生成并落盘的**（在 `回测结果/05_摆动线/鸡蛋/` 下），缺的只是汇总页。2026-09-27 按用户指示补建本账本；同时 `工具/汇总报告.py` 已把这种情况改成优雅的「[汇总] 跳过…」，不再像报错。
+【与 PVC 的口径】30 分钟 K 线、零参数摆动点结构、穿越即反手（永远在场）、波动率预算 1%（夹 1~8 手）、v2 起叠 2.0×ATR 固定止损（触发后空仓等下一次结构翻转）、1 跳滑点。
+【区间】2026-09-27 起样本区间已重定为：样本内 **2016-01-01 ~ 2019-12-31** ｜ 验证集 **2020-01-01 ~ 2024-12-31** ｜ 期末考试 **2025-01-01 ~ 2026-09-30**（权威表见 `策略/_说明.md`）。旧读数（IS 2026-03~09、OOS 2025-03~09、跨年 2021-2024）全部按旧口径记录、尚未重跑。
+【顶层「区间」字段】是**占位值**，跑第一次回测后由脚本自动覆盖（`汇总报告.更新()`）。<br><br>数据来源：回测结果/05_摆动线/鸡蛋/鸡蛋_摆动线_30min_in.html ｜ 抓取于 2026-09-28 13:53</div></details></div>
+
+    <div class="foot">本页由「每次回测结束后自动刷新」，数字取自最新一次回测报告；
+    修改说明为人工记录。仅用于策略历史回测展示，不构成任何投资建议。</div>
+  </div>
+</body>
+</html>

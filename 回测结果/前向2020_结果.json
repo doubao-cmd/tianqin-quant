@@ -1,0 +1,75 @@
+{
+  "window": "2020-01-01~2020-12-31",
+  "k": 1,
+  "mdes": 1.96,
+  "n_commodities": 9,
+  "mean_sharpe": -0.9700000000000001,
+  "mean_annual_pct": -7.955555555555555,
+  "positive_sharpe_count": 2,
+  "verdict": "FAIL(支持H0/无法区分)",
+  "per_commodity": {
+    "MA": {
+      "ror": -3.7,
+      "annual": -3.73,
+      "max_dd": 15.39,
+      "win_rate": 26.8,
+      "sharpe": -0.63
+    },
+    "M": {
+      "ror": -16.76,
+      "annual": -16.89,
+      "max_dd": 22.18,
+      "win_rate": 17.54,
+      "sharpe": -2.1
+    },
+    "RB": {
+      "ror": -15.77,
+      "annual": -15.89,
+      "max_dd": 18.98,
+      "win_rate": 27.5,
+      "sharpe": -1.69
+    },
+    "V": {
+      "ror": -6.54,
+      "annual": -6.59,
+      "max_dd": 13.75,
+      "win_rate": 30.53,
+      "sharpe": -0.77
+    },
+    "JM": {
+      "ror": -13.6,
+      "annual": -13.7,
+      "max_dd": 17.54,
+      "win_rate": 27.81,
+      "sharpe": -1.13
+    },
+    "JD": {
+      "ror": 9.66,
+      "annual": 9.74,
+      "max_dd": 5.76,
+      "win_rate": 49.04,
+      "sharpe": 0.75
+    },
+    "RU": {
+      "ror": 3.87,
+      "annual": 3.9,
+      "max_dd": 17.85,
+      "win_rate": 21.21,
+      "sharpe": 0.16
+    },
+    "P": {
+      "ror": -22.24,
+      "annual": -22.4,
+      "max_dd": 22.24,
+      "win_rate": 21.8,
+      "sharpe": -2.71
+    },
+    "SR": {
+      "ror": -5.99,
+      "annual": -6.04,
+      "max_dd": 14.1,
+      "win_rate": 35.18,
+      "sharpe": -0.61
+    }
+  }
+}

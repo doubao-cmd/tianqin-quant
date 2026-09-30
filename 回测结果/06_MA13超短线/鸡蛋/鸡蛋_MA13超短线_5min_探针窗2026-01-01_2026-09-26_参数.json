@@ -1,0 +1,40 @@
+{
+  "symbol": "KQ.m@DCE.jd",
+  "symbol_cn": "鸡蛋",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK": 2000.0,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0
+  },
+  "start": "2026-01-01",
+  "end": "2026-09-26",
+  "bars": 11234,
+  "annual_bars": 10965.9,
+  "trades": 496,
+  "wins": 203,
+  "win_rate": 0.4093,
+  "sharpe": 1.8243,
+  "sharpe_11500": 1.8682,
+  "final_equity": 278868.91,
+  "total_return": 0.3943,
+  "max_drawdown": 0.1373,
+  "bar_avg_drawdown": 0.0265,
+  "blown": false,
+  "commission": 46091.09,
+  "cost_assumption": "滑点1跳+佣金5.802元/手/边; 本金200000; 目标风险2000; 手数1-8ATR预算; 乘数10; 一跳1.0"
+}

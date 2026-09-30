@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>苯乙烯 均值回归 修改记录汇总</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif;
+         background:#f5f7fa; color:#222; margin:0; padding:24px; }
+  .wrap { max-width:880px; margin:0 auto; background:#fff;
+          border:1px solid #e3e8ef; border-radius:12px; padding:22px 26px; }
+  h1 { font-size:19px; margin:0 0 3px; }
+  .sub { color:#788; font-size:12.5px; margin-bottom:18px; }
+  .ver { border:1px solid #eef2f7; border-left:4px solid #cdd6e3; border-radius:9px;
+         padding:12px 15px; margin-bottom:12px; background:#fcfdff; }
+  .ver.now { border-left-color:#4c8bf5; background:#f8fbff; }
+  .vhead { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .badge { background:#eef2f7; color:#667; font-size:11.5px; font-weight:700;
+           padding:2px 8px; border-radius:20px; }
+  .badge.now { background:#4c8bf5; color:#fff; }
+  .vtitle { font-size:14.5px; font-weight:700; }
+  .vdate { color:#99a; font-size:11.5px; margin-left:auto; }
+  .chg { margin:7px 0 0; font-size:13px; line-height:1.7; color:#334; }
+  .chg span { color:#8a94a6; margin-right:5px; }
+  .why { margin:5px 0 0; font-size:13px; line-height:1.7; color:#556; }
+  .why span { color:#8a94a6; margin-right:5px; }
+  .bar { display:flex; border:1px solid #eef2f7; border-radius:8px;
+         background:#f8fafc; overflow:hidden; margin:10px 0 6px; }
+  .bar .cell { flex:1; text-align:center; padding:7px 2px; border-right:1px solid #eef2f7; }
+  .bar .cell:last-child { border-right:0; }
+  .bar .k { font-size:11px; color:#8a94a6; margin-bottom:2px; }
+  .bar .v { font-size:15px; font-weight:700; }
+  .pos { color:#d4380d; } .neg { color:#198755; }
+  .ret { font-size:13px; font-weight:700; }
+  .warnbox { font-size:12.5px; line-height:1.7; color:#8a5a00; background:#fffbf0;
+             border:1px solid #f0d9a8; border-radius:8px; padding:8px 11px; margin:8px 0 4px; }
+  .warnbox code { background:#fff; border:1px solid #f0e2c4; border-radius:4px;
+                  padding:0 4px; font-size:12px; }
+  /* 历史版本：默认收起成一行，点开才展开 */
+  details.hist { border:1px solid #eef2f7; border-left:4px solid #cdd6e3; border-radius:9px;
+                 background:#fcfdff; margin-bottom:8px; }
+  details.hist > summary { padding:9px 14px; cursor:pointer; font-size:13px; color:#334;
+                           display:flex; align-items:center; gap:8px; list-style:none; }
+  details.hist > summary::-webkit-details-marker { display:none; }
+  details.hist > summary::after { content:"▾"; color:#99a; font-size:11px; }
+  details.hist[open] > summary::after { content:"▴"; }
+  details.hist[open] > summary { border-bottom:1px solid #eef2f7; }
+  details.hist .inner { padding:10px 15px 12px; }
+  .vs { font-size:12px; color:#667; background:#f8fafc; border-radius:7px;
+        padding:6px 10px; margin:0 0 2px; }
+  .vs b { color:#222; }
+  details { margin-top:7px; }
+  summary { cursor:pointer; color:#4c8bf5; font-size:12px; outline:none; }
+  details .dt { font-size:12.5px; color:#667; line-height:1.75; margin-top:6px;
+                padding-left:10px; border-left:2px solid #eef2f7; }
+  .wait { font-size:13px; color:#c2790a; background:#fffbf0; border:1px dashed #f0d9a8;
+          border-radius:8px; padding:9px 11px; margin-top:9px; }
+  .foot { margin-top:20px; font-size:11.5px; color:#aab; border-top:1px solid #eef2f7;
+          padding-top:10px; }
+  .cost { font-size:12px; color:#b45309; background:#fffbf0; border:1px solid #f5e3c0;
+          border-radius:8px; padding:8px 11px; margin:10px 0 2px; line-height:1.7; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>苯乙烯 · 均值回归 修改记录汇总</h1>
+    <div class="sub">周期 30分钟 ｜ 练习区间 2020-01-01 ~ 2022-12-31 ｜ 共 1 次修改 ｜ 更新于 2026-09-28 03:24</div>
+    <div class="cost">成本口径：TqSim <b>对价成交</b>（价格层 1 跳：买 +1 / 卖 −1）。本策略未登记成本口径文案，请核对对应回测脚本的 slip_ticks 后再解读收益率。</div>
+<div class="ver now"><div class="vhead"><span class="badge now">v0 · 当前</span><span class="vtitle">新建策略：均值回归最基础版（单均线穿越）</span><span class="vdate">2026-09-27</span></div>
+    <div class="chg"><span>改动</span>· 新建 03_均值回归 策略骨架<br>· 单均线 MA20 穿越即反手<br>· 与其余四策略同口径：2×ATR 止损 + 1% 风险预算</div>
+    <div class="why"><span>原因</span>补一个『最基础』的均值回归基线，看裸逻辑本身有没有 edge。</div>
+    <div class="bar"><div class="cell"><div class="k">收益率</div><div class="v neg">-95.54%</div></div><div class="cell"><div class="k">最大回撤</div><div class="v neg">95.56%</div></div><div class="cell"><div class="k">胜率</div><div class="v ">60.53%</div></div><div class="cell"><div class="k">盈亏比</div><div class="v ">0.54</div></div><div class="cell"><div class="k">结束权益</div><div class="v ">8,914</div></div><div class="cell"><div class="k">开仓次数</div><div class="v ">1048</div></div></div>
+    <div class="warnbox">本次修改为<b>负收益</b>（-95.54%）。若判定这次改动不成立，可一键回退：还原上一版代码 + 删掉本条记录 + 本次报告进回收站。双击 <code>工具\回滚.bat</code>，或跑 <code>python 工具/回滚.py EB 均值回归 --go</code>。</div>
+    
+    <details><summary>详细说明</summary><div class="dt">更多指标：年化收益 -78.36% ｜ 夏普率 -1.72 ｜ 总手续费 53,306 ｜ 平仓次数 1048 ｜ 卡玛比率 -0.08 ｜ 索提诺比率 -1.22 ｜ 交易天数 508 ｜ 最大连盈天数 9 ｜ 最大连亏天数 9 ｜ 初始资金 200,000<br><br>【逻辑，三行讲完】收盘价 < MA(N1) -> 目标做多；收盘价 > MA(N1) -> 目标做空；穿越均线即反手 —— 永远在场，没有空仓状态。参数只有 N1=20 一个。
+【为什么是这一版】用户 2026-09-27 要求「加一个 03 均值回归，保留最基础的逻辑」。候选有三种：① 单均线穿越（本版，1 个参数）② 均线 ± k×ATR 偏离带（2 个参数）③ RSI 超买超卖。选 ① 的理由：参数最少、最贴近「最基础」，且是唯一没测过的版本。
+【与已收档的 03_布林带不是一回事】布林带 = MA ± k×σ 两条轨道 + 中轨出场，要 std、要 k、要出场阈值，跨年 1/20 淘汰（年均 −19.9%）。本策略只有一条均线，穿越点就是反手点 —— 同属均值回归家族，但不是同一个东西。布林带的引擎函数（boll_decision / run_backtest_boll / run_live_boll）至今仍在 lib/engine.py 里，一行没删，随时可重新跑。
+【预先说清的代价】永远在场 ⇒ 换手 = 均线穿越次数，是本项目所有策略里最高的，成本会吃掉相当一部分毛利。这不是意外，正是本轮要测的东西。
+【口径】与 01/02/04/05 完全一致：30 分钟 K 线、1 跳滑点、初始 2×ATR 止损、保本关闭、波动率预算 1%（HAND_MAX 8）、开盘后 30 分钟不开新仓。止损与开盘保护不是均值回归逻辑的一部分，是为了同一把尺子下横向可比；想看裸逻辑，把 ATR_STOP_MULT 和 NO_OPEN_WINDOW_MIN 都改成 0。
+【未跑】本脚本建好时**尚未跑过任何回测**（用户明确要求先只建入口）。所以本账本目前没有指标数字，第一条 v0 的「指标」栏会在首次回测跑完后自动填入。<br><br>数据来源：回测结果/03_均值回归/苯乙烯/苯乙烯_均值回归_30min_in.html ｜ 抓取于 2026-09-28 03:24</div></details></div>
+
+    <div class="foot">本页由「每次回测结束后自动刷新」，数字取自最新一次回测报告；
+    修改说明为人工记录。仅用于策略历史回测展示，不构成任何投资建议。</div>
+  </div>
+</body>
+</html>

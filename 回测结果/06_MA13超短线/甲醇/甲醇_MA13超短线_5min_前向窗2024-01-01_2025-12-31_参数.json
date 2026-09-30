@@ -1,0 +1,40 @@
+{
+  "symbol": "KQ.m@CZCE.MA",
+  "symbol_cn": "甲醇",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK": 2000.0,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0
+  },
+  "start": "2024-01-01",
+  "end": "2025-12-31",
+  "bars": 36428,
+  "annual_bars": 16665.9,
+  "trades": 2221,
+  "wins": 810,
+  "win_rate": 0.3647,
+  "sharpe": -1.6107,
+  "sharpe_11500": -1.338,
+  "final_equity": 106432.0,
+  "total_return": -0.4678,
+  "max_drawdown": 0.4888,
+  "bar_avg_drawdown": 0.2287,
+  "blown": false,
+  "commission": 71088.0,
+  "cost_assumption": "滑点1跳+佣金2.0元/手/边; 本金200000; 目标风险2000; 手数1-8ATR预算; 乘数10; 一跳1"
+}

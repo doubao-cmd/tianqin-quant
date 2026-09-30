@@ -1,0 +1,376 @@
+{
+  "MA": {
+    "name": "甲醇",
+    "code": "KQ.m@CZCE.MA",
+    "whole": {
+      "n_bars": 8992,
+      "p_start": 3055.0,
+      "p_end": 2219.0,
+      "total_return": -0.2736,
+      "ann_vol": 0.2036,
+      "trend_ratio": 0.0121
+    },
+    "yearly": {
+      "2017": {
+        "n_bars": 2756,
+        "p_start": 3055.0,
+        "p_end": 2853.0,
+        "total_return": -0.0661,
+        "ann_vol": 0.2398,
+        "trend_ratio": 0.0081
+      },
+      "2018": {
+        "n_bars": 3124,
+        "p_start": 2883.0,
+        "p_end": 2388.0,
+        "total_return": -0.1717,
+        "ann_vol": 0.1911,
+        "trend_ratio": 0.0197
+      },
+      "2019": {
+        "n_bars": 3112,
+        "p_start": 2417.0,
+        "p_end": 2219.0,
+        "total_return": -0.0819,
+        "ann_vol": 0.179,
+        "trend_ratio": 0.0103
+      }
+    }
+  },
+  "M": {
+    "name": "豆粕",
+    "code": "KQ.m@DCE.m",
+    "whole": {
+      "n_bars": 8992,
+      "p_start": 2913.0,
+      "p_end": 2769.0,
+      "total_return": -0.0494,
+      "ann_vol": 0.1413,
+      "trend_ratio": 0.003
+    },
+    "yearly": {
+      "2017": {
+        "n_bars": 2923,
+        "p_start": 2913.0,
+        "p_end": 2761.0,
+        "total_return": -0.0522,
+        "ann_vol": 0.1251,
+        "trend_ratio": 0.0112
+      },
+      "2018": {
+        "n_bars": 3124,
+        "p_start": 2770.0,
+        "p_end": 2625.0,
+        "total_return": -0.0523,
+        "ann_vol": 0.1606,
+        "trend_ratio": 0.0076
+      },
+      "2019": {
+        "n_bars": 2945,
+        "p_start": 2638.0,
+        "p_end": 2769.0,
+        "total_return": 0.0497,
+        "ann_vol": 0.1345,
+        "trend_ratio": 0.0087
+      }
+    }
+  },
+  "RB": {
+    "name": "螺纹钢",
+    "code": "KQ.m@SHFE.rb",
+    "whole": {
+      "n_bars": 8992,
+      "p_start": 3062.0,
+      "p_end": 3556.0,
+      "total_return": 0.1613,
+      "ann_vol": 0.2317,
+      "trend_ratio": 0.0047
+    },
+    "yearly": {
+      "2016": {
+        "n_bars": 279,
+        "p_start": 3062.0,
+        "p_end": 2867.0,
+        "total_return": -0.0637,
+        "ann_vol": 0.3689,
+        "trend_ratio": 0.0366
+      },
+      "2017": {
+        "n_bars": 2928,
+        "p_start": 2934.0,
+        "p_end": 3794.0,
+        "total_return": 0.2931,
+        "ann_vol": 0.2764,
+        "trend_ratio": 0.0203
+      },
+      "2018": {
+        "n_bars": 2896,
+        "p_start": 3829.0,
+        "p_end": 3404.0,
+        "total_return": -0.111,
+        "ann_vol": 0.2033,
+        "trend_ratio": 0.0139
+      },
+      "2019": {
+        "n_bars": 2889,
+        "p_start": 3405.0,
+        "p_end": 3556.0,
+        "total_return": 0.0443,
+        "ann_vol": 0.1866,
+        "trend_ratio": 0.0058
+      }
+    }
+  },
+  "V": {
+    "name": "PVC",
+    "code": "KQ.m@DCE.v",
+    "whole": {
+      "n_bars": 8505,
+      "p_start": 4790.0,
+      "p_end": 6525.0,
+      "total_return": 0.3622,
+      "ann_vol": 0.2023,
+      "trend_ratio": 0.011
+    },
+    "yearly": {
+      "2016": {
+        "n_bars": 1944,
+        "p_start": 4790.0,
+        "p_end": 6210.0,
+        "total_return": 0.2965,
+        "ann_vol": 0.2325,
+        "trend_ratio": 0.0362
+      },
+      "2017": {
+        "n_bars": 1952,
+        "p_start": 6075.0,
+        "p_end": 6655.0,
+        "total_return": 0.0955,
+        "ann_vol": 0.2711,
+        "trend_ratio": 0.0111
+      },
+      "2018": {
+        "n_bars": 1944,
+        "p_start": 6740.0,
+        "p_end": 6455.0,
+        "total_return": -0.0423,
+        "ann_vol": 0.1807,
+        "trend_ratio": 0.0081
+      },
+      "2019": {
+        "n_bars": 2665,
+        "p_start": 6420.0,
+        "p_end": 6525.0,
+        "total_return": 0.0164,
+        "ann_vol": 0.1147,
+        "trend_ratio": 0.0035
+      }
+    }
+  },
+  "JM": {
+    "name": "焦煤",
+    "code": "KQ.m@DCE.jm",
+    "whole": {
+      "n_bars": 8992,
+      "p_start": 1214.0,
+      "p_end": 1156.0,
+      "total_return": -0.0478,
+      "ann_vol": 0.2623,
+      "trend_ratio": 0.0014
+    },
+    "yearly": {
+      "2017": {
+        "n_bars": 2923,
+        "p_start": 1214.0,
+        "p_end": 1313.0,
+        "total_return": 0.0815,
+        "ann_vol": 0.3329,
+        "trend_ratio": 0.0054
+      },
+      "2018": {
+        "n_bars": 3124,
+        "p_start": 1323.5,
+        "p_end": 1179.5,
+        "total_return": -0.1088,
+        "ann_vol": 0.2624,
+        "trend_ratio": 0.0104
+      },
+      "2019": {
+        "n_bars": 2945,
+        "p_start": 1172.5,
+        "p_end": 1156.0,
+        "total_return": -0.0141,
+        "ann_vol": 0.1645,
+        "trend_ratio": 0.002
+      }
+    }
+  },
+  "JD": {
+    "name": "鸡蛋",
+    "code": "KQ.m@DCE.jd",
+    "whole": {
+      "n_bars": 7784,
+      "p_start": 3206.0,
+      "p_end": 3558.0,
+      "total_return": 0.1098,
+      "ann_vol": 0.321,
+      "trend_ratio": 0.004
+    },
+    "yearly": {
+      "2016": {
+        "n_bars": 1944,
+        "p_start": 3206.0,
+        "p_end": 3375.0,
+        "total_return": 0.0527,
+        "ann_vol": 0.2949,
+        "trend_ratio": 0.0071
+      },
+      "2017": {
+        "n_bars": 1952,
+        "p_start": 3383.0,
+        "p_end": 3815.0,
+        "total_return": 0.1277,
+        "ann_vol": 0.4033,
+        "trend_ratio": 0.0185
+      },
+      "2018": {
+        "n_bars": 1944,
+        "p_start": 3834.0,
+        "p_end": 3478.0,
+        "total_return": -0.0929,
+        "ann_vol": 0.2863,
+        "trend_ratio": 0.0186
+      },
+      "2019": {
+        "n_bars": 1944,
+        "p_start": 3446.0,
+        "p_end": 3558.0,
+        "total_return": 0.0325,
+        "ann_vol": 0.2839,
+        "trend_ratio": 0.0054
+      }
+    }
+  },
+  "P": {
+    "name": "棕榈油",
+    "code": "KQ.m@DCE.p",
+    "whole": {
+      "n_bars": 8992,
+      "p_start": 6314.0,
+      "p_end": 6372.0,
+      "total_return": 0.0092,
+      "ann_vol": 0.1354,
+      "trend_ratio": 0.0007
+    },
+    "yearly": {
+      "2017": {
+        "n_bars": 2923,
+        "p_start": 6314.0,
+        "p_end": 5226.0,
+        "total_return": -0.1723,
+        "ann_vol": 0.1479,
+        "trend_ratio": 0.0316
+      },
+      "2018": {
+        "n_bars": 3124,
+        "p_start": 5294.0,
+        "p_end": 4482.0,
+        "total_return": -0.1534,
+        "ann_vol": 0.1099,
+        "trend_ratio": 0.033
+      },
+      "2019": {
+        "n_bars": 2945,
+        "p_start": 4538.0,
+        "p_end": 6372.0,
+        "total_return": 0.4041,
+        "ann_vol": 0.1456,
+        "trend_ratio": 0.0636
+      }
+    }
+  },
+  "RU": {
+    "name": "天然橡胶",
+    "code": "KQ.m@SHFE.ru",
+    "whole": {
+      "n_bars": 8992,
+      "p_start": 17980.0,
+      "p_end": 12960.0,
+      "total_return": -0.2792,
+      "ann_vol": 0.2714,
+      "trend_ratio": 0.0122
+    },
+    "yearly": {
+      "2016": {
+        "n_bars": 311,
+        "p_start": 17980.0,
+        "p_end": 18350.0,
+        "total_return": 0.0206,
+        "ann_vol": 0.3974,
+        "trend_ratio": 0.0103
+      },
+      "2017": {
+        "n_bars": 2904,
+        "p_start": 18605.0,
+        "p_end": 14105.0,
+        "total_return": -0.2419,
+        "ann_vol": 0.3326,
+        "trend_ratio": 0.0234
+      },
+      "2018": {
+        "n_bars": 2888,
+        "p_start": 14380.0,
+        "p_end": 11305.0,
+        "total_return": -0.2138,
+        "ann_vol": 0.2555,
+        "trend_ratio": 0.0321
+      },
+      "2019": {
+        "n_bars": 2889,
+        "p_start": 11320.0,
+        "p_end": 12960.0,
+        "total_return": 0.1449,
+        "ann_vol": 0.1887,
+        "trend_ratio": 0.019
+      }
+    }
+  },
+  "SR": {
+    "name": "白糖",
+    "code": "KQ.m@CZCE.SR",
+    "whole": {
+      "n_bars": 8992,
+      "p_start": 6867.0,
+      "p_end": 5585.0,
+      "total_return": -0.1867,
+      "ann_vol": 0.1029,
+      "trend_ratio": 0.0177
+    },
+    "yearly": {
+      "2017": {
+        "n_bars": 2756,
+        "p_start": 6867.0,
+        "p_end": 5937.0,
+        "total_return": -0.1354,
+        "ann_vol": 0.0962,
+        "trend_ratio": 0.0392
+      },
+      "2018": {
+        "n_bars": 3124,
+        "p_start": 5954.0,
+        "p_end": 4700.0,
+        "total_return": -0.2106,
+        "ann_vol": 0.0985,
+        "trend_ratio": 0.0556
+      },
+      "2019": {
+        "n_bars": 3112,
+        "p_start": 4694.0,
+        "p_end": 5585.0,
+        "total_return": 0.1898,
+        "ann_vol": 0.1124,
+        "trend_ratio": 0.0341
+      }
+    }
+  }
+}

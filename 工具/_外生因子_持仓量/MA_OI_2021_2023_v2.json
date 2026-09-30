@@ -1,0 +1,20 @@
+{
+  "symbol": "MA",
+  "name": "甲醇",
+  "window": "2021-01-01~2023-12-31",
+  "init": 200000.0,
+  "final_equity": -668.0,
+  "total_return": -1.0033,
+  "annual_sharpe": 0.067,
+  "max_drawdown": 1.0033,
+  "avg_drawdown_bar": 0.3905,
+  "avg_drawdown_trade": 0.005,
+  "trades": 685,
+  "win_rate": 0.4263,
+  "rollover_skips": 65,
+  "blown": true,
+  "max_hold": 30,
+  "sl_mult": 2.0,
+  "guard": 3,
+  "cost_assumption": "滑点2跳+佣金2.0元/手/边; 单笔风险2000.0元; 手数=ATR预算; 止损2.0×ATR; 持仓上限30根; 权益<=0爆仓停止"
+}

@@ -1,0 +1,16 @@
+01_双均线       PVC        OK   报告=1
+01_双均线       天然橡胶       OK   报告=1
+01_双均线       棕榈油        OK   报告=1
+01_双均线       焦煤         OK   报告=1
+01_双均线       生猪         ✗    报告=0   Traceback (most recent call last): | Traceback (most recent call last): | UnboundLocalError: cannot access local variable '_open_blocked' where it is not associated
+01_双均线       甲醇         OK   报告=1
+01_双均线       白糖         OK   报告=1
+01_双均线       纯碱         ✗    报告=0   Traceback (most recent call last): | Traceback (most recent call last): | UnboundLocalError: cannot access local variable '_open_blocked' where it is not associated
+01_双均线       苯乙烯        ✗    报告=0   Traceback (most recent call last): | Traceback (most recent call last): | UnboundLocalError: cannot access local variable '_open_blocked' where it is not associated
+01_双均线       螺纹钢        OK   报告=1
+01_双均线       豆粕         OK   报告=1
+01_双均线       鸡蛋         OK   报告=1
+02_均线排列      PVC        OK   报告=1
+03_均值回归      PVC        OK   报告=1
+04_通道突破      PVC        OK   报告=1
+05_摆动线       PVC        OK   报告=1

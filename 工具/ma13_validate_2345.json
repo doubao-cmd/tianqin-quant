@@ -1,0 +1,776 @@
+{
+  "PVC": {
+    "variety": "PVC",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\PVC\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 3.2247,
+        "max_drawdown": 0.0845,
+        "win_rate": 0.469,
+        "sharpe": 3.6981,
+        "sharpe_11500": 3.0685,
+        "final_equity": 844949.0,
+        "trades": 3132,
+        "blown": false,
+        "commission": 75051.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 0.2035,
+        "max_drawdown": 0.0686,
+        "win_rate": 0.4202,
+        "sharpe": 0.8947,
+        "sharpe_11500": 0.7432,
+        "final_equity": 240704.0,
+        "trades": 2099,
+        "blown": false,
+        "commission": 50376.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 0.5628,
+        "max_drawdown": 0.0666,
+        "win_rate": 0.4644,
+        "sharpe": 2.8045,
+        "sharpe_11500": 2.414,
+        "final_equity": 312560.0,
+        "trades": 1010,
+        "blown": false,
+        "commission": 24240.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 2.3684,
+        "max_drawdown": 0.054,
+        "win_rate": 0.4473,
+        "sharpe": 3.1908,
+        "sharpe_11500": 3.1142,
+        "final_equity": 673676.0,
+        "trades": 3293,
+        "blown": false,
+        "commission": 79044.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": 0.723,
+        "max_drawdown": 0.2143,
+        "win_rate": 0.417,
+        "sharpe": 1.0773,
+        "sharpe_11500": 0.8939,
+        "final_equity": 344609.0,
+        "trades": 3132,
+        "blown": false,
+        "commission": 75051.0,
+        "SLIP": null
+      }
+    }
+  },
+  "天然橡胶": {
+    "variety": "天然橡胶",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\天然橡胶\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 0.0618,
+        "max_drawdown": 0.3691,
+        "win_rate": 0.4027,
+        "sharpe": 0.1942,
+        "sharpe_11500": 0.1611,
+        "final_equity": 212352.0,
+        "trades": 3412,
+        "blown": false,
+        "commission": 70248.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 0.8995,
+        "max_drawdown": 0.2723,
+        "win_rate": 0.4087,
+        "sharpe": 1.5162,
+        "sharpe_11500": 1.2595,
+        "final_equity": 379900.0,
+        "trades": 2104,
+        "blown": false,
+        "commission": 37350.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 0.1836,
+        "max_drawdown": 0.4931,
+        "win_rate": 0.4188,
+        "sharpe": 0.5985,
+        "sharpe_11500": 0.5152,
+        "final_equity": 236710.0,
+        "trades": 998,
+        "blown": false,
+        "commission": 18540.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 2.4254,
+        "max_drawdown": 0.1063,
+        "win_rate": 0.4022,
+        "sharpe": 2.2263,
+        "sharpe_11500": 1.8482,
+        "final_equity": 685074.0,
+        "trades": 4446,
+        "blown": false,
+        "commission": 78276.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": -1.0003,
+        "max_drawdown": 1.0003,
+        "win_rate": 0.3486,
+        "sharpe": -2.5312,
+        "sharpe_11500": -2.1003,
+        "final_equity": -61.0,
+        "trades": 502,
+        "blown": true,
+        "commission": 6561.0,
+        "SLIP": null
+      }
+    }
+  },
+  "棕榈油": {
+    "variety": "棕榈油",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\棕榈油\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 11.8396,
+        "max_drawdown": 0.0799,
+        "win_rate": 0.4825,
+        "sharpe": 4.679,
+        "sharpe_11500": 3.8825,
+        "final_equity": 2567920.0,
+        "trades": 3119,
+        "blown": false,
+        "commission": 123080.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 3.9332,
+        "max_drawdown": 0.2016,
+        "win_rate": 0.4611,
+        "sharpe": 3.3937,
+        "sharpe_11500": 2.8191,
+        "final_equity": 986645.0,
+        "trades": 2171,
+        "blown": false,
+        "commission": 86755.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 1.2018,
+        "max_drawdown": 0.0871,
+        "win_rate": 0.446,
+        "sharpe": 3.0849,
+        "sharpe_11500": 2.6553,
+        "final_equity": 440365.0,
+        "trades": 973,
+        "blown": false,
+        "commission": 38935.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 2.6532,
+        "max_drawdown": 0.0789,
+        "win_rate": 0.4142,
+        "sharpe": 2.9249,
+        "sharpe_11500": 2.3483,
+        "final_equity": 730640.0,
+        "trades": 4768,
+        "blown": false,
+        "commission": 190600.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": 6.9164,
+        "max_drawdown": 0.1442,
+        "win_rate": 0.437,
+        "sharpe": 2.8915,
+        "sharpe_11500": 2.3993,
+        "final_equity": 1583280.0,
+        "trades": 3119,
+        "blown": false,
+        "commission": 123080.0,
+        "SLIP": null
+      }
+    }
+  },
+  "焦煤": {
+    "variety": "焦煤",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\焦煤\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 20.4223,
+        "max_drawdown": 0.183,
+        "win_rate": 0.4721,
+        "sharpe": 3.8778,
+        "sharpe_11500": 3.2176,
+        "final_equity": 4284467.4,
+        "trades": 3317,
+        "blown": false,
+        "commission": 470342.6,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 3.9433,
+        "max_drawdown": 0.1515,
+        "win_rate": 0.4453,
+        "sharpe": 2.6599,
+        "sharpe_11500": 2.2095,
+        "final_equity": 988662.4,
+        "trades": 2223,
+        "blown": false,
+        "commission": 323377.6,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 0.2194,
+        "max_drawdown": 0.4891,
+        "win_rate": 0.4006,
+        "sharpe": 0.6047,
+        "sharpe_11500": 0.5205,
+        "final_equity": 243881.2,
+        "trades": 1011,
+        "blown": false,
+        "commission": 147128.8,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 2.7776,
+        "max_drawdown": 0.673,
+        "win_rate": 0.3924,
+        "sharpe": 0.9198,
+        "sharpe_11500": 0.7385,
+        "final_equity": 755521.6,
+        "trades": 4829,
+        "blown": false,
+        "commission": 702738.4,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": 4.9165,
+        "max_drawdown": 0.5722,
+        "win_rate": 0.4185,
+        "sharpe": 1.1655,
+        "sharpe_11500": 0.9671,
+        "final_equity": 1183307.4,
+        "trades": 3317,
+        "blown": false,
+        "commission": 470342.6,
+        "SLIP": null
+      }
+    }
+  },
+  "生猪": {
+    "variety": "生猪",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\生猪\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 3.449,
+        "max_drawdown": 0.0624,
+        "win_rate": 0.4372,
+        "sharpe": 3.5676,
+        "sharpe_11500": 3.6561,
+        "final_equity": 889797.74,
+        "trades": 2077,
+        "blown": false,
+        "commission": 181882.26,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": -0.8583,
+        "max_drawdown": 0.9673,
+        "win_rate": 0.369,
+        "sharpe": 0.0273,
+        "sharpe_11500": 0.0281,
+        "final_equity": 28340.8,
+        "trades": 1466,
+        "blown": false,
+        "commission": 217339.2,
+        "SLIP": null
+      },
+      "trend20": {
+        "error": "list index out of range"
+      },
+      "death": {
+        "error": "list index out of range"
+      },
+      "dev_slip3": {
+        "total_return": -0.7286,
+        "max_drawdown": 0.8514,
+        "win_rate": 0.3582,
+        "sharpe": -1.1668,
+        "sharpe_11500": -1.1958,
+        "final_equity": 54277.74,
+        "trades": 2077,
+        "blown": false,
+        "commission": 181882.26,
+        "SLIP": null
+      }
+    }
+  },
+  "甲醇": {
+    "variety": "甲醇",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\甲醇\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 1.3457,
+        "max_drawdown": 0.1147,
+        "win_rate": 0.4273,
+        "sharpe": 2.2188,
+        "sharpe_11500": 1.8411,
+        "final_equity": 469140.0,
+        "trades": 3220,
+        "blown": false,
+        "commission": 103040.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": -0.4678,
+        "max_drawdown": 0.4888,
+        "win_rate": 0.3647,
+        "sharpe": -1.6107,
+        "sharpe_11500": -1.338,
+        "final_equity": 106432.0,
+        "trades": 2221,
+        "blown": false,
+        "commission": 71088.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 0.0816,
+        "max_drawdown": 0.1543,
+        "win_rate": 0.3912,
+        "sharpe": 0.5325,
+        "sharpe_11500": 0.4557,
+        "final_equity": 216312.0,
+        "trades": 1048,
+        "blown": false,
+        "commission": 33508.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 0.0538,
+        "max_drawdown": 0.2586,
+        "win_rate": 0.3927,
+        "sharpe": 0.1628,
+        "sharpe_11500": 0.1298,
+        "final_equity": 210750.0,
+        "trades": 4986,
+        "blown": false,
+        "commission": 159540.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": -1.0003,
+        "max_drawdown": 1.0003,
+        "win_rate": 0.301,
+        "sharpe": -3.0518,
+        "sharpe_11500": -2.5322,
+        "final_equity": -64.0,
+        "trades": 764,
+        "blown": true,
+        "commission": 24464.0,
+        "SLIP": null
+      }
+    }
+  },
+  "白糖": {
+    "variety": "白糖",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\白糖\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 1.1329,
+        "max_drawdown": 0.0984,
+        "win_rate": 0.4101,
+        "sharpe": 1.8316,
+        "sharpe_11500": 1.5198,
+        "final_equity": 426576.0,
+        "trades": 3199,
+        "blown": false,
+        "commission": 102384.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 0.1489,
+        "max_drawdown": 0.2591,
+        "win_rate": 0.3962,
+        "sharpe": 0.5801,
+        "sharpe_11500": 0.4819,
+        "final_equity": 229772.0,
+        "trades": 2143,
+        "blown": false,
+        "commission": 68588.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 0.4971,
+        "max_drawdown": 0.0805,
+        "win_rate": 0.4209,
+        "sharpe": 2.4237,
+        "sharpe_11500": 2.0746,
+        "final_equity": 299424.0,
+        "trades": 1005,
+        "blown": false,
+        "commission": 32176.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 1.4009,
+        "max_drawdown": 0.1174,
+        "win_rate": 0.4009,
+        "sharpe": 1.6663,
+        "sharpe_11500": 1.3285,
+        "final_equity": 480180.0,
+        "trades": 4769,
+        "blown": false,
+        "commission": 152620.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": -1.0003,
+        "max_drawdown": 1.0003,
+        "win_rate": 0.2983,
+        "sharpe": -2.8144,
+        "sharpe_11500": -2.3352,
+        "final_equity": -64.0,
+        "trades": 714,
+        "blown": true,
+        "commission": 22864.0,
+        "SLIP": null
+      }
+    }
+  },
+  "纯碱": {
+    "variety": "纯碱",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\纯碱\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 4.5087,
+        "max_drawdown": 0.1139,
+        "win_rate": 0.4412,
+        "sharpe": 3.0494,
+        "sharpe_11500": 2.5303,
+        "final_equity": 1101740.0,
+        "trades": 3248,
+        "blown": false,
+        "commission": 207120.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": -0.5369,
+        "max_drawdown": 0.633,
+        "win_rate": 0.3801,
+        "sharpe": -1.0865,
+        "sharpe_11500": -0.9026,
+        "final_equity": 92620.0,
+        "trades": 2276,
+        "blown": false,
+        "commission": 145680.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": -0.678,
+        "max_drawdown": 0.7367,
+        "win_rate": 0.3295,
+        "sharpe": -1.9282,
+        "sharpe_11500": -1.6732,
+        "final_equity": 64408.0,
+        "trades": 1050,
+        "blown": false,
+        "commission": 67192.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": -0.0829,
+        "max_drawdown": 0.104,
+        "win_rate": 0.2967,
+        "sharpe": -7.5158,
+        "sharpe_11500": -6.1047,
+        "final_equity": 183424.0,
+        "trades": 91,
+        "blown": false,
+        "commission": 5856.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": -1.0048,
+        "max_drawdown": 1.0048,
+        "win_rate": 0.3099,
+        "sharpe": -1.9452,
+        "sharpe_11500": -1.6141,
+        "final_equity": -960.0,
+        "trades": 342,
+        "blown": true,
+        "commission": 21920.0,
+        "SLIP": null
+      }
+    }
+  },
+  "苯乙烯": {
+    "variety": "苯乙烯",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\苯乙烯\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 5.7949,
+        "max_drawdown": 0.0576,
+        "win_rate": 0.4753,
+        "sharpe": 5.0483,
+        "sharpe_11500": 4.1888,
+        "final_equity": 1358972.0,
+        "trades": 3143,
+        "blown": false,
+        "commission": 50288.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 1.8578,
+        "max_drawdown": 0.0889,
+        "win_rate": 0.4787,
+        "sharpe": 4.0422,
+        "sharpe_11500": 3.3578,
+        "final_equity": 571552.0,
+        "trades": 2160,
+        "blown": false,
+        "commission": 34568.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 1.5847,
+        "max_drawdown": 0.0351,
+        "win_rate": 0.4688,
+        "sharpe": 5.3735,
+        "sharpe_11500": 4.6253,
+        "final_equity": 516936.0,
+        "trades": 962,
+        "blown": false,
+        "commission": 15364.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 0.1703,
+        "max_drawdown": 0.0214,
+        "win_rate": 0.4444,
+        "sharpe": 4.5782,
+        "sharpe_11500": 3.8277,
+        "final_equity": 234056.0,
+        "trades": 306,
+        "blown": false,
+        "commission": 4904.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": 3.2805,
+        "max_drawdown": 0.0901,
+        "win_rate": 0.4333,
+        "sharpe": 3.2484,
+        "sharpe_11500": 2.6954,
+        "final_equity": 856092.0,
+        "trades": 3143,
+        "blown": false,
+        "commission": 50288.0,
+        "SLIP": null
+      }
+    }
+  },
+  "螺纹钢": {
+    "variety": "螺纹钢",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\螺纹钢\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 3.3185,
+        "max_drawdown": 0.0603,
+        "win_rate": 0.4666,
+        "sharpe": 3.8595,
+        "sharpe_11500": 3.2024,
+        "final_equity": 863706.0,
+        "trades": 3159,
+        "blown": false,
+        "commission": 202104.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": -0.3813,
+        "max_drawdown": 0.456,
+        "win_rate": 0.3548,
+        "sharpe": -1.4633,
+        "sharpe_11500": -1.2155,
+        "final_equity": 123744.0,
+        "trades": 2176,
+        "blown": false,
+        "commission": 139296.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 0.2866,
+        "max_drawdown": 0.1657,
+        "win_rate": 0.4107,
+        "sharpe": 1.438,
+        "sharpe_11500": 1.2377,
+        "final_equity": 257324.0,
+        "trades": 991,
+        "blown": false,
+        "commission": 63416.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 1.979,
+        "max_drawdown": 0.1541,
+        "win_rate": 0.4356,
+        "sharpe": 2.1469,
+        "sharpe_11500": 1.7531,
+        "final_equity": 595804.0,
+        "trades": 4410,
+        "blown": false,
+        "commission": 281896.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": -1.0012,
+        "max_drawdown": 1.0007,
+        "win_rate": 0.3917,
+        "sharpe": -1.0673,
+        "sharpe_11500": -0.8856,
+        "final_equity": -238.0,
+        "trades": 2760,
+        "blown": true,
+        "commission": 176568.0,
+        "SLIP": null
+      }
+    }
+  },
+  "豆粕": {
+    "variety": "豆粕",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\豆粕\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 1.8896,
+        "max_drawdown": 0.0461,
+        "win_rate": 0.4297,
+        "sharpe": 3.1989,
+        "sharpe_11500": 2.6543,
+        "final_equity": 577910.0,
+        "trades": 3093,
+        "blown": false,
+        "commission": 74190.0,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 0.0133,
+        "max_drawdown": 0.2289,
+        "win_rate": 0.3764,
+        "sharpe": 0.1123,
+        "sharpe_11500": 0.0933,
+        "final_equity": 202664.0,
+        "trades": 2189,
+        "blown": false,
+        "commission": 52536.0,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": -0.2349,
+        "max_drawdown": 0.3071,
+        "win_rate": 0.3712,
+        "sharpe": -1.5861,
+        "sharpe_11500": -1.3652,
+        "final_equity": 153012.0,
+        "trades": 994,
+        "blown": false,
+        "commission": 23868.0,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": -0.4735,
+        "max_drawdown": 0.6431,
+        "win_rate": 0.3652,
+        "sharpe": -0.6898,
+        "sharpe_11500": -0.5538,
+        "final_equity": 105296.0,
+        "trades": 4696,
+        "blown": false,
+        "commission": 112704.0,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": -1.0001,
+        "max_drawdown": 1.0001,
+        "win_rate": 0.3142,
+        "sharpe": -4.0822,
+        "sharpe_11500": -3.3872,
+        "final_equity": -20.0,
+        "trades": 977,
+        "blown": true,
+        "commission": 23460.0,
+        "SLIP": null
+      }
+    }
+  },
+  "鸡蛋": {
+    "variety": "鸡蛋",
+    "script": "C:/Users/cc/Desktop/天勤量化\\策略/06_MA13超短线/回测\\鸡蛋\\MA13超短线_回测.py",
+    "results": {
+      "dev": {
+        "total_return": 0.805,
+        "max_drawdown": 0.1041,
+        "win_rate": 0.4115,
+        "sharpe": 1.1889,
+        "sharpe_11500": 1.2191,
+        "final_equity": 361008.27,
+        "trades": 2204,
+        "blown": false,
+        "commission": 204601.73,
+        "SLIP": null
+      },
+      "oos": {
+        "total_return": 0.2603,
+        "max_drawdown": 0.0887,
+        "win_rate": 0.3674,
+        "sharpe": 0.8714,
+        "sharpe_11500": 0.8958,
+        "final_equity": 252066.23,
+        "trades": 1456,
+        "blown": false,
+        "commission": 135093.77,
+        "SLIP": null
+      },
+      "trend20": {
+        "total_return": 0.4954,
+        "max_drawdown": 0.0961,
+        "win_rate": 0.4003,
+        "sharpe": 2.3514,
+        "sharpe_11500": 2.4108,
+        "final_equity": 299081.33,
+        "trades": 672,
+        "blown": false,
+        "commission": 62278.67,
+        "SLIP": null
+      },
+      "death": {
+        "total_return": 1.8621,
+        "max_drawdown": 0.1365,
+        "win_rate": 0.3909,
+        "sharpe": 1.8291,
+        "sharpe_11500": 1.8711,
+        "final_equity": 572428.7,
+        "trades": 2909,
+        "blown": false,
+        "commission": 269491.3,
+        "SLIP": null
+      },
+      "dev_slip3": {
+        "total_return": -1.0002,
+        "max_drawdown": 1.0002,
+        "win_rate": 0.3383,
+        "sharpe": 0.4271,
+        "sharpe_11500": 0.438,
+        "final_equity": -33.35,
+        "trades": 1067,
+        "blown": true,
+        "commission": 99063.35,
+        "SLIP": null
+      }
+    }
+  }
+}
