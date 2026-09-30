@@ -36,6 +36,13 @@ WINDOWS = [  # (tag, start, end, slip_ticks)
 
 STRATEGIES = ["swing", "boll"]
 
+# 2026-09-30 二次轻量（用户拍板"半小时以内"）：抽查模式。
+# 依据：已测 5 品种 dev 全部够不着 K=172 尺子（LH/P 名义正但夏普 0.3/0.1，
+# 门槛 2.03；slip3 下全翻负）⇒ 剩余品种只做确认性抽查：
+# 流动性最好的 RB / MA 两品种 × 两策略 × dev 窗 = 4 次 ≈ 30 分钟。
+# 全部不过线 ⇒ 05/07 整体判死结案（oos 保持处女地）；有过线的再单议。
+SMOKE_PAIRS = [("swing", "MA"), ("swing", "RB"), ("boll", "MA"), ("boll", "RB")]
+
 
 def discover_keys():
     """从 05_摆动线 的 12 份脚本里提取品种 key（05 的清单=全池口径）。"""
@@ -113,12 +120,16 @@ def main():
         except Exception as ex:
             print(f"[体检] ⚠️ 旧结果读不了（已备份），从头跑：{ex}", flush=True)
             results = {}
+    # 抽查模式：python 工具/体检_05_07.py main smoke —— 只跑 SMOKE_PAIRS 的 dev 窗
+    smoke = "smoke" in sys.argv
     # 只排还没跑完的活：error 条目视为未完成，重试
     任务 = []
     for strat in STRATEGIES:
         for key in keys:
             for tag, s, e, slip in WINDOWS:
                 rkey = f"{strat}_{key}_{tag}"
+                if smoke and ((strat, key) not in SMOKE_PAIRS or tag != "dev"):
+                    continue
                 if rkey in results and "error" not in results[rkey]:
                     continue
                 任务.append((strat, key, rkey, tag, s, e, slip))
