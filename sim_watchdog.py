@@ -15,6 +15,8 @@ Usage (what the .bat runs):
 """
 import os
 import runpy
+import sys
+import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -30,5 +32,16 @@ _WATCHDOG = os.path.join(
 if not os.path.isfile(_WATCHDOG):
     raise SystemExit(f"[ERROR] watchdog not found: {_WATCHDOG}")
 
+
+def _weekend_guard():
+    """周末不启动（自动启动场景必需：否则周六周日白占一个天勤席位）。"""
+    if "--force" in sys.argv:
+        return
+    if time.localtime().tm_wday >= 5:
+        print("[SKIP] weekend - simulator not started (use --force to override)")
+        raise SystemExit(0)
+
+
 if __name__ == "__main__":
+    _weekend_guard()
     runpy.run_path(_WATCHDOG, run_name="__main__")
