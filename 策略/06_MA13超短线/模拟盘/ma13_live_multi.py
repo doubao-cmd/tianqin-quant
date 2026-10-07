@@ -9,7 +9,8 @@ MA13 超短线 · 多品种单进程实时模拟盘（P/EB 双候选版）
   1. MA13 与其前 SLOPE_N 根的差判趋势方向（斜率）；
   2. |close-MA13| <= RETRACE_TOL×ATR 且趋势明确 → 沿趋势开仓（下一根开盘≈收盘后市价）；
   3. 止损 = 回踩区间极值外侧 STOP_BUFFER×ATR，封顶 STOP_CAP×ATR；时间止损 MAX_HOLD 根；
-  4. 手数 = 本金 20 万 ×1% ÷ ATR，夹 [1, 8]（安全地基，不上杠杆）。
+  4. 手数 = 当前账户权益 ×1% ÷ ATR，夹 [1, 8]（2026-10-07 改复利口径，原为固定 20 万；
+     ⚠️ 多品种共用一个账户 ⇒ 各品种手数互相耦合：P 的盈亏会改变 JM 的手数基数）。
 
 与单品种版的差异（仅工程结构，信号零差异）：
   - 每品种独立 quote / kline / 持仓状态 / 台账（成交流水+心跳各一份）
@@ -38,7 +39,8 @@ MA_N, SLOPE_N, ATR_N = 13, 5, 14
 RETRACE_TOL, STOP_BUFFER, STOP_CAP, MAX_HOLD = 0.5, 0.5, 2.0, 15
 RISK_PCT, SLIP, HAND_MIN, HAND_MAX = 0.01, 1, 1, 8
 INIT = 200000.0
-RISK_EQUITY = 200000.0     # 与回测 init_balance 对齐（手数口径一致）
+RISK_EQUITY = 200000.0     # 兜底：账户权益取不到时回落到 20 万（2026-10-07 起
+                           # 正常路径用 TqSim 实时权益，与回测复利口径对齐）
 KSEC = 300
 DD_FUSE = 0.20             # 账户级回撤熔断线（自峰值回撤 20%）。纯灾难保护阀，
                            # 非策略参数；数值为占位初值，SOP 欠账#1 用真数据定稿。
@@ -98,10 +100,12 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
     for s in specs:
         s.update({"pos": 0, "entry": 0.0, "stop": 0.0, "bars_in": 0,
                   "last_id": -1, "skip_first": False})
-        def _hand_of(atr, _s=s):
+        def _hand_of(atr, equity, _s=s):
             if not atr or math.isnan(atr) or atr <= 0:
                 return HAND_MIN
-            h = int(round((RISK_EQUITY * RISK_PCT) / (atr * _s["tick"] * _s["mult"])))
+            if equity is None or math.isnan(equity) or equity <= 0:
+                equity = RISK_EQUITY          # 兜底：权益取不到才走（正常不会）
+            h = int(round((equity * RISK_PCT) / (atr * _s["tick"] * _s["mult"])))
             return max(HAND_MIN, min(HAND_MAX, h))
         s["hand_of"] = _hand_of
         s["rec"] = _LiveRecorder(record_dir, s["name"], heartbeat_sec=heartbeat_sec)
@@ -109,7 +113,7 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
     names = " / ".join(s["name"] for s in specs)
     for s in specs:
         s["rec"].start(f"MA13 多品种实时盘启动 [{names}] allow_trade={allow_trade} "
-                       f"手数口径=20万x1%夹[1,8] 账号=模拟盘专用")
+                       f"手数口径=当前权益x1%夹[1,8](20261007改复利) 账号=模拟盘专用")
 
     # ---- 心跳独立线程：休市/无行情时照写，防台账断层误报 ----
     # 铁律：线程内绝不触碰 tqsdk 对象（q/k/api），只读 shared 里的纯标量缓存。
@@ -292,7 +296,11 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
     # ---- 开仓（对齐回测：趋势 + 回踩；熔断闩死期间禁止）----
     pos = s["pos"]
     if pos == 0 and dir_trend != 0 and touch and not fuse["halted"]:
-        hand = s["hand_of"](a)
+        try:
+            _eq = float(acc["balance"]) if acc is not None else float("nan")
+        except Exception:
+            _eq = float("nan")                # 权益读不到 → _hand_of 内兜底 20 万
+        hand = s["hand_of"](a, _eq)
         dir_cn = "多" if dir_trend > 0 else "空"
         if dir_trend > 0:
             swing_low = float(np.min(low[max(0, i - SLOPE_N):i]))

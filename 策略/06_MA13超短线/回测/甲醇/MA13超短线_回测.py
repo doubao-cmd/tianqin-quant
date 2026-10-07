@@ -67,18 +67,23 @@ name_cn, main_code, MULT, TICK = config_symbols.get(SYMBOL_KEY)
 COMM = float(config_symbols.COST[SYMBOL_KEY])
 
 
-# ---- 动态仓位（回滚到安全地基：本金保本基准块 + 封顶 8 手，不上杠杆）----
-PRINCIPAL  = 200000.0   # 本金 / 保本线：本金部分手数恒定，不随浮盈放大（减本金）
-def _base_hand(a):
-    """本金基准块：用本金算出的波动率手数（恒定，保本=本金不放大）。"""
+# ---- 动态仓位（2026-10-07 改：预算基数 固定本金20万 → 当前权益（复利）。唯一改动，其余不动）----
+PRINCIPAL  = 200000.0   # 兜底：权益取不到时回落到 20 万（正常路径不会用到）
+def _base_hand(a, equity):
+    """波动率手数：预算 = 当前权益 ×1% ÷ 每手风险（ATR 口径）。
+    改动史：原为固定 PRINCIPAL=20 万保本块（扁平，与浮盈无关）；
+    2026-10-07 用户拍板改为按当前权益（复利）⇒ 赚钱自动加注、亏钱自动减注，
+    代价=收益丧失单品种可加性。权益为决策时点（上一根收盘标记）——无未来函数。"""
     if math.isnan(a) or a <= 0:
         return HAND_MIN
-    h = int(round((PRINCIPAL * RISK_PCT) / (a * TICK * MULT)))
+    if equity is None or math.isnan(equity) or equity <= 0:
+        equity = PRINCIPAL
+    h = int(round((equity * RISK_PCT) / (a * TICK * MULT)))
     return max(HAND_MIN, min(HAND_MAX, h))
 
 def hand_plan(a, equity, price=None):
-    """手数 = 本金保本基准块，封顶 HAND_MAX=8（安全地基；不参与权益缩放、不加杠杆）。"""
-    return _base_hand(a)   # 扁平 8 手封顶：手数只随 ATR 变动（波动大->手数小），与浮盈无关
+    """手数 = 当前权益×1%÷(ATR×一跳×乘数)，夹 [1,8]。"""
+    return _base_hand(a, equity)
 
 
 def run_backtest(start=None, end=None):
@@ -282,7 +287,7 @@ def run_backtest(start=None, end=None):
         "total_return": round(total_return, 4), "max_drawdown": round(max_dd, 4),
         "bar_avg_drawdown": round(bar_avg_dd, 4), "blown": bool(blown),
         "commission": round(comm_total, 2),
-        "cost_assumption": f"滑点{SLIP}跳+佣金{COMM}元/手/边; 本金{INIT:.0f}; 本金{PRINCIPAL:.0f}保本+减本金后利润满40万(权益60万)起、每多20万加一档; 目标风险{RISK_PCT*100:.0f}%; 手数=min(风险预算,权益×30%÷每手保证金); 乘数{MULT}; 一跳{TICK}",
+        "cost_assumption": f"滑点{SLIP}跳+佣金{COMM}元/手/边; 本金{INIT:.0f}; 手数=当前权益×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]（20261007改复利口径）; 乘数{MULT}; 一跳{TICK}",
     }
     kline_history = [{"dt": int(d_list[i]), "open": float(o_list[i]), "high": float(h_list[i]),
                      "low": float(l_list[i]), "close": float(c_list[i]), "volume": 0.0}
@@ -589,8 +594,8 @@ def build_html(out, eq_series, dt_series, trades_rec, kline_history, sample_mode
         for k, v in [("均线周期 MA_N", params["MA_N"]), ("斜率周期 SLOPE_N", params["SLOPE_N"]),
                      ("ATR 周期", params["ATR_N"]), ("回踩容差", f'{params["RETRACE_TOL"]}×ATR'),
                      ("止损缓冲", f'{params["STOP_BUFFER"]}×ATR'), ("兜底止损", f'{params["STOP_CAP"]}×ATR'),
-                     ("时间止损", f'{params["MAX_HOLD"]} 根'), ('目标风险/仓位', f'本金{PRINCIPAL:.0f}保本+减本金后利润满40万(权益60万)起、每多20万加一档'),
-                     ("滑点", f'{params["SLIP"]} 跳'), ("手数约束", "保证金≤权益30%; min(风险预算, 权益×30%÷每手保证金)"),
+                     ("时间止损", f'{params["MAX_HOLD"]} 根'), ('目标风险/仓位', f'当前权益×{RISK_PCT*100:.0f}%÷ATR风险，夹[1,8]（2026-10-07改复利）'),
+                     ("滑点", f'{params["SLIP"]} 跳'), ("手数约束", "权益为决策时点（上一根收盘标记），无未来函数"),
                      ("周期", "5 分钟"), ("初始资金", f'{params["INIT"]:,.0f} 元')]
     )
 

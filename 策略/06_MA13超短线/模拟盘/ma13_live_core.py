@@ -6,7 +6,7 @@ MA13 超短线 · 实时模拟盘核心（12 品种共用）
   1. MA13 与其前 SLOPE_N 根的差判趋势方向（斜率）；
   2. |close-MA13| <= RETRACE_TOL×ATR 且趋势明确 → 沿趋势开仓（下一根开盘≈收盘后市价）；
   3. 止损 = 回踩区间极值外侧 STOP_BUFFER×ATR，封顶 STOP_CAP×ATR；时间止损 MAX_HOLD 根；
-  4. 手数 = 本金 20 万 ×1% ÷ ATR，夹 [1, 8]（安全地基，不上杠杆）。
+  4. 手数 = 当前账户权益 ×1% ÷ ATR，夹 [1, 8]（2026-10-07 改复利口径，原固定 20 万）。
 
 禁未来函数：只用已收盘 bar；bar 收盘后判定，立即执行（≈下一根开盘）。
 
@@ -35,7 +35,7 @@ MA_N, SLOPE_N, ATR_N = 13, 5, 14
 RETRACE_TOL, STOP_BUFFER, STOP_CAP, MAX_HOLD = 0.5, 0.5, 2.0, 15
 RISK_PCT, SLIP, HAND_MIN, HAND_MAX = 0.01, 1, 1, 8
 INIT = 200000.0
-RISK_EQUITY = 200000.0     # 与回测 init_balance 对齐（手数口径一致）
+RISK_EQUITY = 200000.0     # 兜底：账户权益取不到时回落到 20 万（2026-10-07 起正常路径用实时权益）
 KSEC = 300
 
 
@@ -52,11 +52,15 @@ def run_live_ma13(symbol_key, allow_trade=False, web_gui=True,
     def hand_of(atr):
         if not atr or math.isnan(atr) or atr <= 0:
             return HAND_MIN
-        h = int(round((RISK_EQUITY * RISK_PCT) / (atr * tick * mult)))
+        try:
+            eq = float(api.get_account()["balance"])
+        except Exception:
+            eq = RISK_EQUITY                  # 兜底：权益读不到才走
+        h = int(round((eq * RISK_PCT) / (atr * tick * mult)))
         return max(HAND_MIN, min(HAND_MAX, h))
 
     pos = 0; entry = 0.0; stop = 0.0; bars_in = 0; last_id = -1
-    rec.start(f"MA13 实时盘启动 allow_trade={allow_trade} 手数口径=20万x1%夹[1,8]")
+    rec.start(f"MA13 实时盘启动 allow_trade={allow_trade} 手数口径=当前权益x1%夹[1,8](20261007改)")
     try:
         while True:
             api.wait_update()
