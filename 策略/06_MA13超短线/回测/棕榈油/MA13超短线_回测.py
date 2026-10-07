@@ -55,7 +55,8 @@ MAX_HOLD    = 15           # 时间止损（根）
 RISK_PCT    = 0.01        # 每笔目标风险 = 当前权益 × 1%（动态复利口径，与 engine 对齐）
 SLIP        = 1            # 滑点（跳）
 HAND_MIN    = 1
-HAND_MAX    = 8     # 封顶 8 手（安全地基，不上杠杆）
+HAND_MAX    = 8     # 封顶 8 手（风险预算封顶）
+NOTIONAL_CAP = 2.0  # 名义敞口上限（倍权益）：手数 ≤ 权益×2÷每手名义价值。2026-10-07 加——8手对各品种含义差10倍，需按名义而非固定手数分档
 INIT        = 200000.0     # 初始资金（元）
 # ---- 开发窗（已看）：2021-2023；回测起点前移 7 天预热，预热期不交易 ----
 START = pd.Timestamp("2021-01-01")
@@ -82,8 +83,15 @@ def _base_hand(a, equity):
     return max(HAND_MIN, min(HAND_MAX, h))
 
 def hand_plan(a, equity, price=None):
-    """手数 = 当前权益×1%÷(ATR×一跳×乘数)，夹 [1,8]。"""
-    return _base_hand(a, equity)
+    """手数 = 当前权益×1%÷(ATR×一跳×乘数)，夹 [1,8]；再夹名义敞口 ≤ 权益×NOTIONAL_CAP。
+    price = 决策时点成交价（本脚本传入场当根开盘价 open_[i]），不是未来数据。
+    注意：名义上限不足 1 手时仍保底 1 手（与既有 HAND_MIN 行为一致，已知代价：实际风险>1%）。"""
+    h = _base_hand(a, equity)
+    eq = equity if (equity and not math.isnan(equity) and equity > 0) else PRINCIPAL
+    if price and price > 0 and not math.isnan(price):
+        名义手数 = int((eq * NOTIONAL_CAP) / (price * MULT))
+        h = min(h, max(HAND_MIN, 名义手数))
+    return h
 
 
 def run_backtest(start=None, end=None):
@@ -287,7 +295,7 @@ def run_backtest(start=None, end=None):
         "total_return": round(total_return, 4), "max_drawdown": round(max_dd, 4),
         "bar_avg_drawdown": round(bar_avg_dd, 4), "blown": bool(blown),
         "commission": round(comm_total, 2),
-        "cost_assumption": f"滑点{SLIP}跳+佣金{COMM}元/手/边; 本金{INIT:.0f}; 手数=当前权益×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]（20261007改复利口径）; 乘数{MULT}; 一跳{TICK}",
+        "cost_assumption": f"滑点{SLIP}跳+佣金{COMM}元/手/边; 本金{INIT:.0f}; 手数=当前权益×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]+名义敞口≤权益×{NOTIONAL_CAP:.0f}倍（20261007）; 乘数{MULT}; 一跳{TICK}",
     }
     kline_history = [{"dt": int(d_list[i]), "open": float(o_list[i]), "high": float(h_list[i]),
                      "low": float(l_list[i]), "close": float(c_list[i]), "volume": 0.0}
@@ -594,8 +602,8 @@ def build_html(out, eq_series, dt_series, trades_rec, kline_history, sample_mode
         for k, v in [("均线周期 MA_N", params["MA_N"]), ("斜率周期 SLOPE_N", params["SLOPE_N"]),
                      ("ATR 周期", params["ATR_N"]), ("回踩容差", f'{params["RETRACE_TOL"]}×ATR'),
                      ("止损缓冲", f'{params["STOP_BUFFER"]}×ATR'), ("兜底止损", f'{params["STOP_CAP"]}×ATR'),
-                     ("时间止损", f'{params["MAX_HOLD"]} 根'), ('目标风险/仓位', f'当前权益×{RISK_PCT*100:.0f}%÷ATR风险，夹[1,8]（2026-10-07改复利）'),
-                     ("滑点", f'{params["SLIP"]} 跳'), ("手数约束", "权益为决策时点（上一根收盘标记），无未来函数"),
+                     ("时间止损", f'{params["MAX_HOLD"]} 根'), ('目标风险/仓位', f'当前权益×{RISK_PCT*100:.0f}%÷ATR风险，夹[1,8]；另夹名义敞口≤权益×{NOTIONAL_CAP:.0f}倍'),
+                     ("滑点", f'{params["SLIP"]} 跳'), ("手数约束", "名义上限不足1手时仍保底1手（实际风险>1%，已知代价）"),
                      ("周期", "5 分钟"), ("初始资金", f'{params["INIT"]:,.0f} 元')]
     )
 

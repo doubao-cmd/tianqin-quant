@@ -38,6 +38,7 @@ import config_symbols
 MA_N, SLOPE_N, ATR_N = 13, 5, 14
 RETRACE_TOL, STOP_BUFFER, STOP_CAP, MAX_HOLD = 0.5, 0.5, 2.0, 15
 RISK_PCT, SLIP, HAND_MIN, HAND_MAX = 0.01, 1, 1, 8
+NOTIONAL_CAP = 2.0   # 名义敞口上限（倍权益）：手数 ≤ 权益×2÷每手名义价值（与回测同步 2026-10-07）
 INIT = 200000.0
 RISK_EQUITY = 200000.0     # 兜底：账户权益取不到时回落到 20 万（2026-10-07 起
                            # 正常路径用 TqSim 实时权益，与回测复利口径对齐）
@@ -100,20 +101,25 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
     for s in specs:
         s.update({"pos": 0, "entry": 0.0, "stop": 0.0, "bars_in": 0,
                   "last_id": -1, "skip_first": False})
-        def _hand_of(atr, equity, _s=s):
+        def _hand_of(atr, equity, price=None, _s=s):
             if not atr or math.isnan(atr) or atr <= 0:
                 return HAND_MIN
             if equity is None or math.isnan(equity) or equity <= 0:
                 equity = RISK_EQUITY          # 兜底：权益取不到才走（正常不会）
             h = int(round((equity * RISK_PCT) / (atr * _s["tick"] * _s["mult"])))
-            return max(HAND_MIN, min(HAND_MAX, h))
+            h = max(HAND_MIN, min(HAND_MAX, h))
+            # 名义敞口夹（与回测 hand_plan 同口径）：price = 当前最新价（决策时点，非未来数据）
+            if price and price > 0 and not math.isnan(price):
+                名义手数 = int((equity * NOTIONAL_CAP) / (price * _s["mult"]))
+                h = min(h, max(HAND_MIN, 名义手数))
+            return h
         s["hand_of"] = _hand_of
         s["rec"] = _LiveRecorder(record_dir, s["name"], heartbeat_sec=heartbeat_sec)
 
     names = " / ".join(s["name"] for s in specs)
     for s in specs:
         s["rec"].start(f"MA13 多品种实时盘启动 [{names}] allow_trade={allow_trade} "
-                       f"手数口径=当前权益x1%夹[1,8](20261007改复利) 账号=模拟盘专用")
+                       f"手数口径=当前权益x1%夹[1,8]+名义敞口≤2倍权益(20261007) 账号=模拟盘专用")
 
     # ---- 心跳独立线程：休市/无行情时照写，防台账断层误报 ----
     # 铁律：线程内绝不触碰 tqsdk 对象（q/k/api），只读 shared 里的纯标量缓存。
@@ -300,7 +306,7 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
             _eq = float(acc["balance"]) if acc is not None else float("nan")
         except Exception:
             _eq = float("nan")                # 权益读不到 → _hand_of 内兜底 20 万
-        hand = s["hand_of"](a, _eq)
+        hand = s["hand_of"](a, _eq, float(_lp) if _lp and not math.isnan(_lp) else None)
         dir_cn = "多" if dir_trend > 0 else "空"
         if dir_trend > 0:
             swing_low = float(np.min(low[max(0, i - SLOPE_N):i]))

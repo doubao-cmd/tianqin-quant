@@ -41,7 +41,7 @@
   <div class="wrap">
     <h1>PVC（KQ.m@DCE.v）· MA13 超短线 · 顺势回踩 —— 回测报告</h1>
     <div class="sub">合约 KQ.m@DCE.v ｜ 周期 5 分钟 ｜ 开发窗 2021-01-01 ~ 2023-12-31 ｜ 生成于本地回测</div>
-    <div class="sub" style="margin-top:-14px;color:#b45309">成本口径：滑点1跳+佣金1.5元/手/边; 本金200000; 手数=当前权益×1%÷ATR风险夹[1,8]（20261007改复利口径）; 乘数5; 一跳1</div>
+    <div class="sub" style="margin-top:-14px;color:#b45309">成本口径：滑点1跳+佣金1.5元/手/边; 本金200000; 手数=当前权益×1%÷ATR风险夹[1,8]+名义敞口≤权益×2倍（20261007）; 乘数5; 一跳1</div>
 
     <div class="warn"><b>⚠️ 样本状态：开发窗（已看）。</b> 本结果是 2021-2023 一段窗口上的回测，我们已看过并使用它来判定策略是否值得继续——它属于<b>样本内 / 已看</b>数据，<b>不是前向验证</b>。策略转正 ≠ 验证有效。须在未看过的干净窗（2024 或 2025）上跑一次前向验证，通过才算有 edge。</div>
 
@@ -90,7 +90,7 @@
 
     <div class="params">
       <h2>定稿参数（用户给定，写死，不调参）</h2>
-      <table><tbody><tr><td>均线周期 MA_N</td><td>13</td></tr><tr><td>斜率周期 SLOPE_N</td><td>5</td></tr><tr><td>ATR 周期</td><td>14</td></tr><tr><td>回踩容差</td><td>0.5×ATR</td></tr><tr><td>止损缓冲</td><td>0.5×ATR</td></tr><tr><td>兜底止损</td><td>2.0×ATR</td></tr><tr><td>时间止损</td><td>15 根</td></tr><tr><td>目标风险/仓位</td><td>当前权益×1%÷ATR风险，夹[1,8]（2026-10-07改复利）</td></tr><tr><td>滑点</td><td>1 跳</td></tr><tr><td>手数约束</td><td>权益为决策时点（上一根收盘标记），无未来函数</td></tr><tr><td>周期</td><td>5 分钟</td></tr><tr><td>初始资金</td><td>200,000 元</td></tr></tbody></table>
+      <table><tbody><tr><td>均线周期 MA_N</td><td>13</td></tr><tr><td>斜率周期 SLOPE_N</td><td>5</td></tr><tr><td>ATR 周期</td><td>14</td></tr><tr><td>回踩容差</td><td>0.5×ATR</td></tr><tr><td>止损缓冲</td><td>0.5×ATR</td></tr><tr><td>兜底止损</td><td>2.0×ATR</td></tr><tr><td>时间止损</td><td>15 根</td></tr><tr><td>目标风险/仓位</td><td>当前权益×1%÷ATR风险，夹[1,8]；另夹名义敞口≤权益×2倍</td></tr><tr><td>滑点</td><td>1 跳</td></tr><tr><td>手数约束</td><td>名义上限不足1手时仍保底1手（实际风险>1%，已知代价）</td></tr><tr><td>周期</td><td>5 分钟</td></tr><tr><td>初始资金</td><td>200,000 元</td></tr></tbody></table>
     </div>
 
     <h2>逐笔交易明细（共 3132 笔）</h2>

@@ -12,7 +12,7 @@
     "STOP_BUFFER": 0.5,
     "STOP_CAP": 2.0,
     "MAX_HOLD": 15,
-    "RISK": 2000.0,
+    "RISK_PCT": 0.01,
     "SLIP": 1,
     "hand_range": [
       1,
@@ -28,13 +28,13 @@
   "trades": 3199,
   "wins": 1312,
   "win_rate": 0.4101,
-  "sharpe": 1.8316,
-  "sharpe_11500": 1.5198,
-  "final_equity": 426576.0,
-  "total_return": 1.1329,
-  "max_drawdown": 0.0984,
-  "bar_avg_drawdown": 0.0275,
+  "sharpe": 1.8558,
+  "sharpe_11500": 1.5398,
+  "final_equity": 418932.0,
+  "total_return": 1.0947,
+  "max_drawdown": 0.1009,
+  "bar_avg_drawdown": 0.0272,
   "blown": false,
-  "commission": 102384.0,
-  "cost_assumption": "滑点1跳+佣金2.0元/手/边; 本金200000; 目标风险2000; 手数1-8ATR预算; 乘数10; 一跳1.0"
+  "commission": 98728.0,
+  "cost_assumption": "滑点1跳+佣金2.0元/手/边; 本金200000; 手数=当前权益×1%÷ATR风险夹[1,8]+名义敞口≤权益×2倍（20261007）; 乘数10; 一跳1.0"
 }
