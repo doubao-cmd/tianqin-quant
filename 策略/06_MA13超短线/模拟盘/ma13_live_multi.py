@@ -233,6 +233,11 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
                     fuse["save"]()            # 新峰值即落盘（峰值跨会话累计）
             if not fuse["halted"] and bal <= fuse["peak"] * (1 - DD_FUSE):
                 fuse["halted"] = True
+            # 权益快照（60秒一次）：首日对账要靠它核对「台账盈亏 vs 账户权益」
+            _now = time.time()
+            if _now - s.get("eq_ts", 0) >= 60:
+                s["eq_ts"] = _now
+                s["rec"].event("EQUITY", f"权益={bal:.2f} 持仓={s['pos']}")
                 if fuse.get("save"):
                     fuse["save"]()            # 闩锁落盘：重启也不自动复位
                 rec.event("CIRCUIT",
@@ -285,6 +290,7 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
     if pos > 0 and (l <= s["stop"] or s["bars_in"] >= MAX_HOLD):
         if allow_trade:
             api.insert_order(q.underlying_symbol, "SELL", "CLOSE", abs(pos))
+            rec.fill("多", "平", abs(pos), float(_lp), q.underlying_symbol)
         rec.stoploss("多", s["stop"], c,
                      f"止损触发={l <= s['stop']} 时间止损={s['bars_in'] >= MAX_HOLD}")
         print(f"[{s['name']}][EXIT] 多 {abs(pos)}手 止损={l <= s['stop']} "
@@ -293,6 +299,7 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
     elif pos < 0 and (h >= s["stop"] or s["bars_in"] >= MAX_HOLD):
         if allow_trade:
             api.insert_order(q.underlying_symbol, "BUY", "CLOSE", abs(pos))
+            rec.fill("空", "平", abs(pos), float(_lp), q.underlying_symbol)
         rec.stoploss("空", s["stop"], c,
                      f"止损触发={h >= s['stop']} 时间止损={s['bars_in'] >= MAX_HOLD}")
         print(f"[{s['name']}][EXIT] 空 {abs(pos)}手 止损={h >= s['stop']} "
@@ -319,7 +326,8 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
         if allow_trade and hand > 0:
             api.insert_order(q.underlying_symbol,
                              "BUY" if dir_trend > 0 else "SELL", "OPEN", hand)
-            # 已修复单品种版 led 未定义的 NameError；账本对接留待 SOP 阶段
+            rec.fill(dir_cn, "开", hand, float(_lp), q.underlying_symbol)
+            # 已修复单品种版 led 未定义的 NameError；账本对接见 运营SOP 欠账#6
         print(f"[{s['name']}][{'OPEN' if allow_trade else 'SIGNAL'}] {dir_cn} {hand}手 "
               f"@≈{c:.1f} 止损≈{stop_new:.1f} ATR={a:.2f}", flush=True)
         if allow_trade:
