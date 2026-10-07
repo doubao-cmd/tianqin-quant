@@ -28,13 +28,13 @@
   "trades": 3317,
   "wins": 1566,
   "win_rate": 0.4721,
-  "sharpe": 3.8778,
-  "sharpe_11500": 3.2176,
-  "final_equity": 4284467.4,
-  "total_return": 20.4223,
+  "sharpe": 3.854,
+  "sharpe_11500": 3.1978,
+  "final_equity": 4547212.0,
+  "total_return": 21.7361,
   "max_drawdown": 0.183,
-  "bar_avg_drawdown": 0.0112,
+  "bar_avg_drawdown": 0.0113,
   "blown": false,
-  "commission": 470342.6,
-  "cost_assumption": "滑点1跳+佣金9.1元/手/边; 本金200000; 本金200000保本+减本金后利润满40万(权益60万)起、每多20万加一档; 目标风险1%; 手数=min(风险预算,权益×30%÷每手保证金); 乘数60; 一跳0.5"
+  "commission": 483028.0,
+  "cost_assumption": "滑点1跳+佣金9.1元/手/边; 本金200000; 手数=当前权益×1%÷ATR风险夹[1,8]（20261007改复利口径）; 乘数60; 一跳0.5"
 }
