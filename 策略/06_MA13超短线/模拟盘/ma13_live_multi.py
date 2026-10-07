@@ -82,7 +82,7 @@ def _connect(user, pwd, specs, web_gui):
 
 
 def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
-                   record_dir=None, heartbeat_sec=300):
+                   record_dir=None, heartbeat_sec=300, drill_fuse=False):
     keys = list(symbol_keys or DEFAULT_SYMBOLS)
     specs = []
     for key in keys:
@@ -174,6 +174,33 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
     api = _connect(user, pwd, specs, web_gui)
     acc_box = {"acc": None}               # 当前会话的 TqSim 账户对象（随重连刷新）
     acc_box["acc"] = api.get_account()
+
+    # ---- 熔断演练（--drill-fuse）：强制触发一次，走真实触发的那条代码路径 ----
+    # 用途：在没有真实回撤的情况下演练「弹窗 → 闩死 → 只出不进 → 复位三步」。
+    # 演练同样会闩死并落盘，复位同样要人工删 熔断状态.json —— 这是刻意保持一致。
+    if drill_fuse:
+        print("\n" + "=" * 62, flush=True)
+        print("  熔断演练模式（--drill-fuse）：将立即模拟一次回撤熔断", flush=True)
+        print("  预期：弹窗 → 台账 CIRCUIT 行 → 闩死(拒绝开新仓) → 需人工复位")
+        print("=" * 62 + "\n", flush=True)
+        try:
+            _bal0 = float(acc_box["acc"]["balance"])
+        except Exception:
+            _bal0 = INIT
+        # 用真实峰值触发：喂一个**明确低于熔断线**的余额
+        # 熔断线 = peak×(1−DD_FUSE)=16万；演练取其 90%（=14.4万）⇒ 必定触发。
+        # ⚠️ 首版这里写成 peak×(1−DD_FUSE/2)=18万，落在熔断线之上 ⇒ 演练没触发，
+        #    是演练数学错了、不是熔断逻辑错。演练的意义就在这类错误。
+        fuse["peak"] = INIT
+        _trigger_bal = fuse["peak"] * (1 - DD_FUSE) * 0.9
+        if _bal0 > 0 and _bal0 < _trigger_bal:
+            _trigger_bal = _bal0 * 0.9         # 权益已低于阈值时按权益折算
+        _fuse_eval(_trigger_bal, fuse, specs[0]["rec"], specs[0]["name"], drill=True)
+        print(f"[演练] 喂入权益 {_trigger_bal:.0f} / 熔断线 "
+              f"{fuse['peak'] * (1 - DD_FUSE):.0f} ⇒ 闩死状态 halted={fuse['halted']}；"
+              f"新开仓已被拒绝，持仓照常按止损/时间止损出场。", flush=True)
+        print(f"[演练] 复位方法：关闭窗口 → 删除 {os.path.basename(fuse['path'])}"
+              f"（在 台账 目录）→ 重新启动。\n", flush=True)
     try:
         while True:                       # 守护外层循环：断线后自动重连
             try:
@@ -209,6 +236,40 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
             s["rec"].stop("程序退出")
 
 
+def _fuse_eval(bal, fuse, rec, name, drill=False):
+    """账户级回撤熔断判定 + 触发动作。抽成函数是为了让 --drill-fuse 演练
+    走**与真实触发完全同一条代码路径**（测的就是真跑的那条）。
+
+    返回 True=本次刚好触发（边沿），False=未触发或已闩死。
+    """
+    if not (bal == bal) or bal <= 0:        # NaN / 非正不计
+        return False
+    if bal > fuse["peak"]:
+        fuse["peak"] = bal
+        if fuse.get("save"):
+            fuse["save"]()                # 新峰值即落盘（峰值跨会话累计）
+    if fuse["halted"] or bal > fuse["peak"] * (1 - DD_FUSE):
+        return False
+    fuse["halted"] = True
+    if fuse.get("save"):
+        fuse["save"]()                    # 闩锁立即落盘：重启也不自动复位
+    tag = "【演练】" if drill else ""
+    rec.event("CIRCUIT",
+              f"{tag}回撤熔断触发：权益{bal:.0f} 自峰值{fuse['peak']:.0f} "
+              f"回撤≥{DD_FUSE:.0%} → 停止新开仓(持仓照常出场) 恢复需人工重启")
+    _popup("MA13 模拟盘：⚠️ 回撤熔断触发" + ("（演练）" if drill else ""),
+           f"权益 {bal:.0f} 自峰值 {fuse['peak']:.0f} 回撤达到 {DD_FUSE:.0%}。\n\n"
+           "已自动执行：停止一切新开仓；已有持仓照常按止损/时间止损出场。\n"
+           "程序不会自动恢复，请尽快人工介入。\n\n"
+           "复位方法（确认后）：\n"
+           "  1. 关闭本程序窗口\n"
+           "  2. 删除文件 策略\\06_MA13超短线\\模拟盘\\台账\\熔断状态.json\n"
+           "  3. 重新双击 启动_P_EB_JM_真实下单.bat")
+    print(f"[{name}][CIRCUIT] ⚠️ {tag}回撤熔断触发 权益{bal:.0f} / "
+          f"峰值{fuse['peak']:.0f} → 停止新开仓，人工介入", flush=True)
+    return True
+
+
 def _process(api, s, allow_trade, shared, acc_box, fuse):
     """单品种的一个处理节拍：新 bar 出现（=前一根收盘）才算信号。"""
     q, k, rec = s["q"], s["k"], s["rec"]
@@ -227,32 +288,12 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
         except Exception:
             bal = float("nan")
         if bal == bal and bal > 0:            # 非 NaN 且为正才计入
-            if bal > fuse["peak"]:
-                fuse["peak"] = bal
-                if fuse.get("save"):
-                    fuse["save"]()            # 新峰值即落盘（峰值跨会话累计）
-            if not fuse["halted"] and bal <= fuse["peak"] * (1 - DD_FUSE):
-                fuse["halted"] = True
-            # 权益快照（60秒一次）：首日对账要靠它核对「台账盈亏 vs 账户权益」
+            _fuse_eval(bal, fuse, rec, s["name"])
+            # 权益快照（60秒一次，独立于熔断）：首日对账要靠它核对「台账盈亏 vs 账户权益」
             _now = time.time()
             if _now - s.get("eq_ts", 0) >= 60:
                 s["eq_ts"] = _now
                 s["rec"].event("EQUITY", f"权益={bal:.2f} 持仓={s['pos']}")
-                if fuse.get("save"):
-                    fuse["save"]()            # 闩锁落盘：重启也不自动复位
-                rec.event("CIRCUIT",
-                          f"回撤熔断触发：权益{bal:.0f} 自峰值{fuse['peak']:.0f} "
-                          f"回撤≥{DD_FUSE:.0%} → 停止新开仓(持仓照常出场) 恢复需人工重启")
-                _popup("MA13 模拟盘：⚠️ 回撤熔断触发",
-                       f"权益 {bal:.0f} 自峰值 {fuse['peak']:.0f} 回撤达到 {DD_FUSE:.0%}。\n\n"
-                       "已自动执行：停止一切新开仓；已有持仓照常按止损/时间止损出场。\n"
-                       "程序不会自动恢复，请尽快人工介入。\n\n"
-                       "复位方法（确认后）：\n"
-                       "  1. 关闭本程序窗口\n"
-                       "  2. 删除 台账\\熔断状态.json\n"
-                       "  3. 重新双击 启动_P_EB_观察模式.bat")
-                print(f"[{s['name']}][CIRCUIT] ⚠️ 回撤熔断触发 权益{bal:.0f} / "
-                      f"峰值{fuse['peak']:.0f} → 停止新开仓，人工介入", flush=True)
     # 每个事件都刷新心跳缓存（价格实时；tgt 在信号节拍里更新）
     _lp = q.last_price
     sh["dt"] = q.datetime
@@ -349,6 +390,9 @@ if __name__ == "__main__":
     ap.add_argument("--trade", action="store_true",
                     help="开真实下单（TqSim 撮合）；缺省为观察模式")
     ap.add_argument("--gui", action="store_true", help="开 web_gui 图形界面")
+    ap.add_argument("--drill-fuse", action="store_true",
+                    help="熔断演练：启动后强制触发一次回撤熔断（会闩死，需人工复位）")
     args = ap.parse_args()
     run_live_multi(symbol_keys=[x.strip().upper() for x in args.symbols.split(",") if x.strip()],
-                   allow_trade=args.trade, web_gui=args.gui)
+                   allow_trade=args.trade, web_gui=args.gui,
+                   drill_fuse=args.drill_fuse)
