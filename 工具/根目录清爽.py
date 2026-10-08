@@ -47,12 +47,20 @@ _k.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
 
 # ---------------------------------------------------------------------------
 # 清单：想调整，改这两个字典就行（增删一项不必动下面的代码）
+#
+# ★ 2026-10-08 按用户要求重排：根目录**只留 6 项可见**
+#   策略 / 回测结果 / 实测记录 / __pycache__ / 量化职场学习路线图.html / 天勤量化.bat
+#   报告类文件（README.md、目录地图.md、模拟盘执行清单.md）已**移进 `_收纳/`**
+#   （移动而非隐藏 —— 它们没有任何程序按路径读；两处引用已同步改，见 `_收纳/_说明.md`）。
+#   `_归档/` `_冻结/` 经用户拍板**原地隐藏、路径不动**（问过：收档 ≠ 删除，
+#   且程序/文档都有引用），所以仍在本清单里。
 # ---------------------------------------------------------------------------
 
 隐藏清单 = {
     ".workbuddy":        "工具自带的后台数据（记忆 / 技能 / 缓存）",
+    ".git":              "版本库目录（git 命令照常用，资源管理器不需要看到）",
     "_归档":             "历史存档，只在考古时进",
-    "_冻结":             "已冻结策略存档（11策略证伪+VWAP线），只当证据留着",
+    "_冻结":             "已冻结策略存档，只当证据留着",
     "运行日志":          "程序自动写的日志，人不用翻",
     "lib":               "共享库代码（engine / paths / ...），只在改引擎时进",
     "工具":              "辅助脚本，日常由 AI 代跑",
@@ -61,9 +69,8 @@ _k.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
     "config_account_template.py": "账号模板，只在配新机时抄一次",
     "config_symbols.py": "品种配置（引擎 import 它，但不需要人眼扫）",
     ".gitignore":        "git 工程文件（⚠️改它前先 --show，隐藏态下原子替换保存会 EPERM）",
-    "README.md":         "项目总说明",
-    "模拟盘执行清单.md": "模拟盘操作备忘",
     "跑回测.bat":        "旧总菜单入口（已被 天勤量化.bat 取代，留作兼容）",
+    "sim_watchdog.py":   "根目录的 ASCII 转发壳（已被 模拟盘/ma13_watchdog_main.py 取代）",
     "nul":               "删不掉的系统残留（Windows保留名），藏住眼不见为净",
 }
 
@@ -72,27 +79,34 @@ _k.SetFileAttributesW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
     "策略":     "唯一工作区：写逻辑 + 双击启动都在这里",
     "回测结果": "当前工作状态的报告",
     "实测记录": "模拟盘 / 实盘台账",
-    "天勤量化.bat": "总入口：双击进工作台",
+    "_收纳":     "报告 + 备份 + 归档/冻结（2026-10-08 新建，见其内 _说明.md）",
+    "天勤量化.bat": "总入口：双击进工作台（唯一入口，藏了就双击不到）",
     "量化职场学习路线图.html": "职业路线图，随时翻",
-    "目录地图.md": "找东西用的地图",
+    "__pycache__": "Python 字节码缓存（自生成，删了会自己重建）",
 }
 
 
 def 找根():
-    """从本文件位置向上找，直到看见 品种池/ 或 README.md。
+    """从本文件位置向上找项目根。
 
-    不写死层数 —— 整个项目拖到哪都能跑（与全项目的路径健壮性口径一致）。
+    ★ 2026-10-08 改判据：README.md 已移进 `_收纳/`（用户 2026-10-08 要求根目录
+      只留 策略 / 回测结果 / 实测记录 / __pycache__ / 学习 html / 总入口 bat），
+      原判据 `os.path.isfile(here/README.md)` 因此**恒为 False** ⇒ 本工具直接
+      SystemExit、整个「藏/显根目录」功能静失效（不会有任何报错提示，只是菜单点不动）。
+      ⇒ 判据换成 `lib/`（bat 的 _sub_findroot 也用同一招，且 lib 是程序必需、
+      永远不会移走的那个），并保留 品种池 / README 作为兼容回退。
     """
     here = os.path.dirname(os.path.abspath(__file__))
     for _ in range(12):
-        if os.path.isdir(os.path.join(here, "品种池")) or \
+        if os.path.isdir(os.path.join(here, "lib")) or \
+                os.path.isdir(os.path.join(here, "品种池")) or \
                 os.path.isfile(os.path.join(here, "README.md")):
             return here
         上级 = os.path.dirname(here)
         if 上级 == here:        # 到盘根了还没找到
             break
         here = 上级
-    raise SystemExit("找不到项目根目录（没看到 品种池/ 或 README.md）")
+    raise SystemExit("找不到项目根目录（没看到 lib/ —— 项目结构可能坏了）")
 
 
 def 是隐藏(path):

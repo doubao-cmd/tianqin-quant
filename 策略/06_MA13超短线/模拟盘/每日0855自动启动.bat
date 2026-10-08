@@ -31,32 +31,32 @@ REM ---- find project root (the dir holding config_symbols.py) ----
 set "ROOT=%~dp0"
 for %%I in ("%ROOT%..\..\..\..") do set "ROOT=%%~fI\"
 
-REM ---- locate python that has tqsdk ----
-set "PY="
-for %%P in (
-    "%USERPROFILE%\.workbuddy\binaries\python\envs\tqsdk\Scripts\python.exe"
-    "python"
-    "py"
-) do (
-    if not defined PY (
-        %%P -c "import importlib.util as u,sys; sys.exit(0 if u.find_spec('tqsdk') else 1)" >nul 2>&1
-        if not errorlevel 1 set "PY=%%~P"
-    )
+REM ---- python that has tqsdk: MUST be the venv one.
+REM The fallback list used to include system python/py, which have NO tqsdk
+REM and die as silent 1-thread / 0-CPU shells. Fail loudly instead.
+set "PY=%USERPROFILE%\.workbuddy\binaries\python\envs\tqsdk\Scripts\python.exe"
+if not exist "%PY%" (
+    echo [ERROR] tqsdk venv python not found: %PY%
+    pause
+    exit /b 1
 )
-if not defined PY (
-    echo [ERROR] python with tqsdk not found.
-    echo         Use the manual launcher instead.
+"%PY%" -c "import importlib.util as u,sys; sys.exit(0 if u.find_spec('tqsdk') else 1)" >nul 2>&1
+if errorlevel 1 (
+    echo [ERROR] '%PY%' cannot import tqsdk - refusing to start.
     pause
     exit /b 1
 )
 
 echo ============================================================
-echo  MA13 SIM auto start - REAL ORDERS on TqSim fake account
-echo  symbols: P + EB + JM
+echo  MA13 SIM auto start - REAL ORDERS on TqKq cloud account
+echo  symbols: JM + M + JD + P + SR   (5 legs, 2026-10-08 reselected)
 echo  guards : DD fuse 20pct / heartbeat 300s / double-start lock
 echo  stop   : close this window or Ctrl+C
 echo ============================================================
-"%PY%" -u "%ROOT%sim_watchdog.py" --symbols P,EB,JM --trade
+REM ★ 2026-10-08fix: was calling sim_watchdog.py which does NOT exist here.
+REMThe real watchdog is ma13_watchdog_main.py (same file ma13_start_now.cmd
+REM   uses). That typo meant the 08:55 auto-start task silently did nothing.
+"%PY%" -u "%~dp0ma13_watchdog_main.py" --symbols JM,M,JD,P,SR --trade
 
 echo.
 echo [EXIT] simulator stopped.

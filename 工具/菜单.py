@@ -192,12 +192,16 @@ def 选项_跑回测():
 
 
 def 选项_看地图():
-    p = os.path.join(根, "目录地图.md")
-    if os.path.isfile(p):
-        os.startfile(p)
-        print("\n  已用默认程序打开 目录地图.md")
+    # ★ 2026-10-08：目录地图.md 已移进 _收纳/（根目录只留 6 项）。
+    #   两个候选路径都试，兼容「还在根目录」与「已移进_收纳」两种状态。
+    for _rel in (os.path.join("_收纳", "目录地图.md"), "目录地图.md"):
+        p = os.path.join(根, _rel)
+        if os.path.isfile(p):
+            os.startfile(p)
+            print(f"\n  已用默认程序打开 {_rel}")
+            break
     else:
-        print("\n  ⛔ 根目录下没找到 目录地图.md")
+        print("\n  ⛔ 两处都没找到目录地图.md（_收纳/目录地图.md 或 根目录/目录地图.md）")
     input("\n  回车返回主菜单 ...")
 
 

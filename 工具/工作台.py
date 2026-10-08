@@ -225,7 +225,15 @@ def 区_系统():
                 print("\n  ⛔ git 命令不存在（装 Git for Windows 后重试）")
             _暂停()
         elif c == "4":
-            _开文件(os.path.join(根, "目录地图.md"))
+            # ★ 2026-10-08：目录地图.md 已移进 _收纳/（用户要求根目录只留 6 项）。
+            #   两个候选路径都试，兼容「还没移」与「已移」两种状态。
+            for _rel in (os.path.join("_收纳", "目录地图.md"), "目录地图.md"):
+                _p = os.path.join(根, _rel)
+                if os.path.isfile(_p):
+                    _开文件(_p)
+                    break
+            else:
+                print("\n  ⛔ 两处都没找到目录地图.md（_收纳/目录地图.md 或 根目录/目录地图.md）")
             _暂停()
         else:
             return

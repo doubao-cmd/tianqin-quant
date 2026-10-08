@@ -231,11 +231,18 @@ def run_backtest(start=None, end=None):
                     swing_low = np.min(low[max(0, i - SLOPE_N):i])
                     stop_raw = swing_low - STOP_BUFFER * a
                     stop_price = max(entry_price - STOP_CAP * a, stop_raw)
+                    # 【2026-10-08 bugfix】止损价必须落在入场价不利侧（至少留一跳）。
+                    # 跳空低开时 open[i] 可能低于 swing_low => max() 会选中 swing_low 支，
+                    # 使 stop > entry，下一根 low<=stop 立刻成立 ⇒ 以不存在的价格平仓、凭空盈利。
+                    if stop_price >= entry_price - TICK:
+                        stop_price = entry_price - STOP_CAP * a
                     pos = hand
                 else:
                     swing_high = np.max(high[max(0, i - SLOPE_N):i])
                     stop_raw = swing_high + STOP_BUFFER * a
                     stop_price = min(entry_price + STOP_CAP * a, stop_raw)
+                    if stop_price <= entry_price + TICK:
+                        stop_price = entry_price + STOP_CAP * a
                     pos = -hand
                 equity -= oc
                 comm_total += COMM * hand

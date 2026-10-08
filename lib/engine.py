@@ -54,6 +54,9 @@ import config_symbols
 # 策略短名 -> 落盘目录名（带 01_/02_/03_ 编号），唯一出处见 lib/strategy_dirs.py
 from lib.strategy_dirs import 策略目录名
 from lib.account_ledger import AccountLedger      # 账户流水单（2026-09-24）
+# 实盘防护层（2026-10-08）：账户级回撤熔断 + 会话异常自动重启。
+# 照搬 06_MA13 已实测的 ma13_live_multi 语义；不碰任何信号/出场判断（规则 4）。
+from lib.engine_guard import Fuse, RestartLoop, DD_FUSE as _DD_FUSE
 
 from datetime import date, datetime, timedelta
 import pandas as pd
@@ -2824,7 +2827,7 @@ def run_backtest_boll(symbol_key, period=20, k=2.0, volume=1,
         api.close()
     return stat
 
-def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
+def _boll_session(symbol_key, period=20, k=2.0, volume=1,
                   kline_sec=30 * 60, allow_trade=True, web_gui=True,
                   heartbeat=30, log_trades=True,
                   atr_period=14, atr_stop_mult=2.0,
@@ -2832,7 +2835,18 @@ def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
                   margin_per_hand=0, margin_cap_pct=30.0, margin_rate=None,
                   risk_equity=0.0, time_stop_bars=None,
                   attach_stop_on_start=True, reconcile_sec=180.0,
-                  state_path=None, ledger_dir=None):
+                  state_path=None, ledger_dir=None,
+                  _fuse=None, _guard_name="engine", _api_box=None):
+    """布林带模拟盘的**单次会话体**（内部函数，请勿直接调用）。
+
+    正常路径是死循环（`while True:`），只有异常或人工 Ctrl+C 才会返回/抛出。
+    外层 `run_live_boll` 用 `RestartLoop` 包住它实现断线自动重启。
+
+    ★ `_fuse` 是由外层传进来的`Fuse`（可能为 None = 不熔断）。
+      本函数只在两处用它，且**只管"要不要继续开仓"，不碰任何信号/出场判断**：
+        1) 心跳段：按账户权益评估熔断
+        2) 开仓段：已闩死则只许平/减，不许新开/反手
+    """
     """布林带模拟盘（连快期模拟账户跑实时信号，程序要一直开着）。
 
     逻辑与 run_backtest_boll 完全一致 —— 两侧共用同一个 boll_decision，
@@ -2863,6 +2877,11 @@ def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
 
     print("[诊断] 正在连接快期模拟账户 TqKq ...", flush=True)
     api = TqApi(TqKq(), auth=TqAuth(user, pwd), web_gui=web_gui)
+    # ★ 2026-10-08：登记当前 api，供外层 RestartLoop 在会话结束（含异常）时
+    #   调api.close()。不登记的话每次自动重启都在进程里留一个 TqApi
+    #   （连接 + 线程 + 订阅），连续几次后会出现多连接同时推行情的怪现象。
+    if _api_box is not None:
+        _api_box["api"] = api
     print("[诊断] TqApi 已创建，正在拉取行情数据 ...", flush=True)
     klines = api.get_kline_serial(main_code, kline_sec, data_length=period + 200)
     quote = api.get_quote(main_code)
@@ -2942,6 +2961,14 @@ def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
         _eq_txt = _risk_equity_text(risk_equity, None)
         print(f" 手数：{risk_hand_min}~{risk_hand_max} 手（按信号根 ATR 算，开仓那根锁定）"
               f" | 算手数用的权益：{_eq_txt}")
+    # ---- 账户级回撤熔断（2026-10-08 自 06_MA13 搬入）----
+    #   只挡「新开仓/反手」，持仓照常按止损与时间止损出场；闩锁跨会话持久化，
+    #   触发后重启不自动复位（纯灾难保护阀，不是策略参数，不参与择优）。
+    _fuse_blocked = bool(_fuse is not None and _fuse.blocked())
+    if _fuse is not None:
+        _fuse.announce_if_latched()
+        print(f" 回撤熔断：阈值 {_fuse.threshold:.0%} | 状态文件 {_fuse.path}"
+              + ("  ⚠️ 已闩死 → 只出不进" if _fuse_blocked else ""))
     # ---- 启动补挂止损（修正③）+ 状态文件精确恢复 ----
     if want != 0 and atr_stop_mult > 0:
         _sdir0 = 1 if want > 0 else -1
@@ -3171,6 +3198,22 @@ def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
                     else:
                         target, reason = boll_decision(want, c, m, u, l, 1)
                     if target != want:
+                        # ---- 回撤熔断闸门（2026-10-08）----
+                        #   只挡「增加风险敞口」的动作：新开仓 / 加仓 / 反手。
+                        #   平仓(target==0) 与减仓照常放行⇒ 持仓仍有止损与
+                        #   时间止损保护，符合熔断语义「停止新开仓，持仓照常出场」。
+                        #   实现方式：把 target 改回 want（= 无动作），后面整段
+                        #   `if target != want` 自然跳过 ⇒ **零缩进改动**。
+                        if _fuse_blocked and target != 0 and (
+                                abs(target) > abs(want) or (want * target) < 0):
+                            print("=" * 60, flush=True)
+                            print(f"[{datetime.now():%H:%M:%S}] [熔断] "
+                                  f"已闩死，忽略开仓信号：{reason} "
+                                  f"| 目标 {int(target):+d} 手（当前 {int(want):+d}）"
+                                  f" -> 维持现仓，仅保留平仓/减仓权限")
+                            print("=" * 60, flush=True)
+                            target = want
+                    if target != want:
                         if target == 0:
                             stop_st = {"active": False, "entry": 0.0,
                                        "entry_atr": 0.0}
@@ -3230,6 +3273,23 @@ def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
                 except Exception as _le:
                     print(f"  [!] 账户快照写入失败（不影响交易）：{_le}", flush=True)
 
+            # ---- 回撤熔断评估（2026-10-08）----
+            #   跟着心跳跑（默认 30s 一次）——熔断是账户级的，判据用 account.balance。
+            #   ⚠️ 心跳只在有行情推送时才走到，休市时熔断不会被评估；
+            #     这是**故意的**：休市权益不变，评估与否结果一样。
+            if _fuse is not None:
+                try:
+                    _bal = float(account.balance)
+                    if _fuse.eval(_bal):
+                        _fuse_blocked = True
+                    else:
+                        _fuse_blocked = _fuse.blocked()
+                    print(f"       权益 {_bal:,.0f} | 峰值 {_fuse.peak:,.0f} "
+                          f"| 回撤 {max(0.0, 1 - _bal / _fuse.peak):.2%} "
+                          f"| 熔断 {'已闩死(只出不进)' if _fuse_blocked else '正常'}")
+                except Exception as _fe:
+                    print(f"  [!] 熔断评估失败（不影响交易）：{_fe}", flush=True)
+
         # ---- 5) 目标仓位 vs 实际持仓 对账（修正②，自 run_live 移植）----
         #   只对齐「目标 vs 实际」，不产生任何新的开仓意图；清零后等下一个真信号。
         _pos_now = int(api.get_position(cur_sym).pos)
@@ -3287,6 +3347,96 @@ def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
                 if allow_trade:
                     tp.set_target_volume(0)
                 _dsync_since = None
+
+
+# ===================================================================
+# 布林带模拟盘入口（外层守护 + 熔断）
+# ===================================================================
+def run_live_boll(symbol_key, period=20, k=2.0, volume=1,
+                  kline_sec=30 * 60, allow_trade=True, web_gui=True,
+                  heartbeat=30, log_trades=True,
+                  atr_period=14, atr_stop_mult=2.0,
+                  risk_pct=1.0, risk_hand_min=1, risk_hand_max=8,
+                  margin_per_hand=0, margin_cap_pct=30.0, margin_rate=None,
+                  risk_equity=0.0, time_stop_bars=None,
+                  attach_stop_on_start=True, reconcile_sec=180.0,
+                  state_path=None, ledger_dir=None,
+                  dd_fuse=_DD_FUSE, fuse_dir=None,
+                  guard_restart=True, guard_restart_wait=10, guard_max_restart=0):
+    """布林带模拟盘（连快期模拟账户跑实时信号，程序要一直开着）。
+
+    ★ 2026-10-08：本体已拆成「`_boll_session` = 单次会话体」+「本函数 = 外层守护」。
+      两个新增能力（照搬 06_MA13 的ma13_live_multi，engine 此前**完全没有**）：
+
+      1) **账户级回撤熔断**（`dd_fuse`，默认 20%）
+         自峰值回撤 ≥ 阈值 → 闩死，**禁止新开仓/反手**；平仓与减仓照常放行，
+         持仓仍有ATR 止损 + 时间止损保护。峰值与闩锁写`熔断状态.json`
+         跨会话持久化，触发后重启不自动复位（需人工删该文件）⇒ 这是灾难
+         保护阀，不是可调策略参数。
+         ★ 与 ma13 的差异：ma13 需要 `FIX_WAIT_SEC` 撮合窗口，**engine 不需要**
+           ——engine 是「内存 want → 问云端」，刚下单时 want 已等于目标手数，
+           `want == pos_now` 天然成立，不会把刚开的仓误判成外部遗留持仓。
+
+      2) **会话异常自动重启**（`guard_restart`，默认开）
+         断线/被踢/网络异常时，不是原地重连（engine 的 7 个 serial对象
+         在断线后全部失效，原地重连漏一条就静默失效），而是**整体重跑会话体**
+         —— 走一遍完整启动流程，漏不掉。跨重启不丢：止损线与时间止损计数
+         （`_boll_state.json` 精确恢复）、熔断状态、持仓（以云端真实持仓为准）。
+
+    ★ 未改动任何信号或出场判断 —— 逻辑仍全部来自 `boll_decision`，
+      与 `run_backtest_boll` 共用同一个决策函数（规则 4：一次只改一处）。
+    """
+    _name, _main_code, _mult, _tick = config_symbols.get(symbol_key)
+
+    # ---- 熔断状态目录：默认跟state_path / ledger_dir 同目录，找不到就用 cwd ----
+    if fuse_dir is None:
+        _cands = [os.path.dirname(state_path) if state_path else "",
+                  ledger_dir or "", os.getcwd()]
+        fuse_dir = next((d for d in _cands if d), os.getcwd())
+    if not os.path.isdir(fuse_dir):
+        try:
+            os.makedirs(fuse_dir)
+        except Exception:
+            fuse_dir = os.getcwd()
+
+    fuse = Fuse(fuse_dir, init_balance=float(risk_equity or 200000.0),
+                name=f"布林带·{_name}", threshold=dd_fuse, rec=None)
+    # 会话体把当前 api 写进这个盒子，供 cleanup 关闭（见_boll_session 内注释）
+    _api_box = {"api": None}
+
+    def _cleanup():
+        _a = _api_box.get("api")
+        if _a is not None:
+            try:
+                _a.close()
+            except Exception:
+                pass
+            _api_box["api"] = None
+
+    def _one_session():
+        return _boll_session(
+            symbol_key, period=period, k=k, volume=volume,
+            kline_sec=kline_sec, allow_trade=allow_trade, web_gui=web_gui,
+            heartbeat=heartbeat, log_trades=log_trades,
+            atr_period=atr_period, atr_stop_mult=atr_stop_mult,
+            risk_pct=risk_pct, risk_hand_min=risk_hand_min,
+            risk_hand_max=risk_hand_max, margin_per_hand=margin_per_hand,
+            margin_cap_pct=margin_cap_pct, margin_rate=margin_rate,
+            risk_equity=risk_equity, time_stop_bars=time_stop_bars,
+            attach_stop_on_start=attach_stop_on_start,
+            reconcile_sec=reconcile_sec, state_path=state_path,
+            ledger_dir=ledger_dir, _fuse=fuse, _guard_name=_name,
+            _api_box=_api_box)
+
+    if not guard_restart:
+        try:
+            return _one_session()
+        finally:
+            _cleanup()
+    return RestartLoop(_one_session, name=f"布林带·{_name}",
+                       reconnect_wait=guard_restart_wait,
+                       max_restart=guard_max_restart,
+                       cleanup=_cleanup).run()
 
 
 # ===================================================================
@@ -4263,7 +4413,13 @@ def run_live_align(symbol_key, signal_fn, ma_periods=(5, 10, 20, 40),
                     # 买卖点标记按真实成交方向：开多/平空=买，开空/平多=卖
                     _draw_signal(api, klines, is_buy=(open_side > 0) if do_open
                                  else (close_dir == "BUY"))
-                if want > 0 and stop_atr > 0:
+                # ★ 2026-10-08 修：原判据是 `want > 0`，空单全落进下面的
+                #   `elif want <= 0: stop_st["active"]=False`（把止损清零）
+                #   ⇒ **开空单时根本没有止损保护**。而同函数 :4272 已算好空单
+                #   镜像 `last_close + stop_atr*atr_v`，作者本意显然是支持空单，
+                #   是判据把多头符号写成了「只做多」。
+                #   正确判据：任何非零仓位都挂止损（多空对称）。
+                if want != 0 and stop_atr > 0:
                     # 固定 ATR 止损线：开仓时定死，多空对称，不移动
                     stop_st.update({"active": True, "entry": last_close,
                                     "entry_atr": atr_v, "side": open_side,
@@ -4274,10 +4430,18 @@ def run_live_align(symbol_key, signal_fn, ma_periods=(5, 10, 20, 40),
                     print(f"            初始止损 {_sl:.2f}"
                           f"（{stop_atr:g}ATR = {stop_atr * atr_v:.2f} 点，固定不动）")
                 elif want > 0 and atr_stop_mult > 0:
+                    # ⚠️ 这里**必须**保持 `want > 0`：本分支挂的止损会在
+                    #   :4300 被 _align_trail_stop_long 逐根重算，而那个函数的
+                    #   docstring 明确「仅做多」（用 ext_high 算多头追踪线）。
+                    #   空单放进来会拿多头公式算空单止损 ⇒ 又是错价。
+                    #   所以「空单无动态止损」是**已知且正确的**设计：
+                    #   用双向信号函数跑 align 时，空单只受 stop_pct 百分比止损
+                    #   与 stop_atr 固定止损保护（两者都在 :3720/:3874 多空对称）。
                     stop_st.update({"active": True, "entry": last_close,
-                                    "entry_atr": atr_v, "side": 1,
-                                    "ext_high": last_high, "bars": 0})
-                elif want <= 0:
+                                    "entry_atr": atr_v, "side": open_side,
+                                    "ext_high": last_high, "ext_low": last_low,
+                                    "bars": 0})
+                elif want == 0:
                     stop_st["active"] = False
                 if allow_trade:
                     tp.set_target_volume(want)
@@ -5138,12 +5302,19 @@ def _dt_str(bar_dt):
 
 
 def _in_entry_window(ts):
-    """时间过滤：避开开盘/收盘前后 5 分钟（流动性差、滑点大）。返回 True=可交易。"""
+    """时间过滤：避开开盘/收盘前后 5 分钟（流动性差、滑点大）。返回 True=可交易。
+
+    ★ 2026-10-08 修正+8h：ts 是 K 线 datetime（**纳秒 epoch，UTC**），直接
+      `pd.Timestamp(ts).time()` 取出来的是 UTC 时刻，比北京时间**慢 8 小时**
+      （2026-09-16 实测确认，见 _in_no_open_window 的注释）。
+      原写法会让「09:00 开盘后 5 分钟禁开仓」实际判在 01:00 —— 整段过滤全部
+      落在错的位置上，等于形同虚设（且回测/实盘同时错、所以对不上账也查不出来）。
+    """
     try:
-        t = pd.Timestamp(ts).time()
+        bj = pd.Timestamp(float(ts) / 1e9, unit="s") + pd.Timedelta(hours=8)
+        cur = bj.hour * 60 + bj.minute
     except Exception:
         return True
-    cur = t.hour * 60 + t.minute
 
     def m(h, mi):
         return h * 60 + mi
@@ -5213,6 +5384,14 @@ def _pro_bar_decision(snap, st, P):
             if profit > P["lock_atr"] * entry_atr:
                 stop = max(stop, entry + 1 * entry_atr)            # 锁定 +1ATR 利润
             soft = ext_high - P["trail_atr_mult"] * snap["atr"]     # 峰值回撤追踪
+            #★ 2026-10-08 修死路径：soft 必须夹在入场价不利侧。
+            #   soft = ext_high − trail×ATR，与 entry 无任何约束关系；ext_high 是
+            #   持仓期间最高价（含跳空高开），当 trail×ATR 小于 ext_high−entry 时
+            #   soft 会落在 entry **上方** ⇒ 多头止损价高于成本 ⇒ 下一根
+            #   `low <= stop` 立即成立，以从未存在过的价格平仓、凭空盈利。
+            #   （与 06_MA13 的 swing 支同款 bug，这里是唯一一处。）
+            if soft >= entry:
+                soft = entry - P["slip_price"]
             stop = max(stop, soft)
             action, reason = "hold", None
             _tp = float(P.get("take_profit_atr", 0) or 0)
@@ -5244,6 +5423,9 @@ def _pro_bar_decision(snap, st, P):
             if profit > P["lock_atr"] * entry_atr:
                 stop = min(stop, entry - 1 * entry_atr)
             soft = ext_low + P["trail_atr_mult"] * snap["atr"]
+            # ★ 2026-10-08 修死路径：空头镜像夹紧（详见上面多头分支的注释）
+            if soft <= entry:
+                soft = entry + P["slip_price"]
             stop = min(stop, soft)
             action, reason = "hold", None
             _tp = float(P.get("take_profit_atr", 0) or 0)
@@ -5422,7 +5604,13 @@ def run_backtest_pro(symbol_key, volume=1,
                     except Exception:
                         pass
                     tp.set_target_volume(want)
-                    if st["state"] != "flat" and st["entry_price"] is None:   # 换月沿用持仓，重锚止损
+                    # ★ 2026-10-08 修死路径：原判据 `st["entry_price"] is None`
+                    #   永远为False —— 开仓时（:5685）entry_price 就被写成数字，
+                    #   持仓状态不可能再是 None ⇒ 「换月沿用持仓、重锚止损」
+                    #   这段代码从未执行过。换月后新合约 ATR/价位都变了，
+                    #   沿用旧合约的止损基准会让第一根 K 线就误触发。
+                    #   正确判据就是「当前不是空仓」。
+                    if st["state"] != "flat":
                         st["entry_price"] = quote.last_price
                         st["entry_atr"] = float(_atr(k5.high, k5.low, k5.close, atr_period).iloc[-2])
                         st["ext_high"] = float(k5.close.iloc[-2])

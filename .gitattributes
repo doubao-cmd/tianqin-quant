@@ -1,0 +1,46 @@
+# ===== 行尾铁律（2026-10-08 新增）=====
+# 背景：今天 20:05 踩过一个严重 bug —— 我用编辑工具改 .bat 注释时把行尾写成了 LF，
+#   cmd.exe 按 CRLF 切行，只有 LF 时它把整个文件当一行 ⇒ **REM 注释内容被当命令执行**，
+#   双击 bat 满屏乱码（'DIATE' 不是内部或外部命令 / 'AT 语法用法'）。
+#   修好后仍留隐患：仓库里**没有 .gitattributes**，而 core.autocrlf=true，
+#   git 会在 checkout 时把 LF 改成 CRLF、commit 时把 CRLF 改成 LF——
+#   也就是**你的编辑器写什么、git 就改什么，两边打架**。
+# 本文件把行尾规则写死，让 git 不再自动转换（-text = 二进制式原样处理）。
+#
+# ★ 规则来源：项目既有规矩「lib/工具/config_*/策略/ = LF；*.bat = CRLF」。
+
+# ---- 1) 默认：仓库内一律 LF，不做任何自动转换 ----
+*              text=auto eol=lf
+
+# ---- 2) Windows 批处理：必须是 CRLF（★ 改了这条就等于重现今天的 bug）----
+*.bat          text eol=crlf
+*.cmd          text eol=crlf
+
+# ---- 3) PowerShell 脚本：CRLF（Windows PowerShell 对LF 也能跑，但保持惯例一致）----
+*.ps1          text eol=crlf
+
+# ---- 4) 二进制：禁止任何转换（数据文件、图标、字体等）----
+*.png          binary
+*.jpg          binary
+*.jpeg         binary
+*.gif          binary
+*.ico          binary
+*.pdf          binary
+*.zip          binary
+*.gz           binary
+*.xlsx         binary
+*.docx         binary
+*.ttf          binary
+*.otf          binary
+
+# ---- 5) 台账 CSV：程序持续追加写入，保持 CRLF（Windows Excel 直开友好）----
+策略/**/台账/*.csv      text eol=crlf
+
+# ---- 6) 不生成冲突标记（双保险，防merge 冲突写坏文件）----
+*.py           text eol=lf
+*.md           text eol=lf
+*.json         text eol=lf
+*.csv          text eol=lf
+*.yml          text eol=lf
+*.yaml         text eol=lf
+*.txt          text eol=lf

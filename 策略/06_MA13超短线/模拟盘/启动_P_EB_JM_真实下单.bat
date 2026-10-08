@@ -1,36 +1,62 @@
 @echo off
 chcp 65001 >nul
-title MA13 模拟盘 P+EB+JM 真实下单
+title MA13 SIM P+EB+JM
 set "PYTHONUTF8=1"
-set "ROOT="
-for %%I in ("%~dp0..\..\..\..") do set "ROOT=%%~fI\"
-cd /d "%ROOT%"
 
-rem ---- 解释器：依次试到「真装了 tqsdk」的那个 ----
-set "PY="
-set "_VENV_TQ=%USERPROFILE%\.workbuddy\binaries\python\envs\tqsdk\Scripts\python.exe"
-for %%P in ("%_VENV_TQ%" python py) do (
-  if not defined PY (
-    "%%~P" -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('tqsdk') else 1)" >nul 2>nul
-    if not errorlevel 1 set "PY=%%~P"
-  )
+rem ============================================================
+rem  CRITICAL: do NOT hardcode any non-ASCII path in this file.
+rem  Project root is C:\Users\cc\Desktop\[CN]\[CN]\strategy\06_...\sim
+rem  After "chcp 65001" cmd reads bytes as UTF-8 while %~dp0 hands
+rem  back ANSI/GBK, so any CN segment gets silently mangled and the
+rem  resolved path collapses to a parent folder. Work with the
+rem  script's own directory (ASCII-safe "%~dp0" only) and locate
+rem  files by ASCII name via "for %%F in (*.py)".
+rem ============================================================
+cd /d "%~dp0"
+
+rem ---- locate watchdog by ASCII filename (no CN literal needed) ----
+set "WATCHDOG="
+for %%F in (*.py) do (
+  if /i "%%~nxF"=="ma13_watchdog_main.py" set "WATCHDOG=%%~fF"
 )
-if not defined PY (
-  echo  [错误] 没找到装了 tqsdk 的 Python，程序起不来。
+if not defined WATCHDOG (
+  echo  [ERROR] ma13_watchdog_main.py not found next to this bat.
+  pause
+  exit /b 1
+)
+
+rem ---- project root = 4 levels up from this script ----
+set "ROOT="
+for %%I in ("..\..\..\..") do set "ROOT=%%~fI"
+
+rem ---- interpreter: MUST be the venv python (tqsdk lives there only).
+rem The system Python312 has NO tqsdk: it used to be picked as a fallback and
+rem died silently as a 1-thread / 0-CPU / no-socket shell process.
+rem Fail loudly instead of falling through to a broken interpreter.
+set "PY=%USERPROFILE%\.workbuddy\binaries\python\envs\tqsdk\Scripts\python.exe"
+if not exist "%PY%" (
+  echo  [ERROR] tqsdk venv python not found: %PY%
+  pause
+  exit /b 1
+)
+"%PY%" -c "import importlib.util as u,sys; sys.exit(0 if u.find_spec('tqsdk') else 1)" >nul 2>nul
+if errorlevel 1 (
+  echo  [ERROR] '%PY%' cannot import tqsdk - refusing to start.
   pause
   exit /b 1
 )
 
 echo ============================================
-echo  MA13 模拟盘 - 棕榈油(P)+苯乙烯(EB)+焦煤(JM)
-echo  账号: 模拟盘专用  模式: 真实下单(20万虚拟资金·TqSim本地撮合·按真实盘口成交)
-echo  双层守护: 断线自动重连 + 崩溃自动重启  回撤熔断: 20%%弹窗闩死
-echo  停止: 关闭本窗口 或 按 Ctrl+C
+echo  MA13 SIM - P(palm) + EB + JM, real order
+echo  account: TqKq cloud sim (visible in phone app)
+echo  watchdog: %WATCHDOG%
+echo  stop: close this window or press Ctrl+C
 echo ============================================
-"%PY%" -u "%ROOT%策略\06_MA13超短线\模拟盘\模拟盘守护.py" --symbols P,EB,JM --trade
+cd /d "%ROOT%"
+"%PY%" -u "%WATCHDOG%" --symbols P,EB,JM --trade
 
 echo.
 echo ------------------------------------------------------------
-echo  模拟盘已退出（窗口可关闭）
+echo  SIM exited (window can be closed)
 echo ------------------------------------------------------------
 pause
