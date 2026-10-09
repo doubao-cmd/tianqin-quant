@@ -1,0 +1,86 @@
+name: CI
+
+#=============================================================
+# 天勤量化 · 持续集成
+# ------------------------------------------------------------
+# 这个仓库的核心资产是「会自己审自己」的工程习惯，
+# CI 是它的延续：每次 push 都自动跑一遍离线自检。
+#
+# 为什么需要它（真实事件，不是理论）：
+#   lib/engine.py 有 5900+ 行，改动没有任何自动回归手段。
+#   2026-10-08 补engine_guard 时，靠的是「写完手动跑两个自检」——
+#   这在改第三、第四次时必然失效。
+#
+# CI 只跑**离线**自检：不连网、不下单、不碰真实账户。
+#   工具/自检_回撤熔断_20261008.py  → 32 项，算式与闩锁状态机
+#   工具/自检_会话重启_20261008.py  → 13 项，会话异常整体重启
+#
+# 两个脚本都用 print("PASS"/"FAIL") 输出 + 退出码（0/1），
+# 所以 CI 只需检查退出码，不必改写它们。
+# =============================================================
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 只在有实质改动时跑（纯文档不触发，省 Actions 配额）
+paths-ignore:
+  - '**/*.md'
+  - '**/*.txt'
+  - '_收纳/**'
+  - '_归档/**'
+  - '_冻结/**'
+
+jobs:
+  自检:
+    name: 离线自检（不连网·不下单）
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # ★ 刻意**不装** requirements.txt：四个自检脚本只用标准库
+      #   + 本项目 lib/（2026-10-09 实测 import 扫描确认，无第三方包）。
+      #   装 tqsdk 要拉pandas/numpy/aiohttp 等十几个包，
+      #   在只用离线算式的自检上纯属浪费时间和 Actions 配额。
+      #   ⇒ 以后若某个自检开始 import 第三方包，这里必须同步改。
+
+      - name: 冒烟：库能被导入
+        run: |
+          python -c "import lib.engine_guard, lib.paths; print('lib 导入 OK')"
+
+      - name: 自检 · 回撤熔断（32 项）
+        run: python 工具/自检_回撤熔断_20261008.py
+
+      - name: 自检 · 会话重启（13 项）
+        run: python 工具/自检_会话重启_20261008.py
+
+      - name: 行尾体检（bat/cmd 必须是 CRLF）
+        run: |
+          python 工具/自检_行尾_20261009.py
+
+  密钥扫描:
+    name: 密钥扫描（防误提交）
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # 要扫历史，必须全量clone
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # config_account.py 已在 .gitignore 里；
+      # 这个检查防的是「哪天忘了加 .gitignore 就把密码提交了」。
+      - name: 扫工作区与历史
+        run: |
+          python 工具/自检_密钥扫描_20261009.py
