@@ -58,6 +58,17 @@ HAND_MIN    = 1
 HAND_MAX    = 8     # 封顶 8 手（风险预算封顶）
 NOTIONAL_CAP = 2.0  # 名义敞口上限（倍权益）：手数 ≤ 权益×2÷每手名义价值。2026-10-07 加——8手对各品种含义差10倍，需按名义而非固定手数分档
 INIT        = 200000.0     # 初始资金（元）
+# ---- ★ 口径开关（2026-10-09 用户拍板；只影响成交价与手数基数，不影响信号）----
+# GAP_FILL：止损成交价是否模拟跳空。
+#   True  = 保守侧（多头 min(止损线,开盘价) / 空头 max(止损线,开盘价)）
+#          ⇒ 对齐模拟盘实测（成交价可差止损线 −22.11 点）
+#   False = 旧口径（按止损线理想价成交，零滑点零跳空）⇒ 系统性虚高，仅供对照
+GAP_FILL   = True
+# COMPOUND：手数预算基数。
+#   False = 锁死 20 万（对齐模拟盘 RISK_EQUITY，★用户 2026-10-09 拍板方案 A）
+#          ⇒ 保住单腿收益可加性，E[组合]=ΣwᵢE[腿ᵢ] 成立
+#   True  = 复利（预算基数 = 当前权益）⇒ 与模拟盘不一致
+COMPOUND   = False
 # ---- 开发窗（已看）：2021-2023；回测起点前移 7 天预热，预热期不交易 ----
 START = pd.Timestamp("2021-01-01")
 END   = pd.Timestamp("2023-12-31")
@@ -83,9 +94,11 @@ def _base_hand(a, equity):
     return max(HAND_MIN, min(HAND_MAX, h))
 
 def hand_plan(a, equity, price=None):
-    """手数 = 当前权益×1%÷(ATR×一跳×乘数)，夹 [1,8]；再夹名义敞口 ≤ 权益×NOTIONAL_CAP。
+    """手数 = 预算基数×1%÷(ATR×一跳×乘数)，夹 [1,8]；再夹名义敞口 ≤ 预算基数×NOTIONAL_CAP。
     price = 决策时点成交价（本脚本传入场当根开盘价 open_[i]），不是未来数据。
-    注意：名义上限不足 1 手时仍保底 1 手（与既有 HAND_MIN 行为一致，已知代价：实际风险>1%）。"""
+    注意：名义上限不足 1 手时仍保底 1 手（与既有 HAND_MIN 行为一致，已知代价：实际风险>1%）。
+    ★ COMPOUND=False 时预算基数 = PRINCIPAL(20万)，与模拟盘 RISK_EQUITY 严格一致。"""
+    equity = PRINCIPAL if not COMPOUND else equity
     h = _base_hand(a, equity)
     eq = equity if (equity and not math.isnan(equity) and equity > 0) else PRINCIPAL
     if price and price > 0 and not math.isnan(price):
@@ -193,12 +206,17 @@ def run_backtest(start=None, end=None):
             reason = ""
             if pos > 0:
                 if low[i] <= stop_price:
-                    exit_now = True; exit_price = stop_price; reason = "止损"
+                    exit_now = True
+                    # ★ GAP_FILL：跳空低开时成交在开盘价（保守），否则在止损线
+                    exit_price = min(stop_price, open_[i]) if GAP_FILL else stop_price
+                    reason = "止损"
                 elif bars_in >= MAX_HOLD:
                     exit_now = True; exit_price = open_[i]; reason = "时间止损"
             elif pos < 0:
                 if high[i] >= stop_price:
-                    exit_now = True; exit_price = stop_price; reason = "止损"
+                    exit_now = True
+                    exit_price = max(stop_price, open_[i]) if GAP_FILL else stop_price
+                    reason = "止损"
                 elif bars_in >= MAX_HOLD:
                     exit_now = True; exit_price = open_[i]; reason = "时间止损"
 
