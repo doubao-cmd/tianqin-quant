@@ -54,6 +54,10 @@
   .chip.warn{background:rgba(224,168,60,.15); color:var(--warn);}
   .chip.bad{background:rgba(224,108,92,.15); color:var(--bad);}
   .chip.acc{background:rgba(79,140,255,.15); color:var(--acc);}
+  /* ↓ 2026-10-09 新增：裸用语义色（.chip.ok 只在 chip 内生效，故补类） */
+  .ok{color:var(--ok);}
+  .bad{color:var(--bad);}
+  .muted{color:var(--muted, #8b93a3); font-size:13px;}
   code{background:var(--chip); padding:1px 7px; border-radius:5px; font-family:Consolas,monospace; font-size:13px; color:#9ecbff;}
   pre{background:#12151c; border:1px solid var(--line); border-radius:10px; padding:14px 18px; overflow-x:auto; font-size:13px; line-height:1.6; margin:10px 0;}
   pre code{background:none; padding:0; color:#a8c7e8;}
@@ -116,6 +120,7 @@
   <a href="#sk-f" class="sub">F 量化实务</a>
   <a href="#s5">⑤ 作品集工程（git/工作台）</a>
   <a href="#s6">⑥ 模拟盘（正在做）</a>
+  <a href="#s6b">⑥B 最近一次推进（10-09）</a>
   <a href="#s7">⑦ 时间表</a>
   <a href="#s8">⑧ 求职准备</a>
   <a href="#s9">⑨ 项目清理（待确认）</a>
@@ -123,7 +128,7 @@
 
 <main>
 <h1>量化职场<span>学习路线图</span></h1>
-<div class="hero-sub">小c · 大三上 · 双终极目标：进量化机构实习/工作 + 长期自主交易 ｜ 更新：2026-09-30 ｜ 勾选进度自动保存在本机浏览器</div>
+<div class="hero-sub">小c · 大三上 · 双终极目标：进量化机构实习/工作 + 长期自主交易 ｜ 更新：<b>2026-10-09</b> ｜ 勾选进度自动保存在本机浏览器</div>
 
 <!-- ① 总览 -->
 <section id="s1">
@@ -365,13 +370,86 @@ git log --oneline        # 随时回看历史，可回滚到任何一天</code><
 <section id="s6">
 <h2>⑥ 模拟盘（现在正在做）<span class="en">LIVE SIMULATION</span></h2>
 <div class="cards">
-  <div class="card"><b>运行方案</b><span class="small">MA13 双品种（棕榈油P + 苯乙烯EB）单进程，观察模式，双账号纪律（回测不占模拟盘席位），计划从国庆跑到明年——攒<b>前向验证</b>的唯一干净数据。</span></div>
-  <div class="card"><b>工程防线</b><span class="small">单笔止损 → 每笔 1% 预算（8 手封顶）→ 回撤熔断 20%（闩死+弹窗+人工三步复位）→ 双层守护（断线重连/崩溃重启）→ 台账+日报全程留痕。</span></div>
-  <div class="card"><b>四件必测事</b><span class="small">①实际滑点（P 的红线：>2.5 跳淘汰留 EB）②8 手盘口冲击 ③夜盘/早盘成交质量 ④换月执行。台账日报工具已就绪。</span></div>
-  <div class="card"><b>判决点</b><span class="small">观察 2-4 周出日报 → SOP 用真数据定稿 → 达标才开真实下单。若 MA13 在前向复现不了回测期望 → 接受"候选全灭"，教训同样值钱。</span></div>
+  <div class="card"><b>当前运行方案</b><span class="small"><b>MA13 五腿</b>（焦煤/豆粕/鸡蛋/棕榈油/白糖）单进程、云端 TqKq 账户、allow_trade=True真正下单。<br>
+  <span class="muted">2026-10-08 由双品种（P/EB）扩到五腿；10-09 夜盘已全平，权益 987,640（−1.24%）。</span></span></div>
+  <div class="card"><b>工程防线</b><span class="small">单笔止损 → 每笔 1% 预算（8 手封顶）→ 回撤熔断 20%（闩死+三步复位）→ 双层守护（断线重连/崩溃重启）→ 云端持仓对账（以云端为唯一真相源）→ 台账全程留痕。</span></div>
+  <div class="card"><b>⚠️ 实测战绩（不可当结论）</b><span class="small">截至 10-09夜盘：<b>可配对成交仅 9 笔，2 盈 7 亏</b>。<br>
+  <b class="bad">胜率 22.2% 的 95% 置信区间 = [6.3%, 54.7%]</b>，回测的 31.9% 落在区间内 ⇒ <b>9 笔没有判定能力，不能说"回测与实测不一致"</b>。<br>
+  <span class="muted">要区分 22% vs 32%，每腿需 400+ 笔（按 30 笔/日 ≈ 2 个月）。</span></span></div>
+  <div class="card"><b>判决点</b><span class="small">按笔数判定而非按日历：等每腿 ≥100 笔只报数、≥400 笔才下结论。<br>
+  <b>时间止损 vs 价格止损必须分开看</b>：前者是盈利被截断、后者是亏损被截断，均值不可直接比（统计陷阱）。</span></div>
 </div>
-<div class="quote">为什么这是求职资产：能讲清楚"我怎么从抗单爆仓走向止损前置/回撤熔断/长假敞口规则"的人，一个年级挑不出几个——风控认知弧线 = 两年实盘 + 系统化对策 + 落地代码。</div>
+<div class="quote"><b>为什么这是求职资产：</b>能讲清"我怎么从抗单爆仓走向止损前置/回撤熔断/长假敞口规则"的人，一个年级挑不出几个——风控认知弧线 = 两年实盘 + 系统化对策 + 落地代码。<br>
+<b>更值钱的一条（2026-10-09 新增）：</b>我做了 README「已知问题与自审记录」12 条，其中 <b>4 条是"我自己错的"</b>（把 bug 数字当策略变好 / 误判记账 bug / 体检工具自己报错 / 凭印象写分类）。<b>190 star 的同类仓库全都没有这一节</b>——敢把不利证据写进公开仓库本身就是能力证明。</div>
 </section>
+
+<!-- ⑥B 新增：2026-10-09 一天的成果 -->
+<section id="s6b">
+<h2>⑥B 最近一次推进（2026-10-09）<span class="en">LATEST</span></h2>
+
+<h3>✅ 三件调参方向实验：全部失败，但定位到了根因</h3>
+<div class="panel">
+<table>
+<tr><th>方向</th><th>改动</th><th>等权夏普</th><th>正夏普</th></tr>
+<tr><td>原版（对照）</td><td>—</td><td><b class="ok">1.593</b></td><td><b class="ok">4/5</b></td></tr>
+<tr><td>方向1</td><td>加止盈（2×ATR）</td><td class="bad">−4.036</td><td class="bad">0/5</td></tr>
+<tr><td>方向2</td><td>回踩 MA13 平仓</td><td class="bad">−2.447</td><td class="bad">1/5</td></tr>
+<tr><td>方向3</td><td>周期 5min → 1min</td><td class="bad">−0.878</td><td class="bad">2/5</td></tr>
+</table>
+<p><b>⇒ 根因（三个方向失败方式一致，因而能定位）：</b>MA13 的收益结构是
+<b>「小止损 + 让利润跑」</b>（原版时间止损占 37%，止盈组 100% 盈利、均值 +1,214）。
+<b>任何把出场提前、砍短的改动都会破坏它。</b></p>
+<p><b>⇒ 后续不再往出场里加条件</b>（这本身就是规则 2「不叠加过滤」的应用）。</p>
+<p class="muted">★ 这段是面试里最好讲的一段：<b>三个实验全失败，但我能说出为什么失败、根因是什么、因此决定了什么。</b>
+比"我又调出了更好参数"值钱得多——后者谁都能编。</p>
+</div>
+
+<h3>✅ 自查出了三处真实问题（都不是别人发现的）</h3>
+<div class="cards">
+  <div class="card"><b>① 47.2%胜率是 bug，不是策略变好</b><span class="small">逐笔统计发现<b>止损组 33.6% 在盈利出场</b>（止损单不可能盈利）⇒ 止损价落到入场价有利侧。修复后同窗口真实胜率 <b>31.9%</b>。<br>
+  <span class="muted">已固化成硬校验脚本：止损组胜率必须恒为 0%，非0 即产物作废。</span></span></div>
+  <div class="card"><b>② 回测与模拟盘手数口径不一致</b><span class="small">回测改成了复利（按当前权益），模拟盘仍锁死 20 万 ⇒ <b>回测数字无法与模拟盘对账</b>，且模拟盘注释「与回测对齐」是<b>错的</b>。<br>
+  <span class="muted">处置：用两个开关统一（跳空成交 / 锁死20万），并跑 4 格归因算清各自贡献。</span></span></div>
+  <div class="card"><b>③ 体检工具自己报了 3 个假 bug</b><span class="small">「12脚本差 538 行」实为行尾问题、「ATR_N=13」实为元组赋值正则取错位……<br>
+  <span class="muted">★ 沉淀：跨文件常量对比<b>必须逐行打印人眼核对</b>，正则只筛候选。</span></span></div>
+</div>
+
+<h3>✅ 新赛道：截面持仓量因子（已预注册，未运行）</h3>
+<div class="panel">
+<p>读完tqsdk 源码确认：<b>K 线自带持仓量</b>（<code>open_oi</code> / <code>close_oi</code>，注意字段名不是 open_interest），
+且已实测在回测模式下有真实历史值、无换月跳变 ⇒ 截面因子有<b>真实数据基础</b>。</p>
+<p><b>已做（不依赖任何还没验证的东西）：</b></p>
+<ul>
+<li><b>预注册卡</b>：因子定义/参数/窗口/判定标准<b>全部冻结</b>，跑完不许改。状态「已注册，未运行」。</li>
+<li><b>引擎</b>（约 200 行，独立模块不动 portfolio.py）：同一 bar 上横向比较 12 品种 → 排序 → 取 Top3。
+<span class="muted">这是真截面，与时序策略（各品种独立判断）本质不同。</span></li>
+<li><b>9 组单元测试全过</b>（合成数据，不连网）。<span class="muted">其中抓到 2 个真 bug——
+最重要的是「引擎字段名不一致」，若不测会等到跑真实数据才炸，<b>那时样本外已被污染</b>。</span></li>
+</ul>
+<p><b>⚠️ 判定标准（跑前定死，四条全过才算有效）：</b></p>
+<ol>
+<li>等权平均夏普 <b>&gt; 1.0</b> 且正夏普 ≥ 2/3（0.8 不算有效）</li>
+<li>★ <b>必须赢基准</b>：夏普 &gt; 1.593（同窗口 MA13）⇒ 否则不如直接跑 MA13</li>
+<li>交易成本 &lt; 毛收益 30%</li>
+<li>多空两腿各有正贡献（否则是 beta 不是 alpha）</li>
+</ol>
+<p class="muted">★ 诚实声明：2026 窗口<b>不是干净样本外</b>（该段行情09-29 已用 MA13 看过）。
+面试正确说法是「逻辑独立的新因子在已知行情上验证」，<b>不能说"样本外验证"</b>。</p>
+</div>
+
+<h3>📊 今日产出清单（可直接进GitHub）</h3>
+<div class="cards">
+  <div class="card"><b>README 自审记录 12 条</b><span class="small">369→575 行，其中 4 条是"我自己错的"。<br>
+  <span class="muted">同类仓库（190★）全都没有这一节。</span></span></div>
+  <div class="card"><b>6 个可复跑自查工具</b><span class="small">9 项体检 / 止损组硬校验 / 4 格归因 / 通用回测驱动 / 口径补丁 / 引擎单元测试。<br>
+  <span class="muted">面试可以现场跑。</span></span></div>
+  <div class="card"><b>沉淀 6 条操作纪律</b><span class="small">跨文件比常量要人眼核 / 多行比较用 difflib / 判断开关要看开关本身 / 引擎先写合成测试 / 中文变量紧贴关键字会语法错 / 模拟盘在跑别开第二个 TqApi。</span></div>
+</div>
+
+<div class="quote"><b>今天的实话：</b>实质上颗粒无收——MA13 三方向全灭，截面因子一个数字都没跑出来。
+产出的是<b>方法论与自查能力</b>：这些能进面试讲、能写进 GitHub，但<b>不能说"我有正期望策略"</b>。</div>
+</section>
+
 
 <!-- ⑦ 时间表 -->
 <section id="s7">
