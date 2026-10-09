@@ -427,6 +427,104 @@ def _now_atr(k, at=None):
     return float(np.mean(tr[max(1, i - ATR_N):i]))
 
 
+def _cloud_fill_stats(api, s):
+    """★ 只读统计（2026-10-09 新增，规则 2 安全：不改信号/不改参数/不改手数）。
+
+    目的：让台账里的价格**从「我打算以什么价成交」变成「云端实际以什么价成交」**。
+
+    为什么必须读云端（不是自己记）：
+      台账 FILL 行记的是下单那一刻的 last_price（`_lp`），**那是报价不是成交价**。
+      实测两者的差就是滑价——昨晚 9 笔里有 5 笔实际平仓价差于止损价，
+      最差一笔超计划风险 2.2 倍。这项差异**只能用云端的真实数据测量**。
+
+    读的是 Position 实体的字段（源码 objs.py:359 `class Position`）：
+      · position_price_long / _short  → **云端持仓均价（含真实成交价）**
+      · float_profit_long / _short    → **云端算的浮动盈亏**
+      · pos_long_his/_today 等        → 老仓/今仓手数
+    取不到（未就绪 / NaN / 异常）一律静默跳过，绝不影响交易主流程。
+
+    写入 s 的键（只用于统计，不参与任何判定）：
+      s["last_fill_price"]  最近一次读到的云端持仓均价
+      s["peak_favorable"]    持仓期间出现过的最大浮盈（元，正数）
+      s["peak_adverse"]      持仓期间出现过的最大浮亏（元，正数）
+      s["last_cloud_pos"]    上次读到的云端持仓（0=空仓）
+    """
+    rec = s.get("rec")
+    if rec is None:
+        return
+    try:
+        pos = api.get_position(s["q"].underlying_symbol)
+    except Exception:
+        return
+    try:
+        n_l = int(getattr(pos, "pos_long_his", 0) or 0) + \
+              int(getattr(pos, "pos_long_today", 0) or 0)
+        n_s = int(getattr(pos, "pos_short_his", 0) or 0) + \
+              int(getattr(pos, "pos_short_today", 0) or 0)
+        net = n_l - n_s
+        px_l = float(getattr(pos, "position_price_long", float("nan")))
+        px_s = float(getattr(pos, "position_price_short", float("nan")))
+        fp_l = float(getattr(pos, "float_profit_long", float("nan")))
+        fp_s = float(getattr(pos, "float_profit_short", float("nan")))
+    except Exception:
+        return
+
+    prev = s.get("last_cloud_pos", None)
+    avg = px_l if (n_l > 0 and px_l == px_l) else (px_s if (n_s > 0 and px_s == px_s) else None)
+    if avg:
+        s["last_fill_price"] = float(avg)
+
+    # 浮盈/浮亏极值：只记「本次持仓期间」的极值，持仓归零时清空
+    fp = fp_l if (n_l > 0 and fp_l == fp_l) else (fp_s if (n_s > 0 and fp_s == fp_s) else None)
+    if fp is not None and net != 0:
+        if s.get("peak_favorable") is None:
+            s["peak_favorable"] = fp
+            s["peak_adverse"] = fp
+        else:
+            s["peak_favorable"] = max(s["peak_favorable"], fp)
+            s["peak_adverse"] = min(s["peak_adverse"], fp)
+    if net == 0 and prev != 0:
+        # 刚清仓：把这一笔的极值落一条 MFE/MAE 台账行（分析工具靠它算「对了又被扫」）
+        pf = s.get("peak_favorable")
+        pa = s.get("peak_adverse")
+        if pf is not None or pa is not None:
+            rec.event("EXCURSION",
+                      f"持仓期间  最大浮盈={pf if pf is not None else float('nan'):.2f} 元"
+                      f"  最大浮亏={pa if pa is not None else float('nan'):.2f} 元")
+        s["peak_favorable"] = None
+        s["peak_adverse"] = None
+    s["last_cloud_pos"] = net
+
+    # ---- 回填真实成交价：等撮合窗口过了再读云端（详见挂单处的注释）----
+    pend = s.get("pending_fill")
+    if pend:
+        now = time.time()
+        keep = []
+        for p in pend:
+            if now - float(p["ts"]) < FIX_WAIT_SEC:
+                keep.append(p)              # 还没到窗口，下个节拍再看
+                continue
+            ref = float(p.get("ref_price") or 0)
+            if avg and ref > 0:
+                # 滑点 = 决策价 vs 云端成交均价（换算成元，正=更不利方向）
+                # 乘数从 config_symbols 取（s 里没存 mult，它只活在 _hand_of 的闭包里）
+                try:
+                    _t = config_symbols.SYMBOLS[s["key"]]
+                    mult = float(_t[2])
+                except Exception:
+                    mult = 0.0
+                slip_yuan = (avg - ref) * (1 if p["dir"] == "多" else -1) * \
+                            (mult or 1) * p["hands"]
+                rec.event("FILLX",
+                          f"{p['dir']}{p['side']} {p['hands']}手 "
+                          f"决策价={ref:.2f} 云端成交均价={avg:.2f} "
+                          f"滑点≈{slip_yuan:+.2f}元")
+            else:
+                rec.event("FILLX", f"{p['dir']}{p['side']} {p['hands']}手 "
+                                   f"决策价={ref:.2f} 云端均价未就绪（未读到）")
+        s["pending_fill"] = keep
+
+
 def _sync_cloud_pos(api, s):
     """★ 云端持仓对账（切 TqKq 后的核心保护，见常量区SYNC_CLOUD 注释）。
 
@@ -512,10 +610,12 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
     sh["dt"] = q.datetime
     sh["price"] = float(_lp) if _lp and not math.isnan(_lp) else sh["price"]
 
-    # ---- 云端持仓对账：必须在「无新 bar 就return」之前 ----
+    # ---- 云端持仓对账：必须在「无新bar 就return」之前 ----
     # 每次 wait_update 都问一次云端，不依赖新 bar（休市/ 重启后首个 bar 到来前
     # 也必须生效，否则新仓无人接管）。只在不一致时才动手，见函数内注释。
     _sync_cloud_pos(api, s)
+    # ★ 只读统计（不改交易）：读云端真实持仓均价与浮动盈亏 → 供台账算滑点/MFE/MAE
+    _cloud_fill_stats(api, s)
 
     bar = k.iloc[-1]
     if bar["id"] == s["last_id"] or bar["id"] < 0:
@@ -553,6 +653,9 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
             api.insert_order(q.underlying_symbol, "SELL", "CLOSE", abs(pos))
             s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
             rec.fill("多", "平", abs(pos), float(_lp), q.underlying_symbol)
+            s.setdefault("pending_fill", []).append(
+                {"ts": s["last_order_ts"], "side": "平", "dir": "多",
+                 "hands": abs(pos), "ref_price": float(_lp)})
         rec.stoploss("多", s["stop"], c,
                      f"止损触发={l <= s['stop']} 时间止损={s['bars_in'] >= MAX_HOLD}")
         print(f"[{s['name']}][EXIT] 多 {abs(pos)}手 止损={l <= s['stop']} "
@@ -563,6 +666,9 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
             api.insert_order(q.underlying_symbol, "BUY", "CLOSE", abs(pos))
             s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
             rec.fill("空", "平", abs(pos), float(_lp), q.underlying_symbol)
+            s.setdefault("pending_fill", []).append(
+                {"ts": s["last_order_ts"], "side": "平", "dir": "空",
+                 "hands": abs(pos), "ref_price": float(_lp)})
         rec.stoploss("空", s["stop"], c,
                      f"止损触发={h >= s['stop']} 时间止损={s['bars_in'] >= MAX_HOLD}")
         print(f"[{s['name']}][EXIT] 空 {abs(pos)}手 止损={h >= s['stop']} "
@@ -591,6 +697,13 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
                              "BUY" if dir_trend > 0 else "SELL", "OPEN", hand)
             s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
             rec.fill(dir_cn, "开", hand, float(_lp), q.underlying_symbol)
+            # ★ 只补记：把本笔挂进"待回填"队列，等撮合完成（FIX_WAIT_SEC 之后）
+            #   由 _cloud_fill_stats 读云端真实成交均价 → FILLX 行。
+            #   ★ 不能在下单这一刻读云端：撮合有几秒延迟，此刻读到的还是**旧仓**，
+            #     会把上一笔的价格错记成本笔成交价（比原FILL 更糟）。
+            s.setdefault("pending_fill", []).append(
+                {"ts": s["last_order_ts"], "side": "开", "dir": dir_cn,
+                 "hands": hand, "ref_price": float(_lp)})
             # 已修复单品种版 led 未定义的 NameError；账本对接见 运营SOP 欠账#6
         print(f"[{s['name']}][{'OPEN' if allow_trade else 'SIGNAL'}] {dir_cn} {hand}手 "
               f"@≈{c:.1f} 止损≈{stop_new:.1f} ATR={a:.2f}", flush=True)

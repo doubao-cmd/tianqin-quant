@@ -122,12 +122,16 @@ def _parse_trades(rows):
     """
     out, cur = [], None
     pending_stop = None          # 最近一条 SIGNAL 的止损（还没被开仓消费）
+    extra = []                   # 新版才有：FILLX 真滑点 / EXCURSION 浮盈浮亏
     for r in rows:
         k = r["kind"]
         if k == "SIGNAL":
             s = _stop_from_note(r["note"])
             if s is not None:
                 pending_stop = s
+            continue
+        if k in ("FILLX", "EXCURSION"):
+            extra.append(r)
             continue
         if k == "STOPLOSS":
             s = _stop_from_note(r["note"]) or _f(r["ref"])
@@ -162,7 +166,7 @@ def _parse_trades(rows):
                 cur["exit_ts"] = r["ts"]
                 out.append(cur)
                 cur = None
-    return out, cur
+    return out, cur, extra
 
 
 def _stop_from_note(note):
@@ -209,7 +213,7 @@ def analyse(key, taidir=DEFAULT_TAIDIR, show_open=False):
     if not rows:
         print(f"[{nm}] 没有成交流水：{path}")
         return None
-    trades, open_pos = _parse_trades(rows)
+    trades, open_pos, extra = _parse_trades(rows)
     mult, tick = _mult_tick(key)
     fee1 = _cost(key)
 
@@ -280,7 +284,32 @@ def analyse(key, taidir=DEFAULT_TAIDIR, show_open=False):
     if open_pos and show_open:
         print(f"\n  ⚠ 当前持仓：{open_pos['dir']} {open_pos['hands']:.0f}手 "
               f"@{open_pos['entry']} 开于 {open_pos['entry_ts']} 止损≈{open_pos.get('stop')}")
+    _print_extra(extra)
     return trades
+
+
+def _print_extra(extra):
+    """新版钩子才有 的两类数据：FILLX（真滑点）与 EXCURSION（最大浮盈/浮亏）。
+
+    ⚠️ 2026-10-08 那批台账**没有**这两类（当时程序只记决策价），
+    所以首次运行会显示「尚无」—— 这不是 bug，要等重启后的新成交才有。
+    """
+    fx = [r for r in extra if r["kind"] == "FILLX"]
+    ex = [r for r in extra if r["kind"] == "EXCURSION"]
+    print()
+    if not fx:
+        print("  【真滑点】尚无FILLX 数据（需重启新版后才有："
+              "老台账只记决策价，不记云端成交价）")
+    else:
+        print(f"  【真滑点】来自云端成交均价（{len(fx)} 条）")
+        for r in fx[-8:]:
+            print(f"    {r['ts']}  {r['note']}")
+    if not ex:
+        print("  【浮盈浮亏】尚无 EXCURSION 数据（同上，需重启新版）")
+    else:
+        print(f"  【浮盈浮亏】持仓期间极值（{len(ex)} 条）")
+        for r in ex[-8:]:
+            print(f"    {r['ts']}  {r['note']}")
 
 
 def _summarise(all_tr):
