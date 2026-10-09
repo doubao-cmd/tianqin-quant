@@ -5,6 +5,13 @@ config_account*.py
 config_account*.py.bak*
 *_账号*.py
 *_密钥*.py
+# ===== ★ SSH 私钥（2026-10-09 新增）=====
+# 本机走 SSH 免代理直连 GitHub（443-HTTPS 被墙 / 22 端口通）。
+# 私钥永不入库；公钥 .pub 无害但也不入库。
+id_ed25519*
+*.pem
+*.key
+.ssh/
 
 # ===== Python 运行产物 =====
 __pycache__/
