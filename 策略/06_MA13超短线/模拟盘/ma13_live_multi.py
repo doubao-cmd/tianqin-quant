@@ -21,7 +21,7 @@ MA13 超短线 · 多品种单进程实时模拟盘（P/EB 双候选版）
 禁未来函数：只用已收盘 bar；新 bar 出现（=前一根收盘）瞬间判定，立即执行。
 默认 ALLOW_TRADE=False 观察模式：只算信号、打印、写台账，不报单。
 """
-import sys, os, time, math, json, threading
+import sys, os, time, math, json, threading, io
 import numpy as np
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -34,6 +34,77 @@ from tqsdk import TqApi, TqSim, TqKq, TqAuth
 from lib.engine import _LiveRecorder
 import config_account
 import config_symbols
+
+# ============================================================
+# ★★ 核心层单实例锁（2026-10-09 新增）★★
+#   为什么守护层的 守护.lock 还不够（这是实测出来的，不是推演）：
+#   今天上午发现**两个守护进程能同时抢到锁** —— 它们同一秒启动，
+#   各自的 _抢锁() 读对方锁里的 PID、都判定「已死」，于是双双接管、
+#   各自拉起一个核心。两个核心 = 双份下单 + 双份台账写入。
+#   当时没出事纯属运气：tqsdk-venv 那条链的核心卡在连天勤之前
+#   （1 线程 / CPU 0.0s / 55 句柄），根本没跑起来。
+#   ⇒ 「守护锁」防的是重复触发；「核心锁」防的是**重复下单**。
+#      后者才是真正不可承受的那道。宁可有冗余，不可有缺口。
+_CORE_LOCK = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "台账", "核心.lock")
+_core_lock_fh = None
+
+
+def _pid_alive(pid):
+    """该 PID 是否还活着（Windows 用 OpenProcess 判，别用 psutil）。"""
+    if not pid or int(pid) <= 0:
+        return False
+    try:
+        import ctypes
+        k = ctypes.windll.kernel32
+        h = k.OpenProcess(0x1000, 0, int(pid))     # PROCESS_QUERY_LIMITED_INFORMATION
+        if not h:
+            return False
+        code = ctypes.c_ulong()
+        ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+        k.CloseHandle(h)
+        return bool(ok) and code.value == 259      # STILL_ACTIVE
+    except Exception:
+        return False
+
+
+def _抢核心锁():
+    """抢核心单实例锁。抢到返回句柄（模块级持有，进程活则锁在），否则 None。"""
+    global _core_lock_fh
+    os.makedirs(os.path.dirname(_CORE_LOCK), exist_ok=True)
+    for _ in range(2):
+        try:
+            fh = open(_CORE_LOCK, "x", encoding="utf-8")
+            fh.write(f"{os.getpid()}\r\n{time.strftime('%Y-%m-%d %H:%M:%S')}\r\n")
+            fh.flush()
+            _core_lock_fh = fh          # 模块级持有引用，防被 GC 关闭
+            return fh
+        except FileExistsError:
+            old = 0
+            try:
+                with io.open(_CORE_LOCK, "r", encoding="utf-8") as f:
+                    old = int((f.readline() or "0").strip() or 0)
+            except Exception:
+                old = 0
+            if _pid_alive(old):
+                return None             # 真有另一个核心在跑 ⇒ 绝不双开
+            try:
+                os.remove(_CORE_LOCK)    # 僵尸锁（上次被强杀留下）⇒ 清掉重抢
+            except Exception:
+                return None
+    return None
+
+
+def _释放核心锁():
+    """只在锁里是自己 PID 时才删（防误删别人的）。"""
+    try:
+        with io.open(_CORE_LOCK, "r", encoding="utf-8") as f:
+            mine = int((f.readline() or "0").strip() or 0) == os.getpid()
+        if mine:
+            os.remove(_CORE_LOCK)
+    except Exception:
+        pass
+
 
 MA_N, SLOPE_N, ATR_N = 13, 5, 14
 RETRACE_TOL, STOP_BUFFER, STOP_CAP, MAX_HOLD = 0.5, 0.5, 2.0, 15
@@ -729,6 +800,23 @@ if __name__ == "__main__":
     ap.add_argument("--drill-fuse", action="store_true",
                     help="熔断演练：启动后强制触发一次回撤熔断（会闩死，需人工复位）")
     args = ap.parse_args()
-    run_live_multi(symbol_keys=[x.strip().upper() for x in args.symbols.split(",") if x.strip()],
-                   allow_trade=args.trade, web_gui=args.gui,
-                   drill_fuse=args.drill_fuse)
+
+    # ★★ 核心层单实例闸门（2026-10-09）★★
+    #   抢不到锁 = 已有另一个核心在跑 ⇒ 直接退出，绝不第二个下单。
+    #   这是最后一道防线：守护锁挡不住「两个守护同时抢到锁」的竞态。
+    if _抢核心锁() is None:
+        try:
+            with io.open(_CORE_LOCK, "r", encoding="utf-8") as _f:
+                _other = (_f.readline() or "0").strip()
+        except Exception:
+            _other = "?"
+        print(f"[核心] 已有核心实例在运行（PID {_other}），本进程拒绝启动以防双份下单。"
+              f"若确认那是僵尸锁，删掉 {_CORE_LOCK} 再试。", flush=True)
+        raise SystemExit(0)
+
+    try:
+        run_live_multi(symbol_keys=[x.strip().upper() for x in args.symbols.split(",") if x.strip()],
+                       allow_trade=args.trade, web_gui=args.gui,
+                       drill_fuse=args.drill_fuse)
+    finally:
+        _释放核心锁()
