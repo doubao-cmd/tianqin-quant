@@ -1,0 +1,47 @@
+# ===========================================================
+# 环境锁 —— 完整复现当前实测环境（2026-10-09）
+# ===========================================================
+# ★ 这份文件是「快照」，不是「声明」：记录本机各包的精确版本，
+#   用于在另一台机器上复现**完全一致**的环境。
+#
+# 用法：
+#   pip install -r requirements.txt          # 日常开发（宽松，3 个直接依赖）
+#   pip install -r requirements.lock.txt     # 需要完全复现本机环境时
+#
+# ⚠️ 已排除 git-filter-repo —— 那是重写 Git 历史时临时装的工具，
+#    不属于本项目依赖。
+#
+# 实测基准：Python 3.12.1 / Windows 10.0.26200 / tqsdk 3.10.2
+# ------------------------------------------------------------
+PyJWT==2.13.0
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.3
+aiosignal==1.4.0
+attrs==26.1.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+filelock==3.32.6
+frozenlist==1.8.0
+graphql-core==3.2.12
+idna==3.19
+multidict==6.8.0
+numpy==2.5.3
+packaging==26.3
+pandas==3.0.5
+propcache==0.5.2
+psutil==7.2.2
+python-dateutil==2.9.0.post0
+requests==2.34.2
+scipy==1.18.1
+sgqlc==18
+shinny-structlog==0.0.4
+simplejson==4.1.2
+six==1.17.0
+tqsdk-ctpse==1.2.0
+tqsdk-sm==1.0.5
+tqsdk==3.10.2
+typing_extensions==4.16.0
+tzdata==2026.3
+urllib3==2.7.0
+websockets==17.1
+yarl==1.24.5

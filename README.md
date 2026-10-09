@@ -145,13 +145,32 @@
 
 ### 依赖
 
+Python ≥ 3.9（实测基准 3.12.1 / Windows 10）。第三方依赖**只有 3 个**，全部由 [tqsdk](https://github.com/shinnytech/tqsdk-python) 生态提供：
+
 ```
-tqsdk    3.10.2     # 天勤 SDK（行情 + 交易 + 回测）
-pandas   3.0.5
-numpy    2.5.3
+tqsdk >= 3.10.2      # 行情 / 历史数据 / 回测 / 模拟交易 / 实盘交易
+pandas >= 1.1.0      # 回测指标、台账聚合、回撤统计
+numpy  >= 1.20.0     # 指标向量化
 ```
 
-环境为隔离 venv：`C:\Users\cc\.workbuddy\binaries\python\envs\tqsdk`
+```bash
+# 方式一（推荐，日常开发）
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# 方式二（需要完全复现实测环境时）
+pip install -r requirements.lock.txt
+```
+
+> `requirements.txt` 只声明**直接依赖**（实测扫描全仓库 13 个 `.py` 文件得出），
+> tqsdk 的 14 个传递依赖交给 pip 自动解析，手工钉版本反而容易和它的约束打架。
+> `requirements.lock.txt` 是本机 32 个包的**精确快照**，用于换机复现。
+
+其他说明：
+- **不需要 TA-Lib**：技术指标全部自行实现（只用 pandas/numpy），避免指标库版本差异造成口径漂移。
+- **不需要 vnpy**：本项目直接用 tqsdk，不走 vnpy 生态。
+- **Windows 若卡在编译依赖**：改用 tqsdk 官方 exe 安装包，见[官方安装说明](https://doc.shinnytech.com/tqsdk/latest/installation.html)。
 
 ### 配置
 
