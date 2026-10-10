@@ -49,18 +49,23 @@ def 造(oi路径, px路径):
     return oi, px
 
 # 前 LOOKBACK 根平稳，之后给不同品种不同的持仓量/价格路径
+# ★ 2026-10-10 改：OI_THRESH 从 ±5% 重标为 ±60%（日频 LOOKBACK=20 累计口径）
+#   ⇒ 合成数据的变化幅度必须跟着改：10% → 100%（跨新阈值），
+#     12%（健康上涨，要被 px 同向卡住）→ 80%（oi 超阈值但 px 同向 ⇒ 无信号）
 平oi, 平px = [0.0] * N, [0.0] * N
-增仓滞涨_多 = 平oi[:]; 增仓滞涨_多[E.LOOKBACK:] = [0.10] * (N - E.LOOKBACK)   # oi+10% px不变 → 顶部
-增仓滞涨_空 = 平oi[:]; 增仓滞涨_空[E.LOOKBACK:] = [0.10] * (N - E.LOOKBACK)
-减仓下跌_多 = 平oi[:]; 减仓下跌_多[E.LOOKBACK:] = [-0.10] * (N - E.LOOKBACK)  # oi-10% → 底部
-健康上涨    = 平oi[:]; 健康上涨[E.LOOKBACK:] = [0.10] * (N - E.LOOKBACK)
-健康上涨2   = 平oi[:]; 健康上涨2[E.LOOKBACK:] = [0.10] * (N - E.LOOKBACK)
-健康上涨2[E.LOOKBACK:] = [0.10] * (N - E.LOOKBACK)
-健康上涨3   = 平oi[:]; 健康上涨3[E.LOOKBACK:] = [0.10] * (N - E.LOOKBACK)
+增仓滞涨_多 = 平oi[:]; 增仓滞涨_多[E.LOOKBACK:] = [1.00] * (N - E.LOOKBACK)   # oi+100% px不变 → 顶部
+增仓滞涨_空 = 平oi[:]; 增仓滞涨_空[E.LOOKBACK:] = [1.00] * (N - E.LOOKBACK)
+减仓下跌_多 = 平oi[:]; 减仓下跌_多[E.LOOKBACK:] = [-0.70] * (N - E.LOOKBACK)  # oi-70% → 底部
+#   ⚠️ 减仓幅度不能恰好等于 −0.60（=−OI_THRESH）：条件是 oi_chg < −OI_THRESH
+#      严格小于，恰好相等 ⇒ False ⇒ 不触发（曾因此测试失败）
+健康上涨    = 平oi[:]; 健康上涨[E.LOOKBACK:] = [1.00] * (N - E.LOOKBACK)
+健康上涨2   = 平oi[:]; 健康上涨2[E.LOOKBACK:] = [1.00] * (N - E.LOOKBACK)
+健康上涨2[E.LOOKBACK:] = [1.00] * (N - E.LOOKBACK)
+健康上涨3   = 平oi[:]; 健康上涨3[E.LOOKBACK:] = [1.00] * (N - E.LOOKBACK)
 
 # 健康上涨：oi 和 px 同向大幅变动 ⇒ 不该出信号（阈值卡住了）
-健康_oi = 平oi[:]; 健康_oi[E.LOOKBACK:] = [0.12] * (N - E.LOOKBACK)
-健康_px = 平px[:]; 健康_px[E.LOOKBACK:] = [0.08] * (N - E.LOOKBACK)
+健康_oi = 平oi[:]; 健康_oi[E.LOOKBACK:] = [0.80] * (N - E.LOOKBACK)
+健康_px = 平px[:]; 健康_px[E.LOOKBACK:] = [0.30] * (N - E.LOOKBACK)
 
 腿 = [
     ("甲", "A", 10, 1.0, 3.0),
