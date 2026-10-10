@@ -29,7 +29,19 @@ while _ROOT != os.path.dirname(_ROOT) and not os.path.isdir(os.path.join(_ROOT, 
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from config_account import USER, PASSWORD
+# 凭据来自本地 gitignore 的 config_account.py（绝不入库）。公开仓库 clone 后该文件不存在，
+# 此时走免登录回测路径（TqSim + TqBacktest 不需要天勤账号）。
+try:
+    from config_account import USER, PASSWORD
+    _HAS_ACCOUNT = bool(USER and PASSWORD and "填" not in str(USER))
+except Exception:
+    USER = PASSWORD = None
+    _HAS_ACCOUNT = False
+
+def _auth():
+    """有凭据才带 TqAuth，否则返回 None（免登录回测）。"""
+    return TqAuth(USER, PASSWORD) if _HAS_ACCOUNT else None
+
 from config_symbols import SYMBOLS
 from tqsdk import TqApi, TqSim, TqBacktest, TqAuth, BacktestFinished
 
@@ -67,7 +79,7 @@ def _fetch_daily(key):
     name, main_code, mult, tick = SYMBOLS[key]
     api = TqApi(TqSim(200000),
                 backtest=TqBacktest(start_dt=BACKTEST_START, end_dt=BACKTEST_END),
-                auth=TqAuth(USER, PASSWORD), web_gui=False)
+                auth=_auth(), web_gui=False)
     try:
         k = api.get_kline_serial(main_code, 24 * 60 * 60, data_length=2000)
         while True:
