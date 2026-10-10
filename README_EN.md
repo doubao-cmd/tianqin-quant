@@ -62,9 +62,10 @@ lib/                      shared engine (lib/engine.py) + portfolio layer
 1. A **~32% win rate** means the edge lives entirely in the payoff ratio.
 2. A **+399% return against a 7.7% drawdown** points at position sizing, not alpha.
 3. **This window is contaminated**: it was inspected while developing the strategy.
-4. On a *different* window (2025-03 ~ 2026-03) the same configuration degrades to
-   **equal-weight Sharpe 1.59** — roughly half. Decay is expected; the number to trust is
-   the decay, not the peak.
+4. Across the 12-symbol three-window comparison (development 2021-23 → forward 2024-25 →
+   probe 2026) equal-weight Sharpe **decays 3.67 → 2.04 → 1.55**. Every window is contaminated,
+   so the decay — not the peak — is the number to trust (full table:
+   `回测结果/06_MA13超短线/三段对照_20261010.md`).
 
 ## 4. Strategies that were falsified (kept on purpose)
 

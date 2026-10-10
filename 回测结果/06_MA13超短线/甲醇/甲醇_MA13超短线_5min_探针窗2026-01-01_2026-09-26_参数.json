@@ -1,0 +1,40 @@
+{
+  "symbol": "KQ.m@CZCE.MA",
+  "symbol_cn": "甲醇",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0
+  },
+  "start": "2026-01-01",
+  "end": "2026-09-26",
+  "bars": 15482,
+  "annual_bars": 16878.8,
+  "trades": 639,
+  "wins": 183,
+  "win_rate": 0.2864,
+  "sharpe": 1.3387,
+  "sharpe_11500": 1.105,
+  "final_equity": 261190.0,
+  "total_return": 0.306,
+  "max_drawdown": 0.1651,
+  "bar_avg_drawdown": 0.0261,
+  "blown": false,
+  "commission": 20420.0,
+  "cost_assumption": "滑点1跳+佣金2.0元/手/边; 本金200000; 手数=锁死200000(对齐模拟盘RISK_EQUITY)×1%÷ATR风险夹[1,8]+名义敞口≤权益×2倍; 止损=GAP_FILL保守成交(多头min(止损线,开盘)/空头max); 乘数10; 一跳1; 标定2026-10-10"
+}
