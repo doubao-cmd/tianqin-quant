@@ -181,6 +181,8 @@ pip install -r requirements.lock.txt
    ```
 2. 双击 `天勤量化.bat` 进入工作台，或直接运行对应脚本。
 
+> 完整上手说明（含数据边界、能跑什么、为何无样本外结论）见根目录 **`SETUP.md`**。
+
 ### 典型命令
 
 ```bash
