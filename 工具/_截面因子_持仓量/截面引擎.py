@@ -42,6 +42,9 @@ OI_THRESH  = 0.60    # 持仓量 20 日累计变化阈值 ±60%
 PX_THRESH  = 0.01    # 价格变化阈值 ±1%
 TOP_N      = 3       # 12 品种取信号最强的 3 个
 MAX_HOLD   = 20      # 最长持有根数
+STOP_MULT  = 2.0     # ★ 2026-10-10 止损倍数（与 MA13 的 STOP_CAP 同值，经验值）
+                       #   止损线 = entry ∓ STOP_MULT×ATR[i-1]；ATR 周期=LOOKBACK（不引入新参数）
+                       #   收盘确认（t−1 close 穿越）→ 次日开盘成交（t open）⇒ 零未来函数
 KSEC       = 86400   # 日频（2026-10-09 用户拍板：持仓量变化以月计，30min 噪声大于信号）
 INIT       = 200000.0
 SLIP       = 1# 滑点（跳）
@@ -100,11 +103,32 @@ class 截面引擎:
             }
 
     # ---------- 数据装载 ----------
-    def 装数据(self, key, oi_arr, close_arr):
-        """把某品种的持仓量/收盘价序列塞进来（numpy 数组，长度一致）。"""
+    def 装数据(self, key, oi_arr, close_arr, high_arr=None, low_arr=None):
+        """把某品种的持仓量/收盘价序列塞进来（numpy 数组，长度一致）。
+        ★ 2026-10-10 加 high/low（可选）：算 ATR 用；不传则 ATR 退化为
+          「20 日收盘价单跳均值」的近似（跑因子会传真值）。"""
         s = self.st[key]
         s["oi_arr"] = np.asarray(oi_arr, float)
         s["close_arr"] = np.asarray(close_arr, float)
+        s["high_arr"] = np.asarray(high_arr, float) if high_arr is not None else None
+        s["low_arr"] = np.asarray(low_arr, float) if low_arr is not None else None
+
+    def _atr(self, key, i):
+        """ATR(i-1)：截至第 i−1 根的 LOOKBACK 周期平均真实波幅（不含 i，禁未来函数）。
+        有 high/low 用真 ATR；没有则用 |close 差| 的均值近似。"""
+        s = self.st[key]
+        c = s["close_arr"]
+        n = min(LOOKBACK, i)                    # 窗口 = LOOKBACK，只用 ≤ i−1
+        if n < 5:
+            return np.nan
+        if s["high_arr"] is not None and s["low_arr"] is not None:
+            h = s["high_arr"][i - n:i]
+            l = s["low_arr"][i - n:i]
+            pc = c[i - n - 1:i - 1] if i - n - 1 >= 0 else c[i - n:i - 1]
+            tr = np.maximum(h - l, np.maximum(np.abs(h - pc), np.abs(l - pc)))
+            return float(np.nanmean(tr))
+        diffs = np.abs(np.diff(c[i - n - 1:i]))
+        return float(np.mean(diffs)) if len(diffs) else np.nan
 
     def 就绪(self):
         return all(s["oi_arr"] is not None and len(s["oi_arr"]) > 0
@@ -163,28 +187,50 @@ class 截面引擎:
         选 = self.截面选(i)
         选中 = {k: (d, abs(s)) for k, d, s, _, _ in 选}
 
-        # --- 1) 先处理已有持仓：反向信号 或 持仓超期 → 平仓 ---
+        # --- 1) 先处理已有持仓：止损 / 反向信号 / 持仓超期 → 平仓 ---
         for 名, key, *_ in self.腿:
             s = self.st[key]
             if s["pos"] == 0:
                 continue
-            反向 = False
-            if key in 选中 and 选中[key][0] != s["pos"]:
-                反向 = True
-            if not 反向 and s["bars_in"] >= MAX_HOLD:
-                反向 = True
-            if 反向:
-                px = 开盘价表.get(key)
-                if px and np.isfinite(px) and px > 0:
-                    pnl = s["pos"] * s["手"] * (px - s["entry"]) * s["mult"]
-                    事件.append({
-                        "key": key, "名": 名, "act": "平",
-                        "dir": s["pos"], "手": s["手"],
-                        "entry": s["entry"], "px": px,
-                        "pnl": pnl - SLIP * s["tick"] * s["mult"] * s["手"],
-                        "bars": s["bars_in"], "i": i,
-                    })
-                    s["pos"] = 0; s["手"] = 0; s["bars_in"] = 0
+            px = 开盘价表.get(key)
+            平 = None          # (出场原因, 成交价)
+            # ★ 止损（2026-10-10 新增）：t−1 收盘已穿越止损线 ⇒ t 开盘成交
+            #   止损线用 t−1 的 ATR（entry 定格于开仓日，ATR 逐日更新，均合法）
+            #   ⚠️ 用该品种自己的 close_arr（多品种不能共用一条收盘序列）
+            if px and np.isfinite(px) and px > 0 and i >= 1:
+                c = s["close_arr"]
+                atr = self._atr(key, i)
+                if atr == atr and atr > 0:      # 非 nan
+                    if s["pos"] > 0:
+                        线 = s["entry"] - STOP_MULT * atr
+                        if c[i - 1] <= 线:
+                            # 保守侧：跳空低开则按更差的开盘成交
+                            平 = ("止损", min(线, px))
+                    else:
+                        线 = s["entry"] + STOP_MULT * atr
+                        if c[i - 1] >= 线:
+                            平 = ("止损", max(线, px))
+            # 反向信号 或 超期（原有逻辑不变）
+            if 平 is None:
+                反向 = False
+                if key in 选中 and 选中[key][0] != s["pos"]:
+                    反向 = True
+                if not 反向 and s["bars_in"] >= MAX_HOLD:
+                    反向 = True
+                if 反向 and px and np.isfinite(px) and px > 0:
+                    平 = ("超期" if s["bars_in"] >= MAX_HOLD and
+                          not (key in 选中 and 选中[key][0] != s["pos"]) else "反向", px)
+            if 平:
+                原因, 成交 = 平
+                pnl = s["pos"] * s["手"] * (成交 - s["entry"]) * s["mult"]
+                事件.append({
+                    "key": key, "名": 名, "act": "平", "reason": 原因,
+                    "dir": s["pos"], "手": s["手"],
+                    "entry": s["entry"], "px": 成交,
+                    "pnl": pnl - SLIP * s["tick"] * s["mult"] * s["手"],
+                    "bars": s["bars_in"], "i": i,
+                })
+                s["pos"] = 0; s["手"] = 0; s["bars_in"] = 0
 
         # --- 2) 再开新仓：只开「还没持仓」且被选中的品种 ---
         已持有 = {k for 名, k, *_ in self.腿 if self.st[k]["pos"] != 0}

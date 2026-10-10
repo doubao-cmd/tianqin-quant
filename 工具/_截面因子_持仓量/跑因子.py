@@ -79,6 +79,8 @@ def 拉(起, 止):
                         "oi": float(kv["close_oi"].iloc[-1]),
                         "close": float(kv["close"].iloc[-1]),
                         "open": float(kv["open"].iloc[-1]),
+                        "high": float(kv["high"].iloc[-1]),
+                        "low": float(kv["low"].iloc[-1]),
                     }
     finally:
         try:
@@ -98,7 +100,9 @@ def 对齐(数据):
     oi = {k: np.array([数据[k][d]["oi"] for d in 日期], float) for k in 池}
     close = {k: np.array([数据[k][d]["close"] for d in 日期], float) for k in 池}
     op = {k: np.array([数据[k][d]["open"] for d in 日期], float) for k in 池}
-    return 日期, oi, close, op
+    high = {k: np.array([数据[k][d]["high"] for d in 日期], float) for k in 池}
+    low = {k: np.array([数据[k][d]["low"] for d in 日期], float) for k in 池}
+    return 日期, oi, close, op, high, low
 
 
 def 手数默认(s, price):
@@ -119,7 +123,7 @@ def 跑(窗名):
     原始 = 拉(起, 止)
     for k in 池:
         print("  %-4s 收到 %5d 根" % (k, len(原始.get(k, {}))))
-    日期, oi, close, op = 对齐(原始)
+    日期, oi, close, op, high, low = 对齐(原始)
     n = len(日期)
     print("对齐后（交集）：%d 根  首日 %s 末日 %s"
           % (n, pd.Timestamp(日期[0]).date(), pd.Timestamp(日期[-1]).date()))
@@ -134,7 +138,7 @@ def 跑(窗名):
         腿表.append((名, k, float(mult), float(tick), float(cs.COST[k])))
     eng = E.截面引擎(腿表, 手数函数=手数默认)
     for k in 池:
-        eng.装数据(k, oi[k], close[k])
+        eng.装数据(k, oi[k], close[k], high[k], low[k])
     assert eng.就绪(), "引擎数据未就绪"
 
     # ---- 逐 bar 推进（信号 t−1，成交 t 开盘，引擎内部保证）----
