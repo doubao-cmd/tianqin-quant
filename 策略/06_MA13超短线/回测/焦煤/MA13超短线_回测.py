@@ -320,7 +320,19 @@ def run_backtest(start=None, end=None):
         "total_return": round(total_return, 4), "max_drawdown": round(max_dd, 4),
         "bar_avg_drawdown": round(bar_avg_dd, 4), "blown": bool(blown),
         "commission": round(comm_total, 2),
-        "cost_assumption": f"滑点{SLIP}跳+佣金{COMM}元/手/边; 本金{INIT:.0f}; 手数=当前权益×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]+名义敞口≤权益×{NOTIONAL_CAP:.0f}倍（20261007）; 乘数{MULT}; 一跳{TICK}",
+        # ★ 2026-10-10 修：标签不再硬编码（原标签恒写「当前权益×1%」=复利，
+        #   但 COMPOUND=False 时实际基数=锁死20万 ⇒ 标签与实现不符，误导所有读 json 的人）。
+        #   现在由两个开关动态生成，含标定日期，任何人一眼能对上代码。
+        "cost_assumption": (
+            f"滑点{SLIP}跳+佣金{COMM}元/手/边; 本金{INIT:.0f}; "
+            + (f"手数=锁死{PRINCIPAL:.0f}(对齐模拟盘RISK_EQUITY)×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]"
+               if not COMPOUND else
+               f"手数=当前权益×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]")
+            + f"+名义敞口≤权益×{NOTIONAL_CAP:.0f}倍; "
+            + ("止损=GAP_FILL保守成交(多头min(止损线,开盘)/空头max)" if GAP_FILL
+               else "止损=理想价成交(零滑点零跳空,系统性虚高,仅供对照)")
+            + f"; 乘数{MULT}; 一跳{TICK}; 标定2026-10-10"
+        ),
     }
     kline_history = [{"dt": int(d_list[i]), "open": float(o_list[i]), "high": float(h_list[i]),
                      "low": float(l_list[i]), "close": float(c_list[i]), "volume": 0.0}
