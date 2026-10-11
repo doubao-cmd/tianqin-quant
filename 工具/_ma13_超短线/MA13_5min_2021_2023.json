@@ -1,4 +1,11 @@
 {
+  "_作废声明": "⚠️ 本文件数字已作废（2026-10-11）。生成它的脚本 run_ma13_MA_5min.py 存在权益记账 bug（逐 bar 累加 close[i]-close[i-1]，未排除开仓/平仓 bar 的边界误差）。下面 total_return/sharpe/final_equity/max_drawdown 全部是失真产物，不可引用。脚本已修复（新增对账断言），但本原型产物未重跑（已被 策略/06_MA13超短线/回测/ 主链取代，重跑无意义）。以 06 主链的 修复报告_20261011.md 为准。",
+  "_原始失真数字": {
+    "total_return": 1.4241,
+    "sharpe": 1.9008,
+    "final_equity": 484820.0,
+    "max_drawdown": 0.108
+  },
   "symbol": "KQ.m@CZCE.MA",
   "period": "5min",
   "strategy": "MA13顺势回踩",

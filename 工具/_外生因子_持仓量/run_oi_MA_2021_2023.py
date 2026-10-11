@@ -2,6 +2,12 @@
 # 说明：独立回测器，不调用 engine.run_backtest（避免改冻结代码）。
 #       信号规则见 预注册卡_持仓量独立信号.md §2。换月屏蔽 OI 信号（数据卫生）。
 #       ⚠️ 这是用户授权的单品种速测（n=1），非正式 9 品种均值判定，不出统计结论。
+# ============================================================
+# ⚠️⚠️ 2026-10-11 记账修复：本脚本原存在权益记账 bug（逐 bar 累加
+#     close[i]-close[i-1]，漏掉平仓当根的 bar 内涨跌 ⇒ 收益系统性失真）。
+#     已修复：equity 改为只在平仓时结算真实净盈亏；新增对账断言。
+#     其历史产物 MA_OI_2021_2023*.json 的收益/夏普已标注作废（未重跑）。
+# ============================================================
 
 import sys, json, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -99,6 +105,8 @@ trade_max_adverse = 0.0   # 当前持仓最大不利变动（价格点）
 dd_trades = []            # 每笔交易最大浮亏回撤（比例）
 dd_bar = []              # 每根 bar 权益相对峰值回撤（比例）
 blown = False             # 是否爆仓（权益<=0）
+eq_mark = INIT            # ★ 2026-10-11 修复：含浮亏的权益镜像（仅回撤/夏普/爆仓判据用）
+trades_rec = []           # ★ 2026-10-11 修复：逐笔 pnl 记录，供对账断言
 
 for i in range(LOOK + 1, N):
     # 强平：权益<=0 即爆仓，停止交易（模拟真实账户）
@@ -120,9 +128,8 @@ for i in range(LOOK + 1, N):
     if (not rollover) and (not np.isnan(oi_flow)) and oi_flow > 0:
         desired = 1 if ret > 0 else -1
 
-    # 1) 持仓中：先记账 + 判出场
+    # 1) 持仓中：判出场（★ 2026-10-11 记账修复：不再逐 bar 累加 equity）
     if pos != 0:
-        equity += pos * (close[i] - close[i-1]) * mult
         bars_in += 1
         # 当前持仓最大浮亏（价格点）
         if pos > 0:
@@ -153,11 +160,16 @@ for i in range(LOOK + 1, N):
                     exit_now = True
         if exit_now:
             exit_cost = SLIP * tick * mult * abs(pos) + COMM * abs(pos)
-            equity -= exit_cost
+            # ★ 【2026-10-11 记账修复】equity 只在平仓时一次性结算真实净盈亏
+            #   （出场价 − 入场价 − 双边成本），与 06 主链口径一致。
+            #   旧写法为「逐 bar 累加 close[i]-close[i-1]」⇒ 漏掉平仓当根的 bar 内涨跌，
+            #   收益系统性失真（详见 回测结果/06_MA13超短线/修复报告_20261011.md）。
             pnl = pos * (close[i] - entry_price) * mult - entry_cost - exit_cost
+            equity += pnl
             trades += 1
             if pnl > 0:
                 wins += 1
+            trades_rec.append({"pnl": round(pnl, 2)})
             dd_trades.append(trade_max_adverse / entry_price if entry_price > 0 else 0.0)
             pos = 0; entry_price = 0.0; entry_cost = 0.0; entry_atr = 0.0; bars_in = 0; trade_max_adverse = 0.0
 
@@ -170,7 +182,10 @@ for i in range(LOOK + 1, N):
             hand = max(1, int(RISK / (a * mult)))
         entry_price = close[i]
         entry_cost = SLIP * tick * mult * hand + COMM * hand
-        equity -= entry_cost
+        # ★ 【2026-10-11 记账修复】开仓不再即时扣成本：记入 entry_cost，
+        #   由平仓时的 pnl 一次性结算（原来这里 equity -= entry_cost，
+        #   与平仓的 equity -= exit_cost 拼成「先扣开仓、再扣平仓」，
+        #   但逐 bar 累加部分另算一套 ⇒ 三套账并存，无法对账）。
         pos = desired * hand
         entry_atr = atr[i-1]
         if desired > 0:
@@ -180,13 +195,29 @@ for i in range(LOOK + 1, N):
         bars_in = 0
 
     # 3) 记账
-    peak = max(peak, equity)
-    min_eq = min(min_eq, equity)
-    if equity > 0:
-        dd_bar.append((peak - equity) / peak)
+    # ★ 【2026-10-11 记账修复】equity = 已实现权益（只在平仓时变）；
+    #   eq_mark = 含浮亏的镜像，仅用于回撤/夏普/爆仓判据（与 06 主链一致）。
+    if pos != 0:
+        eq_mark = equity + pos * (close[i] - entry_price) * mult
+    else:
+        eq_mark = equity
+    peak = max(peak, eq_mark)
+    min_eq = min(min_eq, eq_mark)
+    if peak > 0:
+        dd_bar.append((peak - eq_mark) / peak)
     if prev_eq != 0:
-        rets.append((equity - prev_eq) / prev_eq)
-    prev_eq = equity
+        rets.append((eq_mark - prev_eq) / prev_eq)
+    prev_eq = eq_mark
+    if eq_mark <= 0:
+        blown = True
+        break
+
+# ★ 【2026-10-11 记账修复】对账断言：已实现权益必须等于 INIT + 逐笔 pnl 合计
+_pnl_sum = sum(r["pnl"] for r in trades_rec)
+_tol = max(1.0, len(trades_rec) * 0.01)
+if abs(equity - INIT - _pnl_sum) > _tol:
+    raise AssertionError(
+        f"记账对账失败：equity={equity:.2f} INIT={INIT} sum(pnl)={_pnl_sum:.2f}")
 
 # 统计
 rets = np.array(rets)

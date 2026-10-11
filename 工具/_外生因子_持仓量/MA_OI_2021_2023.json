@@ -1,4 +1,11 @@
 {
+  "_作废声明": "⚠️ 本文件数字已作废（2026-10-11）。生成它的 run_oi_MA_2021_2023.py 存在权益记账 bug（逐 bar 累加 close[i]-close[i-1]，漏掉平仓当根的 bar 内涨跌）。注意：本脚本结果是负的，bug 不会把它翻正（误差零均值，只增加噪声），但逐笔仍各有偏差，故 total_return/sharpe/final_equity 不可引用。脚本已修复+新增对账断言，产物未重跑（属实验速测，已被归档）。",
+  "_原始失真数字": {
+    "total_return": -1.4617,
+    "annual_sharpe": -0.555,
+    "final_equity": -92330.0,
+    "max_drawdown": 1.4514
+  },
   "symbol": "MA",
   "name": "甲醇",
   "window": "2021-01-01~2023-12-31",

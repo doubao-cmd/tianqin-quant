@@ -1,4 +1,12 @@
 # MA13 超短线 · 顺势回踩策略（5 分钟）
+# ============================================================
+# ⚠️⚠️ 2026-10-11 重要说明：本文件是 06_MA13超短线 的**实验原型**（已转正，
+#    原件保留备查）。它曾存在权益记账 bug（逐 bar 累加 close[i]-close[i-1]，
+#    未排除开仓/平仓 bar 的边界误差 ⇒ 收益系统性虚高）。**已于 2026-10-11 修复**：
+#    equity 改为只在平仓时变、pnl 含双边成本、新增对账断言。
+#    其历史产物 MA13_5min_2021_2023.json 的收益/夏普已标注作废（未重跑）。
+#    正式口径请以 策略/06_MA13超短线/回测/<品种>/MA13超短线_回测.py 为准。
+# ============================================================
 # 参数表（用户给定，写死，不调参）：
 #   均线周期 MA_N=13；斜率周期 SLOPE_N=5（当前MA13 与 5根前 MA13 比较判趋势）
 #   回踩容差 RETRACE_TOL=0.5×ATR（价格回到 MA13 附近 |close-MA13|<=0.5ATR 触发）
@@ -102,6 +110,9 @@ prev_eq = INIT
 rets = []
 bar_dds = []
 blown = False
+cur_open_cost = 0.0   # ★ 2026-10-11 修复：开仓成本暂存，平仓时结算
+eq_mark = INIT         # ★ 2026-10-11 修复：mark-to-market 镜像（仅爆仓判据/绘图用）
+trades_rec = []       # ★ 2026-10-11 修复：逐笔记录，供对账断言
 
 def hand_of(a):
     if np.isnan(a) or a <= 0:
@@ -133,12 +144,15 @@ for i in range(MA_N + SLOPE_N + 1, N):
             exit_now = True; exit_price = open_[i]
     if exit_now and pos != 0:
         exit_cost = SLIP * TICK * MULT * abs(pos) + COMM * abs(pos)
-        pnl = pos * (exit_price - entry_price) * MULT - exit_cost
-        equity -= exit_cost
+        # ★ 【2026-10-11 记账修复】pnl 口径 = 价差 − 双边成本（开仓 oc + 平仓 exit_cost）；
+        #   equity 只在平仓时变。与 06_MA13超短线/回测/<品种>/MA13超短线_回测.py 口径一致。
+        pnl = pos * (exit_price - entry_price) * MULT - cur_open_cost - exit_cost
+        equity += pnl
         trades += 1
         if pnl > 0:
             wins += 1
-        pos = 0; bars_in = 0
+        trades_rec.append({"pnl": round(pnl, 2)})
+        pos = 0; bars_in = 0; cur_open_cost = 0.0
 
     if pos == 0 and dir_trend != 0 and touch:
         hand = hand_of(a)
@@ -154,22 +168,35 @@ for i in range(MA_N + SLOPE_N + 1, N):
             stop_raw = swing_high + STOP_BUFFER * a
             stop_price = min(entry_price + STOP_CAP * a, stop_raw)
             pos = -hand
-        equity -= oc
+        # ★ 【2026-10-11 记账修复】开仓不再即时扣成本：记入 cur_open_cost，
+        #   由平仓 pnl 一次性结算 ⇒ Σpnl 恒等于 Δequity。
+        cur_open_cost = oc
         bars_in = 0
     elif pos != 0:
         bars_in += 1
 
+    # ★ 【2026-10-11 记账修复】绘图/回撤/夏普用 mark-to-market 镜像 eq_mark；
+    #   equity 只反映已实现盈亏（只在平仓时变）。不再用 (close[i]-close[i-1]) 累加（bug 来源）。
     if pos != 0:
-        equity += pos * (close[i] - close[i - 1]) * MULT
-    peak = max(peak, equity)
-    dd = (peak - equity) / peak if peak > 0 else 0.0
+        eq_mark = equity + pos * (close[i] - entry_price) * MULT
+    else:
+        eq_mark = equity
+    peak = max(peak, eq_mark)
+    dd = (peak - eq_mark) / peak if peak > 0 else 0.0
     bar_dds.append(dd)
     if prev_eq != 0:
-        rets.append((equity - prev_eq) / prev_eq)
-    prev_eq = equity
-    if equity <= 0:
+        rets.append((eq_mark - prev_eq) / prev_eq)
+    prev_eq = eq_mark
+    if eq_mark <= 0:
         blown = True
         break
+
+# ★ 【2026-10-11 记账修复】对账断言：已实现权益必须等于 INIT + 逐笔 pnl 合计
+_pnl_sum = sum(r["pnl"] for r in trades_rec)
+_tol = max(1.0, len(trades_rec) * 0.01)
+if abs(equity - INIT - _pnl_sum) > _tol:
+    raise AssertionError(
+        f"记账对账失败：equity={equity:.2f} INIT={INIT} sum(pnl)={_pnl_sum:.2f}")
 
 mean_ret = float(np.mean(rets)) if rets else 0.0
 std_ret = float(np.std(rets)) if rets else 0.0
