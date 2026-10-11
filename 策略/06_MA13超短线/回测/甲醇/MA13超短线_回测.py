@@ -73,6 +73,26 @@ COMPOUND   = False
 START = pd.Timestamp("2021-01-01")
 END   = pd.Timestamp("2023-12-31")
 WARMUP_DAYS = 7
+# ---- ★ 支持环境变量覆盖窗口（供三段批量回测用；只切数据集，不动策略逻辑）----
+#   用法：MA13_START=2024-01-01 MA13_END=2025-12-31 python MA13超短线_回测.py
+if os.environ.get("MA13_START"):
+    START = pd.Timestamp(os.environ["MA13_START"])
+if os.environ.get("MA13_END"):
+    END = pd.Timestamp(os.environ["MA13_END"])
+
+
+def _window_name(start, end):
+    """由起止年份推断窗口名（用于产物命名，不再硬编码「开发窗」）。"""
+    s, e = str(start)[:10], str(end)[:10]
+    if s.startswith("2021") and e.startswith("2023"):
+        return f"开发窗{s}_{e}"
+    if s.startswith("2024") and e.startswith("2025"):
+        return f"前向窗{s}_{e}"
+    if s.startswith("2026"):
+        return f"探针窗{s}_{e}"
+    return f"窗口{s}_{e}"
+
+
 # ===============================================================
 
 name_cn, main_code, MULT, TICK = config_symbols.get(SYMBOL_KEY)
@@ -174,10 +194,10 @@ def run_backtest(start=None, end=None):
     cur_entry_price = 0.0
     cur_entry_dt = 0
     cur_hand = 0
+    cur_open_cost = 0.0   # ★ 本笔开仓成本（平仓时计入 pnl）
     bars_in = 0
     trades = 0
     wins = 0
-    peak = INIT
     prev_eq = INIT
     rets = []
     bar_dds = []
@@ -186,6 +206,17 @@ def run_backtest(start=None, end=None):
     trades_rec = []
     blown = False
     comm_total = 0.0
+    # ★ 【2026-10-11 记账架构修复】
+    #   equity      = 已实现权益：只在「开仓扣成本 / 平仓结算 pnl」时变化，
+    #                 与逐笔 trades_rec 严格同口径（可加对账断言）。
+    #   eq_mark     = 对账用镜像：持仓期间按「收盘价 mark-to-market」计浮动盈亏，
+    #                 仅供画图/回撤/夏普；其值不影响 equity 与最终收益。
+    #   旧版 bug：equity 在持仓时逐 bar 累加 (close[i]-close[i-1])，
+    #             开仓 bar 多算 (close-开仓价)、平仓 bar 多算 (收盘-上根收盘)，
+    #             使权益曲线系统性虚高（甲醇 2021 实测虚高 139%）。
+    equity = INIT
+    eq_mark = INIT
+    peak = INIT
 
     start_i = MA_N + SLOPE_N + 1
     start_ns = _START.value
@@ -222,8 +253,12 @@ def run_backtest(start=None, end=None):
 
             if exit_now and pos != 0:
                 exit_cost = SLIP * TICK * MULT * abs(pos) + COMM * abs(pos)
-                pnl = pos * (exit_price - entry_price) * MULT - exit_cost
-                equity -= exit_cost
+                # ★ 【2026-10-11 修复】pnl 口径 = 价差 − 双边成本（开仓 oc + 平仓 exit_cost）
+                #   旧版只扣平仓单边成本，开仓成本另走 equity -= oc ⇒ 逐笔合计 ≠ 权益变化，
+                #   两套账永远对不上。现在 pnl 即「真实净盈亏」，Σpnl 恒等于 Δequity。
+                pnl = pos * (exit_price - entry_price) * MULT - cur_open_cost - exit_cost
+                equity += pnl
+                eq_mark = equity
                 comm_total += COMM * abs(pos)
                 trades += 1
                 if pnl > 0:
@@ -239,7 +274,7 @@ def run_backtest(start=None, end=None):
                     "pnl_per_hand": round(pnl / (cur_hand * MULT), 2),
                     "reason": reason,
                 })
-                pos = 0; bars_in = 0
+                pos = 0; bars_in = 0; cur_open_cost = 0.0
 
             if pos == 0 and dir_trend != 0 and touch:
                 hand = hand_plan(a, equity, open_[i])
@@ -261,7 +296,10 @@ def run_backtest(start=None, end=None):
                     if stop_price <= entry_price + TICK:
                         stop_price = entry_price + STOP_CAP * a
                     pos = -hand
-                equity -= oc
+                # ★ 【2026-10-11 修复】开仓不再即时扣成本：成本记入 cur_open_cost，
+                #   由平仓时的 pnl 一次性结算 ⇒ 逐笔 pnl 与权益变动恒等。
+                cur_open_cost = oc
+                eq_mark = equity
                 comm_total += COMM * hand
                 bars_in = 0
                 cur_dir = dir_trend
@@ -271,19 +309,37 @@ def run_backtest(start=None, end=None):
             elif pos != 0:
                 bars_in += 1
 
+        # ★ 【2026-10-11 修复】绘图/回撤用 mark-to-market 镜像 eq_mark，
+        #   持仓期间 = 已实现权益 + 按「收盘价 vs 开仓价」计的一次性浮动盈亏；
+        #   不再用 (close[i]-close[i-1]) 累加（那是 bug 的来源）。
         if pos != 0:
-            equity += pos * (close[i] - close[i - 1]) * MULT
-        peak = max(peak, equity)
-        dd = (peak - equity) / peak if peak > 0 else 0.0
-        bar_dds.append(dd)
-        eq_series.append(equity)
-        dt_series.append(dts_arr[i])
-        if prev_eq != 0:
-            rets.append((equity - prev_eq) / prev_eq)
-        prev_eq = equity
-        if equity <= 0:
+            eq_mark = equity + pos * (close[i] - cur_entry_price) * MULT
+        else:
+            eq_mark = equity
+        if eq_mark <= 0:
             blown = True
             break
+        peak = max(peak, eq_mark)
+        dd = (peak - eq_mark) / peak if peak > 0 else 0.0
+        bar_dds.append(dd)
+        eq_series.append(eq_mark)
+        dt_series.append(dts_arr[i])
+        if prev_eq != 0:
+            rets.append((eq_mark - prev_eq) / prev_eq)
+        prev_eq = eq_mark
+
+    # ★ 【2026-10-11 对账断言】已实现权益必须等于 INIT + 逐笔 pnl 合计（成本已在 pnl 内扣）
+    _pnl_sum = sum(r["pnl"] for r in trades_rec)
+    _diff = equity - INIT - _pnl_sum
+    # 容差：逐笔 pnl 保留 2 位小数 ⇒ 每笔最大 ±0.005 元舍入，
+    # 累计上限随笔数线性增长。按 0.01 元/笔 + 1 元保底设置（鸡蛋 COMM=5.802 元/手 尤其明显）。
+    _tol = max(1.0, len(trades_rec) * 0.01)
+    if abs(_diff) > _tol:
+        print(f"[FATAL] 对账失败: equity={equity:.2f} INIT={INIT:.2f} "
+              f"sum(pnl)={_pnl_sum:.2f} diff={_diff:.2f}", flush=True)
+        raise AssertionError("记账对账失败：已实现权益 != INIT + 逐笔 pnl 合计")
+    print(f"[check] 对账通过: equity={equity:.2f} = INIT {INIT:.0f} + Σpnl {_pnl_sum:.2f} "
+          f"(残差 {_diff:.4f} 元，来自逐笔 2 位小数舍入)", flush=True)
 
     try:
         api.close()
@@ -768,7 +824,9 @@ def main():
 
     res_dir = os.path.join(_ROOT, "回测结果", "06_MA13超短线", name_cn)
     os.makedirs(res_dir, exist_ok=True)
-    base = f"{name_cn}_MA13超短线_5min_开发窗{out['start']}_{out['end']}"
+    # ★ 2026-10-11：窗口名由起止年份自动推断（原来是硬编码「开发窗」，跑三段会互相覆盖）
+    win_tag = _window_name(out["start"], out["end"])
+    base = f"{name_cn}_MA13超短线_5min_{win_tag}"
     html_path = os.path.join(res_dir, base + ".html")
     txt_path = os.path.join(res_dir, base + ".txt")
     json_path = os.path.join(res_dir, base + "_参数.json")
@@ -779,13 +837,13 @@ def main():
 
     # 逐笔 txt
     with open(txt_path, "w", encoding="utf-8") as f:
-        f.write(f"# 甲醇 MA13 超短线 逐笔成交 开发窗{out['start']}~{out['end']}\n")
+        f.write(f"# {name_cn} MA13 超短线 逐笔成交 {win_tag}\n")
         f.write(f"# 笔数={out['trades']} 胜率={out['win_rate']*100:.1f}% 夏普={out['sharpe']:.2f} "
                 f"收益率={out['total_return']*100:.1f}% 最大回撤={out['max_drawdown']*100:.1f}%\n")
         f.write("方向,开仓时间,平仓时间,开仓价,平仓价,手数,盈亏(元),每手(点),离场原因\n")
         for t in trades_rec:
             f.write(f"{t['dir']},{t['entry_dt']},{t['exit_dt']},{t['entry']},{t['exit']},"
-                    f"{t['hand']},{t['pnl']:.0f},{t['pnl_per_hand']},{t['reason']}\n")
+                    f"{t['hand']},{t['pnl']:.2f},{t['pnl_per_hand']},{t['reason']}\n")
 
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
