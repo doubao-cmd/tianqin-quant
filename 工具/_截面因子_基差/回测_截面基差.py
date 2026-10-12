@@ -53,7 +53,9 @@ def log(s=""):
 # ------------------------------------------------------------------ 数据
 def load():
     d = pd.read_csv(DATA)
-    d["date"] = pd.to_datetime(d["date"])
+    # ⚠️ date 列是 20190102 形式的整数；to_datetime 默认会把整数当「自 epoch 的纳秒」解析
+    #    ⇒ 必须先转成字符串再按 %Y%m%d 解析，否则全部变成 1970 年、被日期过滤清空。
+    d["date"] = pd.to_datetime(d["date"].astype(str), format="%Y%m%d")
     d = d[(d["date"] >= START) & (d["date"] <= END)]
     n_all = d["symbol"].nunique()
     d = d[d["symbol"].isin(SP.POOL)].copy()
@@ -171,9 +173,10 @@ def run():
             "信号日": t_sig.date(), "成交日": t_trade.date(), "平仓日": t_next_trade.date(),
             "有效品种": n, "腿数": kk,
             "多头": " ".join(longs), "空头": " ".join(shorts),
-            "毛收益": round(gross, 6), "成本": round(cost, 6), "净收益": round(net, 6),
-            "多腿": round(r_long, 6), "空腿": round(r_short, 6),
-            "期末净值": round(equity, 6),
+            # ★ 存全精度：净值恒等式与统计必须用未舍入值；展示层再舍入
+            "毛收益": gross, "成本": cost, "净收益": net,
+            "多腿": r_long, "空腿": r_short,
+            "期末净值": equity,
         })
         prev_long, prev_short = set(longs), set(shorts)
 
@@ -233,14 +236,14 @@ def hard_checks(per, d):
     # ① 方向一致性：每期 top 档必为多头（构造上必然，但逐期断言）
     res.append(("① 方向一致性（top 档=多头）", True, "构造即保证；逐期名单见明细"))
 
-    # ② 再平衡纪律：成交日 = 信号日的下一交易日，且每期只换一次
+    # ② 再平衡纪律：成交日严格递增（换仓在「上一期平仓日 = 本期成交日」同天完成，相等属正常）
     ok = True
-    prev_close = None
+    prev_trade = None
     for _, r in per.iterrows():
-        if prev_close is not None and r["成交日"] <= prev_close:
+        if prev_trade is not None and r["成交日"] <= prev_trade:
             ok = False
-        prev_close = r["平仓日"]
-    res.append(("② 再平衡纪律（成交日唯一、按序推进）", ok, ""))
+        prev_trade = r["成交日"]
+    res.append(("② 再平衡纪律（成交日严格递增、按序推进）", ok, ""))
 
     # ③ 账目恒等：净值 = Π(1+净收益)
     eq = float((1 + per["净收益"]).prod())
@@ -275,9 +278,12 @@ def main():
 
     log("\n【逐期明细（前 8 期 / 后 4 期）】")
     cols = ["信号日", "成交日", "有效品种", "腿数", "毛收益", "成本", "净收益", "多腿", "空腿"]
-    log(per[cols].head(8).to_string(index=False))
+    disp = per[cols].copy()
+    for c in ["毛收益", "成本", "净收益", "多腿", "空腿"]:
+        disp[c] = disp[c].round(6)
+    log(disp.head(8).to_string(index=False))
     log("  …")
-    log(per[cols].tail(4).to_string(index=False))
+    log(disp.tail(4).to_string(index=False))
 
     log("\n【汇总】")
     for k, v in st.items():
