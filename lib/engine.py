@@ -567,6 +567,39 @@ def rev_signal(cur_dir, close_now, mid_now):
     return cur_dir
 
 
+def trend_hold_signal(cur_dir, close_now, mid_now):
+    """中轨趋势持有目标仓位决策 —— 纯函数，便于单测（08_中轨趋势持有）。
+
+    ★ 本函数是 `rev_signal` 的**顺势镜像版**（2026-10-12 新增）：
+        同一个「收盘价 vs MA(n1)」输入，方向判断完全对调。
+        rev_signal = 逆势（价格回归均线），本函数 = 顺势（价格延续方向）。
+        ⇒ 两者换手次数完全相同（都是均线穿越次数），只是持仓方向相反。
+
+    输入全部取自「刚刚收盘的那根 K 线」：
+      close_now = 刚收盘那根的收盘价
+      mid_now   = 刚收盘那根的 MA(n1) 值
+    调用方不做任何时间偏移；本函数不看未收盘数据，不含未来函数。
+
+    规则（cur_dir = 当前持仓方向：+1 多 / -1 空 / 0 空仓）：
+        收盘 > 均值 -> 目标做多（价格站上中轨，跟趋势）
+        收盘 < 均值 -> 目标做空（价格跌破中轨，跟趋势）
+        恰好相等    -> 维持当前方向不变
+        NaN（均线还没预热够）-> 维持当前方向不变
+
+    ⚠️ 这是「永远在场」式：每一根 K 线都会给出 ±1 的目标方向，
+       方向变了就反手，永远不会返回 0（不清仓、不空仓等待）。
+    ⚠️ 代价（预先说清，不是意外）：换手 = 均线穿越次数，是本项目换手最高的
+       策略家族之一，成本会吃掉相当一部分毛利 —— 这正是本次要测的东西。
+    """
+    if mid_now != mid_now or close_now != close_now:      # NaN 守卫
+        return cur_dir
+    if close_now > mid_now:
+        return 1
+    if close_now < mid_now:
+        return -1
+    return cur_dir
+
+
 # ===================================================================
 # 通道突破（04）—— 回测与模拟盘共用同一份决策函数
 #   入场：收盘价突破「前 n1 根」的最高价 / 最低价 -> 开仓
@@ -852,8 +885,17 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                                      cur_dir，永远返回 ±1（永远在场、穿越均线即反手）。
                                   ⚠️ 与 03_布林带不是一回事：布林带是 MA±kσ 双轨 +
                                      中轨出场，本模式只有一条均线、没有中性区。
-                                  ⚠️ n1 是唯一参数，不扫描（规则2）。
-        ⚠️ 只改「信号值从哪来」这一处：止损、仓位、成本、报告、换月处理全部共用，
+                                   ⚠️ n1 是唯一参数，不扫描（规则2）。
+         signal_kind = "trendhold": 08 中轨趋势持有（2026-10-12 新增，日线布林带中轨版）。
+                                   ★ 与 "rev" 走**完全相同的取值与调用路径**（同一签名），
+                                     唯一区别是决策函数方向对调：
+                                       signal_fn(cur_dir, 收盘价, MA(n1)) = trend_hold_signal
+                                     —— 顺势（收盘 > 中轨做多 / 跌破做空），是 rev_signal 的镜像。
+                                   n1 = 中轨周期 MA(n1)；n2 用不上（脚本传同值占位）。
+                                   ⚠️ 只支持 pass_dir=True（目标仓位式），同 "rev"。
+                                   ⚠️ 只用中轨 ⇒ 等价于单均线穿越，不是完整布林带（无上下轨）。
+                                   ⚠️ n1 是唯一参数，不扫描（规则2）。
+         ⚠️ 只改「信号值从哪来」这一处：止损、仓位、成本、报告、换月处理全部共用，
            与 signal_kind 无关。默认值 "ma" 保证 01/02/04/05 与历史实验逐字不变。
     通道闸门（2026-09-20 新增，仅 signal_kind="channel"；默认 0 = 关闭）：
         gate_fast > 0 且 ma_filter > 0 时启用。把 01 双均线那条**已验证有正贡献**
@@ -1042,10 +1084,11 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                 ma_s = close.rolling(n2).mean()
                 now_f, now_s = ma_f.iloc[-2], ma_s.iloc[-2]
                 pre_f, pre_s = ma_f.iloc[-3], ma_s.iloc[-3]
-                # 均值回归（signal_kind="rev"）：只要一条均线 n1 + 刚收盘那根的收盘价。
+                # 均值回归（signal_kind="rev"）/ 中轨趋势持有（"trendhold"）：
+                #   只要一条均线 n1 + 刚收盘那根的收盘价。两者取值完全相同。
                 #   ★ 两者都取自 .iloc[-2]（刚收盘那根），不含任何未收盘数据 —— 无未来函数。
                 rev_ctr = rev_mid = float("nan")
-                if signal_kind == "rev":
+                if signal_kind in ("rev", "trendhold"):
                     rev_ctr = float(close.iloc[-2])
                     rev_mid = float(ma_f.iloc[-2])
                 # 可选的趋势过滤线（如 MA60）：多算一条，值追加到信号函数参数末尾
@@ -1151,8 +1194,10 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                                       f" | 不开仓，继续等待"
                                       f"（MA{gate_fast}={gate_now:.2f} / "
                                       f"MA{ma_filter}={_gt:.2f}）")
-                    elif signal_kind == "rev":
-                        # 03 均值回归：单均线 —— 传 (当前方向, 刚收盘那根的收盘价, MA(n1))
+                    elif signal_kind in ("rev", "trendhold"):
+                        # 03 均值回归 / 08 中轨趋势持有：单均线 ——
+                        # 传 (当前方向, 刚收盘那根的收盘价, MA(n1))
+                        # 区别只在 signal_fn 自身（rev=逆势 / trendhold=顺势镜像）
                         sig = signal_fn(cur_dir, rev_ctr, rev_mid)
                     else:
                         sig = signal_fn(cur_dir, now_f, now_s, pre_f, pre_s, *extra)
@@ -1248,11 +1293,12 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                 else:
                     # 边界触发式（老策略路径，目前无调用者）：
                     # 波动率预算 v6 只接在 pass_dir 模式上，此处保持 want = sig × volume。
-                    # ⚠️ signal_kind="rev" 的信号函数签名带 cur_dir，只能走目标仓位式。
-                    if signal_kind == "rev":
+                    # ⚠️ signal_kind="rev"/"trendhold" 的信号函数签名带 cur_dir，
+                    #    只能走目标仓位式。
+                    if signal_kind in ("rev", "trendhold"):
                         raise ValueError(
-                            'signal_kind="rev" 必须配合 pass_dir=True（目标仓位式），'
-                            '否则 rev_signal 收不到 cur_dir')
+                            'signal_kind="rev"/"trendhold" 必须配合 pass_dir=True（目标仓位式），'
+                            '否则信号函数收不到 cur_dir')
                     sig = signal_fn(now_f, now_s, pre_f, pre_s, *extra)
                     if sig != 0:
                         want = sig * volume
@@ -2045,10 +2091,11 @@ def run_live(symbol_key, signal_fn, n1, n2, volume,
             if ma_filter:
                 ma_t = close.rolling(ma_filter).mean()
                 extra = (ma_t.iloc[-2], ma_t.iloc[-3])
-            # 均值回归（signal_kind="rev"）：只要一条均线 n1 + 刚收盘那根的收盘价。
+            # 均值回归（signal_kind="rev"）/ 中轨趋势持有（"trendhold"）：
+            #   只要一条均线 n1 + 刚收盘那根的收盘价。两者取值完全相同。
             #   ★ 与 run_backtest 同一份口径，两边算出的信号必须逐根一致。
             rev_ctr = rev_mid = float("nan")
-            if signal_kind == "rev":
+            if signal_kind in ("rev", "trendhold"):
                 rev_ctr = float(close.iloc[-2])
                 rev_mid = float(ma_f.iloc[-2])
             # 通道突破（signal_kind="channel"）：入场轨道 n1 根 / 出场轨道 n2 根的极值。
@@ -2135,9 +2182,11 @@ def run_live(symbol_key, signal_fn, n1, n2, volume,
             cur_dir = 0        # ★ 只为让下面 `if acted:` 块在分支之外也能安全读到。
                                #   走「边界触发式」老路径时它保持 0（那条路径没有
                                #   cur_dir 的概念）；rev/channel/pass_dir 三条分支都会重写它。
-            if signal_kind == "rev":
-                # 03 均值回归：与 run_backtest 同一份口径（永远在场、穿越均线即反手）。
-                #   ★ rev_signal 的签名带 cur_dir，所以这里无视 pass_dir，一律按目标仓位式走。
+            if signal_kind in ("rev", "trendhold"):
+                # 03 均值回归 / 08 中轨趋势持有：与 run_backtest 同一份口径
+                #   （永远在场、穿越均线即反手）。
+                #   ★ 两者签名都带 cur_dir，所以这里无视 pass_dir，一律按目标仓位式走。
+                #   ★ 区别只在 signal_fn 自身（rev=逆势 / trendhold=顺势镜像）。
                 cur_dir = 1 if want > 0 else (-1 if want < 0 else 0)
                 sig = signal_fn(cur_dir, rev_ctr, rev_mid)
                 if sig is None:
