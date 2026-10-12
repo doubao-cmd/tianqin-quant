@@ -1,0 +1,68 @@
+{
+  "symbol": "KQ.m@DCE.jm",
+  "symbol_cn": "焦煤",
+  "symbol_key": "JM",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "BREAKEVEN_ATR": 1.0,
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0,
+    "NOTIONAL_CAP": 2.0,
+    "GAP_FILL": true,
+    "COMPOUND": false
+  },
+  "start": "2021-01-01",
+  "end": "2023-12-31",
+  "bars": 53003,
+  "annual_bars": 16703.1,
+  "trades": 1280,
+  "wins": 316,
+  "win_rate": 0.2469,
+  "sharpe": -1.2704,
+  "final_equity": -1448.8,
+  "total_return": -1.0072,
+  "max_drawdown": 0.9967,
+  "blown": true,
+  "commission": 64318.8,
+  "exit_reason_cnt": {
+    "时间止损": 338,
+    "保本止损": 380,
+    "止损": 562
+  },
+  "exit_reason_stats": {
+    "止损": {
+      "n": 562,
+      "pnl_sum": -1303417.0,
+      "pnl_avg": -2319.25,
+      "win_n": 0
+    },
+    "保本止损": {
+      "n": 380,
+      "pnl_sum": -418018.6,
+      "pnl_avg": -1100.05,
+      "win_n": 0
+    },
+    "时间止损": {
+      "n": 338,
+      "pnl_sum": 1519986.8,
+      "pnl_avg": 4497.0,
+      "win_n": 316
+    }
+  },
+  "blown_at_trade": 1280
+}

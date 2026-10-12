@@ -1,0 +1,61 @@
+{
+  "symbol": "KQ.m@DCE.jd",
+  "symbol_cn": "鸡蛋",
+  "symbol_key": "JD",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "BREAKEVEN_ATR": 0.0,
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0,
+    "NOTIONAL_CAP": 2.0,
+    "GAP_FILL": true,
+    "COMPOUND": false
+  },
+  "start": "2021-01-01",
+  "end": "2023-12-31",
+  "bars": 35939,
+  "annual_bars": 10937.3,
+  "trades": 769,
+  "wins": 245,
+  "win_rate": 0.3186,
+  "sharpe": -2.2188,
+  "final_equity": -11423.0,
+  "total_return": -1.0571,
+  "max_drawdown": 0.8569,
+  "blown": true,
+  "commission": 71353.0,
+  "exit_reason_cnt": {
+    "止损": 460,
+    "时间止损": 309
+  },
+  "exit_reason_stats": {
+    "止损": {
+      "n": 460,
+      "pnl_sum": -690868.6,
+      "pnl_avg": -1501.89,
+      "win_n": 0
+    },
+    "时间止损": {
+      "n": 309,
+      "pnl_sum": 479447.13,
+      "pnl_avg": 1551.61,
+      "win_n": 245
+    }
+  },
+  "blown_at_trade": 769
+}

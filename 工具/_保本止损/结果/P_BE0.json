@@ -1,0 +1,61 @@
+{
+  "symbol": "KQ.m@DCE.p",
+  "symbol_cn": "棕榈油",
+  "symbol_key": "P",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "BREAKEVEN_ATR": 0.0,
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0,
+    "NOTIONAL_CAP": 2.0,
+    "GAP_FILL": true,
+    "COMPOUND": false
+  },
+  "start": "2021-01-01",
+  "end": "2023-12-31",
+  "bars": 53003,
+  "annual_bars": 16703.1,
+  "trades": 2487,
+  "wins": 772,
+  "win_rate": 0.3104,
+  "sharpe": -0.4088,
+  "final_equity": -990.0,
+  "total_return": -1.005,
+  "max_drawdown": 0.9987,
+  "blown": true,
+  "commission": 54982.5,
+  "exit_reason_cnt": {
+    "止损": 1597,
+    "时间止损": 890
+  },
+  "exit_reason_stats": {
+    "止损": {
+      "n": 1597,
+      "pnl_sum": -2531090.0,
+      "pnl_avg": -1584.9,
+      "win_n": 0
+    },
+    "时间止损": {
+      "n": 890,
+      "pnl_sum": 2330100.0,
+      "pnl_avg": 2618.09,
+      "win_n": 772
+    }
+  },
+  "blown_at_trade": 2487
+}

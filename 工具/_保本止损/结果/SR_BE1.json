@@ -1,0 +1,68 @@
+{
+  "symbol": "KQ.m@CZCE.SR",
+  "symbol_cn": "白糖",
+  "symbol_key": "SR",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "BREAKEVEN_ATR": 1.0,
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0,
+    "NOTIONAL_CAP": 2.0,
+    "GAP_FILL": true,
+    "COMPOUND": false
+  },
+  "start": "2021-01-01",
+  "end": "2023-12-31",
+  "bars": 53003,
+  "annual_bars": 16703.1,
+  "trades": 976,
+  "wins": 194,
+  "win_rate": 0.1988,
+  "sharpe": -1.8698,
+  "final_equity": -94.0,
+  "total_return": -1.0005,
+  "max_drawdown": 0.9974,
+  "blown": true,
+  "commission": 25976.0,
+  "exit_reason_cnt": {
+    "时间止损": 211,
+    "保本止损": 336,
+    "止损": 429
+  },
+  "exit_reason_stats": {
+    "止损": {
+      "n": 429,
+      "pnl_sum": -350852.0,
+      "pnl_avg": -817.84,
+      "win_n": 0
+    },
+    "保本止损": {
+      "n": 336,
+      "pnl_sum": -146036.0,
+      "pnl_avg": -434.63,
+      "win_n": 0
+    },
+    "时间止损": {
+      "n": 211,
+      "pnl_sum": 296794.0,
+      "pnl_avg": 1406.61,
+      "win_n": 194
+    }
+  },
+  "blown_at_trade": 976
+}

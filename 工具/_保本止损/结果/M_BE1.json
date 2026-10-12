@@ -1,0 +1,68 @@
+{
+  "symbol": "KQ.m@DCE.m",
+  "symbol_cn": "豆粕",
+  "symbol_key": "M",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "BREAKEVEN_ATR": 1.0,
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0,
+    "NOTIONAL_CAP": 2.0,
+    "GAP_FILL": true,
+    "COMPOUND": false
+  },
+  "start": "2021-01-01",
+  "end": "2023-12-31",
+  "bars": 53003,
+  "annual_bars": 16703.1,
+  "trades": 1092,
+  "wins": 247,
+  "win_rate": 0.2262,
+  "sharpe": -2.9555,
+  "final_equity": -13888.0,
+  "total_return": -1.0694,
+  "max_drawdown": 0.9707,
+  "blown": true,
+  "commission": 26208.0,
+  "exit_reason_cnt": {
+    "止损": 471,
+    "时间止损": 270,
+    "保本止损": 351
+  },
+  "exit_reason_stats": {
+    "止损": {
+      "n": 471,
+      "pnl_sum": -406184.0,
+      "pnl_avg": -862.39,
+      "win_n": 0
+    },
+    "保本止损": {
+      "n": 351,
+      "pnl_sum": -169464.0,
+      "pnl_avg": -482.8,
+      "win_n": 0
+    },
+    "时间止损": {
+      "n": 270,
+      "pnl_sum": 361760.0,
+      "pnl_avg": 1339.85,
+      "win_n": 247
+    }
+  },
+  "blown_at_trade": 1092
+}
