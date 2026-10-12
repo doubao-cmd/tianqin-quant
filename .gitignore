@@ -158,6 +158,8 @@ _*.csv
 工具/_CTP接入/simnow_account.py
 工具/_CTP接入/_flow/
 工具/_CTP接入/*.con
+工具/_CTP接入/tick/
+工具/_CTP接入/tick录制_状态.txt
 工具/_CTP接入/**/*.con
 
 # ⑦ 工具/_ 各因子目录的「数据缓存」与「逐笔明细」（2026-10-12 新增）——
