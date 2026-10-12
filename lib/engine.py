@@ -809,7 +809,7 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                  margin_per_hand=0, margin_cap_pct=30.0, margin_rate=None,
                  risk_equity=None,
                  signal_kind="ma", gate_fast=0, turtle_failsafe=0,
-                 no_open_window_min=0):
+                 no_open_window_min=0, time_stop_bars=None):
     """
     跑一个品种的历史回测，结束自动生成按品种命名的 HTML 报告 + 成交明细 txt。
 
@@ -845,6 +845,16 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
         两者都与 run_live 同口径；只做到「移到开仓基准价」为止，不含移动/追踪。
         基准价 = 发出开仓信号那根 K 线的收盘价（与均线排列同口径）。
         atr_period        : ATR 周期，默认 14。
+    时间止损（2026-10-12 新增；默认 None = 关闭，严格向后兼容）：
+        time_stop_bars > 0 : 持仓满 N 根已收盘 K 线仍未出场 -> 假设失效离场。
+        ★ 口径与 run_backtest_boll 的 time_stop_bars **逐字一致**：
+            · 已收盘根判定、收盘发单、成交在下一根开盘（无未来函数）；
+            · 计数 = 开仓信号根之后的已收盘根数（开仓当根记 0）；
+            · 开新仓/反手时归零。
+        ★ 优先级：插在 ATR/保本止损**之后**、均线信号**之前** ——
+          先被止损扫掉就不再看信号（与 ATR 止损同一顺序）。
+        ⚠️ 该能力此前只在 run_backtest_boll 有，本次补到 run_backtest
+           （08_中轨趋势持有 第三轮实验要用）。不改任何既有路径的行为。
     执行方式（2026-09-19 新增，默认 "ACTIVE" = 严格保持老行为）：
         exec_price        : TargetPosTask 的下单方式，直接透传给 tqsdk。
             "ACTIVE"  = 对价下单：买吃卖一、卖吃买一 → 每笔成交天然付 1 跳价差。
@@ -964,6 +974,7 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
     #   entry / entry_atr 在「开新仓 或 反手」那一刻锁定，平仓（含止损出场）时下线
     #   best_fav = 持仓期间最大有利偏移（点）—— 保本的触发依据
     stop_st = {"active": False, "entry": 0.0, "entry_atr": 0.0, "best_fav": 0.0}
+    _bars_held = 0      # 时间止损计数：开仓信号根之后的已收盘根数（time_stop_bars 用）
     eval_ts = pd.Timestamp(eval_start) if eval_start else None
     try:
         api = TqApi(
@@ -1169,6 +1180,33 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                         tp.set_target_volume(0)
                         continue
 
+                # ---- 时间止损（2026-10-12 新增；time_stop_bars=None 或 <=0 时关闭）----
+                #   口径与 run_backtest_boll 的 time_stop_bars **逐字一致**：
+                #     · 已收盘根判定、收盘发单、成交在下一根开盘（无未来函数）；
+                #     · 计数 = 开仓信号根之后的已收盘根数（开仓当根记 0）；
+                #     · 开新仓/反手时归零（见下方「止损状态」段）。
+                #   优先级：在 ATR/保本止损**之后**、均线信号**之前** ——
+                #   先被止损扫掉就不再看信号（与 ATR 止损同一顺序）。
+                if time_stop_bars and time_stop_bars > 0 and want != 0:
+                    _bars_held += 1
+                    if _bars_held >= time_stop_bars:
+                        _tdir = want
+                        want = 0
+                        stop_st["active"] = False
+                        stop_st["entry"] = 0.0
+                        stop_st["entry_atr"] = 0.0
+                        stop_st["best_fav"] = 0.0
+                        print(f"  [时间止损] 时间 {_dt_str(bar_dt)} 持仓 {_bars_held} 根"
+                              f"（>= {time_stop_bars}）仍未触及出场线 -> 假设失效离场")
+                        signal_events.append({
+                            "dt": bar_dt,
+                            "dir": "SELL" if _tdir > 0 else "BUY",
+                            "price": float(klines.iloc[-2]["close"]),
+                            "reason": f"时间止损({_bars_held}根)",
+                        })
+                        tp.set_target_volume(0)
+                        continue
+
                 acted = False
                 if pass_dir:
                     # 目标仓位式：把当前持仓方向喂给信号函数，返回 0 = 清仓（不反手）
@@ -1265,6 +1303,10 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                                     _open_blocked[0] += 1
                                     sig = cur_dir
                             want = sig * _hand
+                            # ---- 时间止损计数：开新仓/反手时归零 ----
+                            #   （不依赖止损是否开启，与 time_stop_bars 独立）
+                            if sig != 0:
+                                _bars_held = 0
                             # ---- 止损状态：开新仓/反手时锁基准价，平仓时下线 ----
                             if atr_stop_mult > 0 or breakeven_atr > 0:
                                 if sig == 0:
@@ -1453,8 +1495,13 @@ def run_backtest(symbol_key, signal_fn, n1, n2, volume, start, end,
                   + (" + " if (atr_stop_mult > 0 and breakeven_atr > 0) else "")
                   + (f"保本（浮盈≥{breakeven_atr:g}×ATR 后移到开仓基准价）"
                      if breakeven_atr > 0 else "")
-                  + "，基准=信号K线收盘价，无移动止损")
-                 if (atr_stop_mult > 0 or breakeven_atr > 0) else ""),
+                  + (" + " if ((atr_stop_mult > 0 or breakeven_atr > 0) and time_stop_bars) else "")
+                  + (f"时间止损（持仓满 {time_stop_bars:g} 根已收盘 K 线未出场则离场）"
+                     if (time_stop_bars and time_stop_bars > 0) else "")
+                  + ("，基准=信号K线收盘价，无移动止损"
+                     if (atr_stop_mult > 0 or breakeven_atr > 0) else "（仅时间止损）"))
+                 if (atr_stop_mult > 0 or breakeven_atr > 0
+                     or (time_stop_bars and time_stop_bars > 0)) else ""),
                 (("仓位：波动率预算 —— 单笔目标风险 "
                   + f"{risk_pct:g}% × {_risk_equity_text(risk_equity, init_balance)}"
                   + f"；手数 = 该金额 ÷ ({atr_stop_mult:g}×信号根ATR×{mult:g})，"
