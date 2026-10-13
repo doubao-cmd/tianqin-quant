@@ -86,6 +86,7 @@ BOLL_K = 2.0       # 标准差倍数（与 07 同口径）
 RSI_N = 14         # RSI 周期（经典外生值）
 RSI_OS = 30.0      # 超卖阈值（战法原定）
 RSI_OB = 70.0      # 超买阈值（战法原定）
+RSI_DIV_N = 20     # RSI 背离的比较窗口（外生定死，不扫）
 # ==============================================================================
 
 DATA_DIR = os.path.join(_HERE, "数据")
@@ -305,6 +306,43 @@ def _s_boll_rsi_reversal(o, h, l, c, atr, ma):
     return np.where(long_, 1.0, np.where(short_, -1.0, 0.0))
 
 
+def _s_rsi_oversold(o, h, l, c, atr, ma):
+    """RSI 极值反转（把 RSI 当**主信号**，不是过滤器）：RSI<30 做多、>70 做空。
+
+    与 `boll_rsi` 的区别：那个是「布林带进场 + RSI 过滤」；这个是**去掉布林带**，
+    看 RSI 的极值本身有没有方向信息。
+    """
+    r = _rsi(c, RSI_N)
+    return np.where(r < RSI_OS, 1.0, np.where(r > RSI_OB, -1.0, 0.0))
+
+
+def _s_rsi_cross(o, h, l, c, atr, ma):
+    """RSI 穿越阈值：上穿 30 做多、下穿 70 做空（只在穿越当根触发）。"""
+    r = _rsi(c, RSI_N)
+    rp = np.concatenate([[np.nan], r[:-1]])
+    long_ = (rp <= RSI_OS) & (r > RSI_OS)
+    short_ = (rp >= RSI_OB) & (r < RSI_OB)
+    return np.where(long_, 1.0, np.where(short_, -1.0, 0.0))
+
+
+def _s_rsi_divergence(o, h, l, c, atr, ma):
+    """RSI 背离：价格创 2N 根新低、但 RSI 未创 N 根新低（看涨）；高点对称（看跌）。
+
+    这是 RSI 三种用法里**唯一带二阶结构**的：比较的不是 RSI 的绝对水平，
+    而是「价格的新极值」与「动量的新极值」是否同步。
+    """
+    r = _rsi(c, RSI_N)
+    cmin = pd.Series(c).rolling(2 * RSI_DIV_N).min().to_numpy()
+    cmax = pd.Series(c).rolling(2 * RSI_DIV_N).max().to_numpy()
+    rmin = pd.Series(r).rolling(RSI_DIV_N).min().to_numpy()
+    rmax = pd.Series(r).rolling(RSI_DIV_N).max().to_numpy()
+    # ⚠️ 边界比较必须加容差：RSI 创 N 根新低时 r == rmin，截断重算的浮点误差
+    #    会让 `r > rmin` 翻转 ⇒ selftest 报「有未来函数」（伪报）。加 1e-9 消除。
+    bull = (c <= cmin) & (r > rmin + 1e-9)
+    bear = (c >= cmax) & (r < rmax - 1e-9)
+    return np.where(bull, 1.0, np.where(bear, -1.0, 0.0))
+
+
 SIGNALS = {
     "retrace_ma13": ("回踩 MA13 + 斜率定方向（= 06 的进场条件，基准锚）", _s_retrace_ma13),
     "cross_ma13":   ("收盘上/下穿 MA13", _s_cross_ma13),
@@ -320,6 +358,9 @@ SIGNALS = {
     "fvg_retrace":    ("SMC·FVG 失衡缺口回踩（三 K 不重叠后回补）", _s_fvg_retrace),
     "equal_hl_sweep": ("SMC·等高等低被扫（两段低/高点同水平后假破收回）", _s_equal_hl_sweep),
     "boll_rsi":       ("布林带+RSI 三重确认（触轨 & 超买超卖 & 拐头）", _s_boll_rsi_reversal),
+    "rsi_oversold":   ("RSI 极值反转（RSI 当主信号：<30 多 / >70 空）", _s_rsi_oversold),
+    "rsi_cross":      ("RSI 穿越阈值（上穿 30 多 / 下穿 70 空）", _s_rsi_cross),
+    "rsi_divergence": ("RSI 背离（价格创新极值但 RSI 未同步）", _s_rsi_divergence),
 }
 
 
