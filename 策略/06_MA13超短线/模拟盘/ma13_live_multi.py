@@ -429,6 +429,38 @@ def _save_underlying(record_dir, key, sym):
         pass                      # 落盘失败不能影响交易
 
 
+def _find_orphan(api, s, cur_sym):
+    """★ 历史孤儿仓检测（2026-10-13 收尾修复）：修复前开的旧合约持仓，磁盘上
+    没有 underlying_{key}.json，启动后 s["underlying"]=None，对代码完全隐形——
+    现有换月检测只在 `s["underlying"]!=None` 时生效，所以旧仓永远扫不到。
+
+    本函数不靠猜旧合约代码，而是枚举账户**全部**持仓（api.get_position() 不传
+    symbol 返回含所有持仓的 Entity），挑出「同品种不同月份、且非当前主连」的非零
+    仓位。返回旧合约代码（如 'DCE.JD2611'）或 None。
+
+    仅读取、不改任何状态；只在 s["underlying"] 为 None 的首帧调用一次（见
+    _sync_cloud_pos），正常运行后不再扫描，零额外开销。
+    """
+    if not cur_sym or "." not in cur_sym or len(cur_sym) <= 4:
+        return None
+    prefix = cur_sym[:-4]         # DCE.JD2612 -> DCE.JD（去掉末尾 4 位 YYMM）
+    try:
+        all_pos = api.get_position()          # 不传 symbol = 账户全部持仓（Entity）
+    except Exception:
+        return None
+    try:
+        for sym, p in all_pos.items():
+            sym = str(sym)
+            if sym == cur_sym or not sym.startswith(prefix):
+                continue
+            net = int(getattr(p, "pos", 0) or 0)   # 净持仓（多正空负），与 _cloud_pos 同口径
+            if net != 0:
+                return sym
+    except Exception:
+        return None
+    return None
+
+
 def _cloud_pos(api, s, sym=None):
     """读云端真实持仓（正=多/ 负=空）。读不到返回 None（调用方跳过同步）。
 
@@ -675,7 +707,19 @@ def _sync_cloud_pos(api, s, allow_trade):
     rec = s["rec"]
 
     # ---- ★★ 换月检测：本地记录的持仓合约 ≠ 当前主连指向的合约 ----
+    #   若 s["underlying"] 为 None（修复前开的旧仓、磁盘无记录），先做一次孤儿扫描：
+    #   枚举账户全部持仓，找「同品种不同月份」的非零仓位；找到即当作 held_sym，
+    #   复用下方换月移交/平仓逻辑，从而把历史孤儿仓也纳入管理（修鸡蛋 16 手缺口的收尾）。
     held_sym = s.get("underlying")
+    if not held_sym:
+        orphan = _find_orphan(api, s, cur_sym)
+        if orphan:
+            held_sym = orphan
+            s["rec"].event("ORPHAN",
+                           f"⚠️ 发现历史孤儿仓：账户在 {orphan} 持有非零仓位、"
+                           f"但本进程无记录（修复前遗留）→ 将按换月逻辑移交/平仓")
+            print(f"[{s['name']}][孤儿] 发现历史孤儿仓 {orphan}（修复前遗留），"
+                  f"将按换月逻辑处理", flush=True)
     if held_sym and held_sym != cur_sym:
         old_pos = _cloud_pos(api, s, held_sym)     # 读旧合约（非当前主连）的持仓
         if old_pos is None:
@@ -705,6 +749,7 @@ def _sync_cloud_pos(api, s, allow_trade):
                               f"【观察模式不自动平仓，请人工处理或切交易模式】")
                     s["rollover_logged"] = True
                 s["pos"] = old_pos                   # 继续跟踪旧合约，等切交易模式再平
+                s["underlying"] = held_sym           # 记下旧合约，避免每帧重扫孤儿
                 s["recovered"] = True
                 return
         else:
