@@ -59,7 +59,7 @@
 ├── config_account.py         # 账号配置（★ 不入库，见 .gitignore）
 ├── config_account_template.py# 账号配置模板（入库）
 │
-├── lib/                      # ── 核心库（8687 行）
+├── lib/                      # ── 核心库（8789 行）
 │   ├── engine.py             # 回测 + 实盘引擎，5 套策略 10 个入口函数
 │   ├── engine_guard.py       # 账户回撤熔断 + 会话重启防护
 │   ├── account_ledger.py     # 台账（成交流水 / 心跳 / 权益曲线）
