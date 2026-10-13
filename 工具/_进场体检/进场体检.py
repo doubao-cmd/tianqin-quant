@@ -169,6 +169,51 @@ def _s_vol_break(o, h, l, c, atr, ma):
     return np.where(big, np.sign(rng), 0.0)
 
 
+def _s_pin_bar(o, h, l, c, atr, ma):
+    """价格行为·pin bar：长影线 + 小实体。下影线主导 ⇒ 反转向上；上影线主导 ⇒ 反转向下。"""
+    rng = h - l
+    body = np.abs(c - o)
+    up_tail = h - np.maximum(o, c)
+    dn_tail = np.minimum(o, c) - l
+    is_pin = (rng > 0) & (body < 0.35 * rng)
+    bull = is_pin & (dn_tail > up_tail) & (dn_tail > 0.5 * rng)
+    bear = is_pin & (up_tail > dn_tail) & (up_tail > 0.5 * rng)
+    return np.where(bull, 1.0, np.where(bear, -1.0, 0.0))
+
+
+def _s_engulf(o, h, l, c, atr, ma):
+    """价格行为·吞没：当前实体完全吞没前一根实体，且方向相反。"""
+    po = np.roll(o, 1); pc = np.roll(c, 1)
+    bull = (pc < po) & (c > o) & (c > pc) & (o < po)
+    bear = (pc > po) & (c < o) & (c < pc) & (o > po)
+    return np.where(bull, 1.0, np.where(bear, -1.0, 0.0))
+
+
+def _s_spring(o, h, l, c, atr, ma):
+    """威科夫·spring：刺破前 BREAK_N 根区间下沿后当根收回（收盘回到支撑之上且收阳）。"""
+    rl = pd.Series(l).rolling(BREAK_N).min().shift(1).to_numpy()
+    return np.where((l < rl) & (c > rl) & (c > o), 1.0, 0.0)
+
+
+def _s_upthrust(o, h, l, c, atr, ma):
+    """威科夫·upthrust：刺破前 BREAK_N 根区间上沿后当根收回（收盘回到阻力之下且收阴）。"""
+    rh = pd.Series(h).rolling(BREAK_N).max().shift(1).to_numpy()
+    return np.where((h > rh) & (c < rh) & (c < o), -1.0, 0.0)
+
+
+def _s_hl_pullback(o, h, l, c, atr, ma):
+    """价格行为·更高低点/更低高点回踩：上升趋势(MA 上行)中近期摆动低点高于前段、收盘重回 MA 之上。"""
+    LL_recent = pd.Series(l).rolling(BREAK_N).min().shift(1).to_numpy()
+    LL_prior = pd.Series(l).rolling(BREAK_N).min().shift(1 + BREAK_N).to_numpy()
+    HH_recent = pd.Series(h).rolling(BREAK_N).max().shift(1).to_numpy()
+    HH_prior = pd.Series(h).rolling(BREAK_N).max().shift(1 + BREAK_N).to_numpy()
+    upt = ma > np.roll(ma, SLOPE_N)
+    dnt = ma < np.roll(ma, SLOPE_N)
+    bull = (LL_recent > LL_prior) & upt & (c > ma)
+    bear = (HH_recent < HH_prior) & dnt & (c < ma)
+    return np.where(bull, 1.0, np.where(bear, -1.0, 0.0))
+
+
 SIGNALS = {
     "retrace_ma13": ("回踩 MA13 + 斜率定方向（= 06 的进场条件，基准锚）", _s_retrace_ma13),
     "cross_ma13":   ("收盘上/下穿 MA13", _s_cross_ma13),
@@ -176,6 +221,11 @@ SIGNALS = {
     "tsmom_20":     ("过去 20 根收益的符号（时序动量）", _s_tsmom_20),
     "rev_2bar":     ("连续 2 根同向 → 反向开（逆势）", _s_rev_2bar),
     "vol_break":    ("单根振幅 > 2×ATR 顺势跟进", _s_vol_break),
+    "pin_bar":      ("价格行为·pin bar（长影线小实体反转）", _s_pin_bar),
+    "engulf":       ("价格行为·吞没形态", _s_engulf),
+    "spring":       ("威科夫·spring（假跌破区间下沿后收回）", _s_spring),
+    "upthrust":     ("威科夫·upthrust（假突破区间上沿后收回）", _s_upthrust),
+    "hl_pullback":  ("价格行为·更高低点/更低高点回踩（趋势中）", _s_hl_pullback),
 }
 
 
@@ -212,7 +262,11 @@ def screen_one(key, sig_name, df, diag=False):
     valid = np.arange(0, N - HOLD - 1)
     idx = valid[sig[valid] != 0]
     if len(idx) == 0:
-        return {"key": key, "signal": sig_name, "n": 0}
+        return {"key": key, "signal": sig_name, "n": 0,
+                "name_cn": cs.get(key)[0], "per_day": 0.0, "days": 0,
+                "cost_pts": 0.0, "L0_gross": 0.0, "L0_t": 0.0,
+                "L1_gross": 0.0, "L1_net": 0.0, "L1_t": 0.0,
+                "L1_winrate": 0.0, "stop_share": 0.0, "ratio": 0.0}
 
     sgn = sig[idx]
     entry = o[idx + 1]
