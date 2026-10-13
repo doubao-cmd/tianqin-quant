@@ -159,6 +159,7 @@ def l1_eval(o, h, l, c, atr, idx, sgn, key, stop_mult, H):
     return {
         "n": int(len(idx)),
         "gross": float(np.mean(gross)),
+        "gross_sd": float(np.std(gross, ddof=1)) if len(gross) > 1 else 0.0,
         "stop_share": float(np.mean(hit)),
     }
 
@@ -231,6 +232,19 @@ def analyze_one(key, delta, stop_mult, H, mc_n, rng, verbose=True):
     }
     out["edge_gross"] = (round(out["real_gross"] - out["ctrl_gross"], 4)
                          if (out["real_gross"] is not None and out["ctrl_gross"] is not None) else None)
+
+    # ---- D. 检验功效（论文 §11.3）：给定现有样本量，能检测出多大的效应？
+    _n = int((real or {}).get("n") or 0)
+    _sd = float((real or {}).get("gross_sd") or 0.0)
+    _t = (real["gross"] / (_sd / math.sqrt(_n)) if (_n > 1 and _sd > 0) else None)
+    _mde = min_detectable_effect(_n, _sd) if (_n > 1 and _sd > 0) else None
+    _tradable = 2.0 * cp          # 「值得交易」的毛效应门槛（毛/成本 ≥ 2）
+    out["gross_sd"] = round(_sd, 4) if _sd > 0 else None
+    out["t"] = round(_t, 2) if _t is not None else None
+    out["mde_pts"] = round(_mde, 4) if _mde else None
+    out["tradable_pts"] = round(_tradable, 3)
+    out["mde_over_tradable"] = (round(_mde / _tradable, 4)
+                                if (_mde and _tradable > 0) else None)
     if verbose:
         print(f"  {key:<3}{out['name_cn']:<6} "
               f"u/d/p0={out['u']:.3f}/{out['d']:.3f}/{out['p0']:.3f}  "
@@ -249,6 +263,63 @@ def boundary_table(u, d, p0, delta, stops, holds):
             rows.append({"stop_atr": sm, "hold": H, "grids": ell,
                          "p_stop": round(p_stop, 4)})
     return rows
+
+
+# ============================================================ D. 检验功效与样本量（论文 §11.3）
+def _norm_ppf(p):
+    """标准正态分位数（Acklam 有理近似，绝对误差 < 1.2e-9，不依赖 scipy）。"""
+    if not (0.0 < p < 1.0):
+        raise ValueError("p 必须落在 (0,1)")
+    a = (-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+         1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00)
+    b = (-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+         6.680131188771972e+01, -1.328068155288572e+01)
+    c = (-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+         -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00)
+    d = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e+00,
+         3.754408661907416e+00)
+    plow, phigh = 0.02425, 1.0 - 0.02425
+    if p < plow:
+        q = math.sqrt(-2.0 * math.log(p))
+        return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+    if p > phigh:
+        q = math.sqrt(-2.0 * math.log(1.0 - p))
+        return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) / \
+               ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1.0)
+    q = p - 0.5
+    r = q * q
+    return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q / \
+           (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1.0)
+
+
+def required_n(delta, sigma, alpha=0.05, power=0.80):
+    """论文 (84)：双侧 alpha、功效 power 下，识别均值优势 delta 所需样本量。
+
+        n ≈ (z_{1−α/2} + z_power)² / (Δ/σ)²
+    """
+    if sigma <= 0 or delta == 0:
+        return float("inf")
+    z = _norm_ppf(1.0 - alpha / 2.0) + _norm_ppf(power)
+    return (z * sigma / abs(delta)) ** 2
+
+
+def min_detectable_effect(n, sigma, alpha=0.05, power=0.80):
+    """反解：给定样本量 n，本检验能识别出来的最小效应（与原数据同单位）。
+
+        Δ_min = (z_{1−α/2} + z_power) · σ / √n
+    """
+    if n <= 0:
+        return float("inf")
+    z = _norm_ppf(1.0 - alpha / 2.0) + _norm_ppf(power)
+    return z * sigma / math.sqrt(n)
+
+
+def effective_n(n, rho):
+    """论文 (85)：AR(1) 相关系数 rho 下的有效样本量  n_eff ≈ n·(1−ρ)/(1+ρ)。"""
+    if rho >= 1.0:
+        return 0.0
+    return n * (1.0 - rho) / (1.0 + rho)
 
 
 # ============================================================ 自检
@@ -309,7 +380,18 @@ def selftest():
         ok2 = ok2 and good
         print(f"  u/d/p0=({uu},{dd},{pp}) 止损{dn}格 H={H:>2}: DP={pd_:.6f} MC={pdm:.6f} "
               f"Δ={gap:.6f}（3SE={3*se:.6f}）  {'✅' if good else '❌'}")
-    return ok1 and ok2
+
+    print()
+    print("=" * 78)
+    print("自检 3：复现论文 §11.3 功效公式")
+    print("=" * 78)
+    n_ref = required_n(delta=0.1, sigma=2.6)
+    a_n = abs(n_ref - 5306) < 3.0
+    print(f"  (a) required_n(Δ=0.1, σ=2.6) = {n_ref:.1f}（论文 5306）  {'✅' if a_n else '❌'}")
+    ratio_e = effective_n(1000.0, 0.30) / 1000.0
+    a_e = abs(ratio_e - 0.5385) < 1e-4
+    print(f"  (b) n_eff/n（ρ=0.3）= {ratio_e:.4f}（论文 0.5385）  {'✅' if a_e else '❌'}")
+    return ok1 and ok2 and a_n and a_e
 
 
 # ============================================================ 主程序
@@ -369,6 +451,20 @@ def main():
               f"{avg_multi*100:.1f}% 的步位移 > 1 格，")
         print(f"     且 bar 内还有 high/low 波动 ⇒ 解析值系统性**低于**真实止损率。")
         print(f"     「路径结构」的真正检验看 B 列（真实 vs 对照）：两者差距才是信号的价值。")
+        print()
+        print("=" * 78)
+        print("D 检验功效（论文 §11.3）：现有样本量能检测出多大的效应？")
+        print("=" * 78)
+        mdes = [r["mde_pts"] for r in rows if r["mde_pts"] is not None]
+        ratios = [r["mde_over_tradable"] for r in rows if r["mde_over_tradable"] is not None]
+        if mdes:
+            print(f"  最小可检测效应 均值      : {np.mean(mdes):.4f} 点/笔")
+            print(f"  「值得交易」门槛 均值     : "
+                  f"{np.mean([r['tradable_pts'] for r in rows]):.3f} 点/笔（= 2×往返成本）")
+            print(f"  mde ÷ 门槛 均值          : {np.mean(ratios):.4f}")
+            verdict = ("**功效充足**：真有能覆盖成本的效应，这个样本量必然检出"
+                       if np.mean(ratios) < 0.5 else "⚠️ 功效可能不足，结论需谨慎")
+            print(f"  ⇒ {verdict}")
 
     # ---- 落盘
     out_md = os.path.join(_HERE, "首发分布结果.md")
@@ -416,6 +512,14 @@ def main():
                         f"{'一致' if n_pos in (0, len(eg)) else '**不一致（噪声特征）**'}\n")
                 f.write(f"- 上行占比 u/(u+d) 均值：**{np.mean(skews):.4f}**"
                         f"（≈0.5 ⇒ 5min 涨跌无方向偏差）\n")
+            f.write("\n## D 检验功效（论文 §11.3）：现有样本量能检测出多大的效应\n\n")
+            f.write("| 品种 | n | L1 毛均(点) | L1 毛 sd | t | **最小可检测效应**(点) | "
+                    "「值得交易」门槛(点)=2×成本 | mde÷门槛 |\n")
+            f.write("|---|---:|---:|---:|---:|---:|---:|---:|\n")
+            for r in rows:
+                f.write(f"| {r['name_cn']} | {r['real_n']} | {r['real_gross']} | {r['gross_sd']} | "
+                        f"{r['t']} | **{r['mde_pts']}** | {r['tradable_pts']} | "
+                        f"{r['mde_over_tradable']} |\n")
     print(f"\n[done] -> {out_md}")
 
     # ---- 汇总结论
