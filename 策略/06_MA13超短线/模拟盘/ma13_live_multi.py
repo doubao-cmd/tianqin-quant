@@ -208,7 +208,10 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
         #   接管时必须补挂止损（云端不存我们的止损线），且退出时要打醒目事件。
         s.update({"pos": 0, "entry": 0.0, "stop": 0.0, "bars_in": 0,
                   "last_id": -1, "skip_first": False, "recovered": False,
-                  "last_order_ts": 0.0})
+                  "last_order_ts": 0.0,
+                  # ★★ 换月移交：本地记录的持仓合约（持久化，重启不丢）+ 落盘目录
+                  "underlying": _load_underlying(record_dir, key),
+                  "record_dir": record_dir, "rollover_logged": False})
         def _hand_of(atr, equity, price=None, _s=s):
             if not atr or math.isnan(atr) or atr <= 0:
                 return HAND_MIN
@@ -396,17 +399,48 @@ def _fuse_eval(bal, fuse, rec, name, drill=False):
     return True
 
 
-def _cloud_pos(api, s):
+# ============================================================
+# ★★ 换月移交：本地记录的持仓合约持久化（2026-10-13 新增）
+#   为什么需要持久化：主连换月时 q.underlying_symbol 会跳到新合约，旧持仓仍在
+#   旧合约（云端不会自动迁移）。若进程在换月期间重启（守护/计划任务常见），
+#   内存里的 s["underlying"] 丢失 ⇒ 旧合约持仓变孤儿（脱管裸奔）。
+#   ⇒ 把「当前持仓在哪个合约」落盘成 underlying_{key}.json，重启后据此判断换月。
+def _underlying_path(record_dir, key):
+    return os.path.join(record_dir, f"underlying_{key}.json")
+
+
+def _load_underlying(record_dir, key):
+    try:
+        with open(_underlying_path(record_dir, key), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d.get("underlying") or None
+    except Exception:
+        return None
+
+
+def _save_underlying(record_dir, key, sym):
+    if not record_dir or not sym:
+        return
+    try:
+        with open(_underlying_path(record_dir, key), "w", encoding="utf-8") as f:
+            json.dump({"underlying": sym,
+                       "update": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
+    except Exception:
+        pass                      # 落盘失败不能影响交易
+
+
+def _cloud_pos(api, s, sym=None):
     """读云端真实持仓（正=多/ 负=空）。读不到返回 None（调用方跳过同步）。
 
     ⚠️ 云端合约代码 = q.underlying_symbol（已由引擎在_quote_handler 里展开为
        具体月份，如 DCE.p2701）。用主连代码查会返回空持仓 —— 必须在订阅
-       underlying_symbol 之后才有意义。
+       underlying_symbol 之后才有意义。sym 可显式指定（换月时查旧合约持仓）。
     """
     q = s.get("q")
     if q is None:
         return None
-    sym = q.underlying_symbol
+    if sym is None:
+        sym = q.underlying_symbol
     if not sym:
         return None
     try:
@@ -472,6 +506,9 @@ def _attach_stop_on_boot(s, pos, c, a):
     s["rec"].event("RECOVER",
                    f"⚠️ 云端存在持仓 {pos} 手，本进程原以为空仓 → 已接管并补挂止损"
                    f"≈{stop:.1f}（ATR={a:.2f}，算法与开仓一致）。若这是意外持仓请人工核对。")
+    # ★★ 换月移交：接管时同步「持仓在哪个合约」，并落盘（重启后据此判换月）
+    s["underlying"] = s["q"].underlying_symbol
+    _save_underlying(s.get("record_dir"), s["key"], s["underlying"])
 
 
 def _now_atr(k, at=None):
@@ -596,12 +633,20 @@ def _cloud_fill_stats(api, s):
         s["pending_fill"] = keep
 
 
-def _sync_cloud_pos(api, s):
-    """★ 云端持仓对账（切 TqKq 后的核心保护，见常量区SYNC_CLOUD 注释）。
+def _sync_cloud_pos(api, s, allow_trade):
+    """★ 云端持仓对账（切 TqKq 后的核心保护，见常量区SYNC_CLOUD 注释）+ ★★换月移交。
 
     以**云端为唯一真相源**，纠正进程内存里的 s["pos"]。只在不一致时动手：
       ① 云端有仓、本进程以为空仓 ⇒ 接管 + 补挂止损（否则持仓裸奔 / 可能重复开仓）
       ② 云端空仓、本进程以为有仓 ⇒ 清零（止损线是本进程算的，云端已平就不该再管）
+
+    ★★ 换月移交（2026-10-13 新增，修「鸡蛋 16 手 = 双合约并存 + 旧仓脱管」缺口）：
+      主连换月时 q.underlying_symbol 跳到新合约（JD2611→JD2612），旧持仓仍在旧合约、
+      云端不自动迁移。若只按 q.underlying_symbol 对账，旧仓被判「无持仓」→ 脱管裸奔。
+      ⇒ 检测「本地记录的持仓合约 s["underlying"] ≠ 当前主连 cur_sym」：
+        旧仓非空 ⇒ 先平掉旧合约持仓（换月移交），再把本地跟踪切到新合约；
+        旧仓已空 ⇒ 直接切到新合约。
+      s["underlying"] 持久化到 underlying_{key}.json，覆盖「换月期间进程重启」的孤儿仓场景。
 
     ⚠️ **必须放在「新 bar 判断之前」调用**（第一版就栽在这：写在 bar 判断之后，
     而 _process 开头有 `if bar["id"] == s["last_id"]: return` 的提前返回，
@@ -621,18 +666,69 @@ def _sync_cloud_pos(api, s):
     #   ⇒ 下单后 FIX_WAIT 秒内不做对账，等云端自己跟上。
     if time.time() - float(s.get("last_order_ts") or 0.0) < FIX_WAIT_SEC:
         return
-    cp = _cloud_pos(api, s)
+    q = s.get("q")
+    if q is None:
+        return
+    cur_sym = q.underlying_symbol
+    if not cur_sym:
+        return
+    rec = s["rec"]
+
+    # ---- ★★ 换月检测：本地记录的持仓合约 ≠ 当前主连指向的合约 ----
+    held_sym = s.get("underlying")
+    if held_sym and held_sym != cur_sym:
+        old_pos = _cloud_pos(api, s, held_sym)     # 读旧合约（非当前主连）的持仓
+        if old_pos is None:
+            old_pos = s["pos"]                      # 云端读不到 ⇒ 兜底用内存记录
+        if old_pos != 0:
+            # 平多=SELL / 平空=BUY（与 _process 出场方向一致）
+            direction = "SELL" if old_pos > 0 else "BUY"
+            if allow_trade:
+                api.insert_order(held_sym, direction, "CLOSE", abs(old_pos))
+                s["last_order_ts"] = time.time()    # 等撮合窗口，防自平仓被误接管
+                rec.fill("多" if old_pos > 0 else "空", "平", abs(old_pos),
+                         float(q.last_price), held_sym)
+                rec.event("ROLLOVER",
+                          f"⚠️ 检测到主连换月：本地持仓合约 {held_sym} → 当前主连 {cur_sym}，"
+                          f"旧持仓 {old_pos} 手已在 {held_sym} 平仓（换月移交，避免脱管裸奔）")
+                print(f"[{s['name']}][换月] {held_sym} → {cur_sym}："
+                      f"旧仓 {old_pos} 手已平仓移交", flush=True)
+                # 已平仓：本地跟踪切到新合约，继续下方正常同步
+                s["pos"] = 0; s["entry"] = 0.0; s["stop"] = 0.0; s["bars_in"] = 0
+                s["underlying"] = cur_sym
+                _save_underlying(s.get("record_dir"), s["key"], cur_sym)
+            else:
+                # 观察模式：不报单，但旧仓仍计入本地跟踪 + 只告警一次（防刷屏）
+                if not s.get("rollover_logged"):
+                    rec.event("ROLLOVER",
+                              f"⚠️ 主连换月 {held_sym}→{cur_sym}：旧持仓 {old_pos} 手仍在 {held_sym}，"
+                              f"【观察模式不自动平仓，请人工处理或切交易模式】")
+                    s["rollover_logged"] = True
+                s["pos"] = old_pos                   # 继续跟踪旧合约，等切交易模式再平
+                s["recovered"] = True
+                return
+        else:
+            # 旧合约已无持仓（已平/已到期）：直接切到新合约
+            if s.get("rollover_logged"):
+                s["rollover_logged"] = False
+            s["pos"] = 0; s["entry"] = 0.0; s["stop"] = 0.0; s["bars_in"] = 0
+            s["underlying"] = cur_sym
+            _save_underlying(s.get("record_dir"), s["key"], cur_sym)
+
+    # ---- 正常云端对账（基于当前主连 cur_sym）----
+    cp = _cloud_pos(api, s, cur_sym)
     if cp is None:
         return# 读不到云端持仓（尚未订阅 / 连接未就绪）⇒ 本次不动，静默跳过
     if cp == s["pos"]:
         # 已一致。若是上一轮接管的持仓，本根起按正常持仓维护（止损已挂好）。
         if cp != 0 and s.get("recovered"):
             s["recovered"] = False
+        s["underlying"] = cur_sym
+        _save_underlying(s.get("record_dir"), s["key"], cur_sym)
         return
-    rec = s["rec"]
     if cp != 0:
         # 接管：云端有仓而本进程不知道 ⇒ 补挂止损（云端不存我们的止损线）
-        c_now = float(s["q"].last_price or 0)
+        c_now = float(q.last_price or 0)
         a_now = s.get("last_atr") or 0.0
         # ★ 若last_atr 还是 0（进程刚起、ATR 尚未算出），就地算一次。
         #   否则 _attach_stop_on_boot 会在 `a <= 0` 处早退⇒ **接管了持仓却没挂
@@ -642,12 +738,16 @@ def _sync_cloud_pos(api, s):
             if a_now == a_now and a_now > 0:
                 s["last_atr"] = a_now
         _attach_stop_on_boot(s, cp, c_now, a_now)
+        s["underlying"] = cur_sym
+        _save_underlying(s.get("record_dir"), s["key"], cur_sym)
     else:
         # 退出：被恢复出来的持仓已在云端消失（可能人工平仓/被其他程序平掉）
         rec.event("SYNC", "云端持仓已清零（可能人工平仓）→ 本进程同步退出该持仓，"
                           "并撤销其止损监控")
         print(f"[{s['name']}][同步] 云端持仓已清零 → 同步退出，撤销止损监控", flush=True)
         s["entry"] = 0.0; s["stop"] = 0.0; s["bars_in"] = 0
+        s["underlying"] = cur_sym
+        _save_underlying(s.get("record_dir"), s["key"], cur_sym)
     s["pos"] = cp
     s["recovered"] = False
 
@@ -684,7 +784,7 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
     # ---- 云端持仓对账：必须在「无新bar 就return」之前 ----
     # 每次 wait_update 都问一次云端，不依赖新 bar（休市/ 重启后首个 bar 到来前
     # 也必须生效，否则新仓无人接管）。只在不一致时才动手，见函数内注释。
-    _sync_cloud_pos(api, s)
+    _sync_cloud_pos(api, s, allow_trade)
     # ★ 只读统计（不改交易）：读云端真实持仓均价与浮动盈亏 → 供台账算滑点/MFE/MAE
     _cloud_fill_stats(api, s)
 
@@ -781,6 +881,8 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
         if allow_trade:
             s["pos"] = hand if dir_trend > 0 else -hand
             s["entry"] = c; s["stop"] = stop_new; s["bars_in"] = 0
+            s["underlying"] = q.underlying_symbol
+            _save_underlying(s.get("record_dir"), s["key"], s["underlying"])
     elif pos != 0:
         s["bars_in"] += 1
 
