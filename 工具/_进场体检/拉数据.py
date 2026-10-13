@@ -7,14 +7,14 @@
 体检脚本只读缓存、**不连网**。
 
 口径（与 06 回测脚本逐字一致，保证可比）：
-  · 周期 5min（300 秒）
+  · 周期由环境变量 `EP_KSEC` 决定（秒）：默认 300（5min）；900 = 15min
   · 窗口：回测起点 = 2021-01-01 前 7 天（预热），终点 2023-12-31
-  · TqSim + TqBacktest（回测模式才能取到多年的 5min；实时模式 data_length 上限 ≈ 8964 根 ≈ 1 个月）
+  · TqSim + TqBacktest（回测模式才能取到多年的分钟线；实时模式 data_length 上限 ≈ 8964 根 ≈ 1 个月）
   · 只落 datetime/open/high/low/close（volume 在回测模式 2018 年后不可靠，见 README §18）
 
-产物：`数据/{key}_5min_{start}_{end}.csv`
-用法：python 拉数据.py            # 全部 12 品种
-      python 拉数据.py JM M P     # 只拉指定品种
+产物：`数据/{key}_{X}min_{start}_{end}.csv`
+用法：python 拉数据.py            # 全部 12 品种（默认 5min）
+      EP_KSEC=900 python 拉数据.py JM M P    # 只拉指定品种的 15min
 """
 import os
 import sys
@@ -33,7 +33,8 @@ from tqsdk import TqApi, TqSim, TqBacktest, TqAuth  # noqa: E402
 import config_account  # noqa: E402
 import config_symbols  # noqa: E402
 
-KSEC = 300
+KSEC = int(os.environ.get("EP_KSEC", "300"))   # 周期秒数：300=5min，900=15min
+TAG = f"{KSEC // 60}min"
 START = pd.Timestamp("2021-01-01")
 END = pd.Timestamp("2023-12-31")
 WARMUP_DAYS = 7
@@ -84,7 +85,7 @@ def pull_one(key, user, pwd):
         "open": o_l, "high": h_l, "low": l_l, "close": c_l,
     })
     os.makedirs(DATA_DIR, exist_ok=True)
-    out = os.path.join(DATA_DIR, f"{key}_5min_{START.date()}_{END.date()}.csv")
+    out = os.path.join(DATA_DIR, f"{key}_{TAG}_{START.date()}_{END.date()}.csv")
     df.to_csv(out, index=False, encoding="utf-8-sig")
     print(f"  [ok] {len(df)} 根  {df['datetime'].min()} ~ {df['datetime'].max()}  -> {out}", flush=True)
     return len(df)

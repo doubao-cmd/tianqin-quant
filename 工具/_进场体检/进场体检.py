@@ -324,8 +324,12 @@ SIGNALS = {
 
 
 # ---------------------------------------------------------------- 数据
-def load(key):
-    p = os.path.join(DATA_DIR, f"{key}_5min_2021-01-01_2023-12-31.csv")
+PERIOD = "5min"        # 数据周期（main 里可由 --period 覆盖；见 拉数据.py 的 EP_KSEC）
+
+
+def load(key, period=None):
+    period = period or PERIOD
+    p = os.path.join(DATA_DIR, f"{key}_{period}_2021-01-01_2023-12-31.csv")
     if not os.path.exists(p):
         return None
     df = pd.read_csv(p, encoding="utf-8-sig", parse_dates=["datetime"])
@@ -434,7 +438,11 @@ def main():
     ap.add_argument("--selftest", action="store_true", help="未来函数截断检验")
     ap.add_argument("--stop", type=float, default=STOP_ATR_MULT,
                     help="止损 ATR 倍数（默认 2.0，与项目口径一致；战法原版可传 1.5）")
+    ap.add_argument("--period", default="5min",
+                    help="数据周期：5min（默认）/ 15min 等（须先用 拉数据.py 拉好）")
     a = ap.parse_args()
+    global PERIOD
+    PERIOD = a.period
 
     if a.list:
         print("可用候选信号：")
@@ -455,7 +463,7 @@ def main():
 
     L = []
     L.append("=" * 112)
-    L.append(f"进场体检  ｜  HOLD={HOLD} 根(5min)  ｜  止损={a.stop:g}×ATR  ｜  "
+    L.append(f"进场体检  ｜  周期={a.period}  ｜  HOLD={HOLD} 根  ｜  止损={a.stop:g}×ATR  ｜  "
              f"滑点={SLIP}跳  ｜  手数=固定 1 手  ｜  窗口 2021-2023（**已污染，只能判死**）")
     L.append("=" * 112)
     L.append(f"{'信号':<14}{'品种':<7}{'笔数':>7}{'笔/日':>7}{'成本(点)':>9}"
@@ -493,6 +501,8 @@ def main():
     tag = "ALL" if a.all else names[0]
     if abs(a.stop - STOP_ATR_MULT) > 1e-9:
         tag += f"_stop{a.stop:g}"
+    if a.period != "5min":
+        tag += f"_{a.period}"
     out = os.path.join(_HERE, f"体检结果_{tag}.txt")
     with open(out, "w", encoding="utf-8") as f:
         f.write(txt + "\n")

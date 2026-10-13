@@ -47,8 +47,14 @@ es = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(es)
 
 
-def collect(key, sig_name, stop_mult, H):
-    """跑 L1 并返回逐笔明细 DataFrame（与 screen_one 逐行同口径）。"""
+def collect(key, sig_name, stop_mult, H, exit_mode="time"):
+    """跑 L1 并返回逐笔明细 DataFrame（与 screen_one 逐行同口径）。
+
+    exit_mode:
+      "time" —— 止损 + 持有期到期（与进场体检完全一致）
+      "mid"  —— 止损 + **回到布林中轨止盈** + 持有期到期（均值回归式出场）
+                ⚠️ 止盈成交价用「当根收盘价」（收盘可成交），是本模块唯一的口径近似。
+    """
     df = es.load(key)
     if df is None or len(df) < 1000:
         return None
@@ -72,23 +78,31 @@ def collect(key, sig_name, stop_mult, H):
     entry = o[idx + 1]
     stop = np.where(sgn > 0, entry - stop_mult * atr[idx], entry + stop_mult * atr[idx])
     exit_px = o[idx + 1 + H].copy()
+    mid = (pd.Series(c).rolling(es.BOLL_N).mean().to_numpy()
+           if exit_mode == "mid" else None)
     hit = np.zeros(len(idx), dtype=bool)
     bars = np.full(len(idx), H, dtype=int)
+    reason = np.array(["到期"] * len(idx), dtype=object)
     for j, (e_i, st, s) in enumerate(zip(idx, stop, sgn)):
         for jj in range(e_i + 1, e_i + 1 + H):
             if s > 0:
                 if l[jj] <= st:
-                    exit_px[j] = min(st, o[jj]); hit[j] = True; bars[j] = jj - e_i; break
+                    exit_px[j] = min(st, o[jj]); hit[j] = True
+                    bars[j] = jj - e_i; reason[j] = "止损"; break
             else:
                 if h[jj] >= st:
-                    exit_px[j] = max(st, o[jj]); hit[j] = True; bars[j] = jj - e_i; break
+                    exit_px[j] = max(st, o[jj]); hit[j] = True
+                    bars[j] = jj - e_i; reason[j] = "止损"; break
+            if mid is not None and not np.isnan(mid[jj]):
+                if (s > 0 and c[jj] >= mid[jj]) or (s < 0 and c[jj] <= mid[jj]):
+                    exit_px[j] = c[jj]; bars[j] = jj - e_i; reason[j] = "止盈"; break
     cp = es.cost_points(key)
     gross = (exit_px - entry) * sgn
     return pd.DataFrame({
         "品种": cs.get(key)[0], "key": key,
         "时间": t[idx + 1],
         "方向": np.where(sgn > 0, "多", "空"),
-        "出场": np.where(hit, "止损", "到期"),
+        "出场": reason,
         "持有根数": bars,
         "毛盈亏": gross,
         "成本": cp,
@@ -107,19 +121,23 @@ def main():
     ap.add_argument("--syms", default=None)
     ap.add_argument("--stop", type=float, default=es.STOP_ATR_MULT)
     ap.add_argument("--hold", type=int, default=es.HOLD)
+    ap.add_argument("--exit", choices=["time", "mid"], default="time",
+                    help="time=止损+到期（默认）；mid=止损+回到布林中轨止盈+到期")
+    ap.add_argument("--period", default="5min", help="数据周期：5min（默认）/ 15min")
     a = ap.parse_args()
+    es.PERIOD = a.period
 
     keys = ([k.strip().upper() for k in a.syms.split(",")] if a.syms
             else ["EB", "JD", "JM", "LH", "MA", "M", "P", "RB", "RU", "SA", "SR", "V"])
-    parts = [collect(k, a.signal, a.stop, a.hold) for k in keys]
+    parts = [collect(k, a.signal, a.stop, a.hold, a.exit) for k in keys]
     d = pd.concat([p for p in parts if p is not None], ignore_index=True)
     if len(d) == 0:
         raise SystemExit("无成交笔")
 
     L = []
     L.append("=" * 104)
-    L.append(f"盈亏归因  ｜  信号={a.signal}  ｜  止损={a.stop:g}×ATR  ｜  持有={a.hold} 根"
-             f"  ｜  窗口 2021-2023（**已污染，只做诊断**）")
+    L.append(f"盈亏归因  ｜  信号={a.signal}  ｜  周期={a.period}  ｜  止损={a.stop:g}×ATR"
+             f"  ｜  持有={a.hold} 根  ｜  出场={a.exit}  ｜  窗口 2021-2023（**已污染，只做诊断**）")
     L.append("=" * 104)
 
     # ---------- ① 总览 ----------
@@ -138,7 +156,7 @@ def main():
     L.append("【② 出场原因 × 方向】—— 钱在哪一格里产生 / 消失")
     L.append(f"  {'格':<12}{'笔数':>7}{'占比':>8}{'毛均':>10}{'毛合计':>13}{'净合计':>13}"
              f"{'平均持有':>10}")
-    for ex in ["止损", "到期"]:
+    for ex in ["止损", "止盈", "到期"]:
         for dr in ["多", "空"]:
             g = d[(d["出场"] == ex) & (d["方向"] == dr)]
             if len(g) == 0:
@@ -147,8 +165,10 @@ def main():
             L.append(f"  {dr}·{ex:<9}{a_['笔数']:>7}{100*a_['笔数']/len(d):>7.1f}%"
                      f"{a_['毛均']:>10.3f}{a_['毛合计']:>13,.1f}{a_['净合计']:>13,.1f}"
                      f"{g['持有根数'].mean():>10.2f}")
-    for ex in ["止损", "到期"]:
+    for ex in ["止损", "止盈", "到期"]:
         g = d[d["出场"] == ex]
+        if len(g) == 0:
+            continue
         a_ = _agg(g)
         L.append(f"  ── {ex}合计{'':<4}{a_['笔数']:>7}{100*a_['笔数']/len(d):>7.1f}%"
                  f"{a_['毛均']:>10.3f}{a_['毛合计']:>13,.1f}{a_['净合计']:>13,.1f}"
@@ -186,6 +206,12 @@ def main():
     txt = "\n".join(L)
     print(txt)
     sfx = "" if abs(a.stop - es.STOP_ATR_MULT) < 1e-9 else f"_stop{a.stop:g}"
+    if a.hold != es.HOLD:
+        sfx += f"_hold{a.hold}"
+    if a.exit != "time":
+        sfx += f"_exit{a.exit}"
+    if a.period != "5min":
+        sfx += f"_{a.period}"
     out = os.path.join(_HERE, f"盈亏归因_{a.signal}{sfx}.md")
     with open(out, "w", encoding="utf-8") as f:
         f.write(f"# 盈亏归因 · {a.signal}\n\n```\n{txt}\n```\n")
