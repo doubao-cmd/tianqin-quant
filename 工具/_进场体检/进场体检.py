@@ -80,6 +80,12 @@ DIAG_HOLDS = [1, 2, 3, 6, 12, 24, 48]  # ⚠️ 仅供「诊断曲线」，**严
 # ---- SMC 两个候选信号的外生参数（2026-10-13 新增，定死、不扫）----
 EQUAL_W = 10       # 等高等低的窗口（5min×10 ≈ 50 分钟）
 EQUAL_TOL = 0.25   # 「等高/等低」容差（ATR 倍数）
+# ---- 布林带 + RSI 战法的外生参数（2026-10-13 新增，按用户提供的战法原样，不扫）----
+BOLL_N = 20        # 布林带周期（与 07 布林带同口径）
+BOLL_K = 2.0       # 标准差倍数（与 07 同口径）
+RSI_N = 14         # RSI 周期（经典外生值）
+RSI_OS = 30.0      # 超卖阈值（战法原定）
+RSI_OB = 70.0      # 超买阈值（战法原定）
 # ==============================================================================
 
 DATA_DIR = os.path.join(_HERE, "数据")
@@ -264,6 +270,41 @@ def _s_equal_hl_sweep(o, h, l, c, atr, ma):
     return np.where(sweep_low, 1.0, np.where(sweep_high, -1.0, 0.0))
 
 
+def _rsi(c, n):
+    """Wilder RSI（与通行定义一致；ewm 递推是因果的，不偷看未来）。"""
+    d = np.diff(c, prepend=c[0])
+    up = np.where(d > 0, d, 0.0)
+    dn = np.where(d < 0, -d, 0.0)
+    au = pd.Series(up).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy()
+    ad = pd.Series(dn).ewm(alpha=1.0 / n, adjust=False).mean().to_numpy()
+    rsi = np.where(ad > 0, 100.0 - 100.0 / (1.0 + au / np.where(ad > 0, ad, 1.0)), 100.0)
+    return rsi
+
+
+def _s_boll_rsi_reversal(o, h, l, c, atr, ma):
+    """布林带 + RSI 三重确认（★ 用户 2026-10-13 提供的战法，原样实现）。
+
+    做多（必须同时满足三点）：
+      ① 触底：当根 low 触及或跌破布林带下轨
+      ② 超卖：RSI < 30
+      ③ 拐头：RSI 较前一根**拐头向上**（r[i] > r[i-1]）
+    做空为对称镜像：high ≥ 上轨 & RSI > 70 & RSI 较前一根拐头向下。
+
+    ⚠️ 规则 2 提示：本战法的设计方式（在布林带上**叠加** RSI 双重过滤）与项目
+       「不为拉高胜率而叠加过滤条件」的纪律冲突。此处仅按用户要求原样复现并**判死/判活**，
+       不做任何阈值调整；参数（20/2σ、RSI14、30/70）全部外生定死。
+    """
+    mid = pd.Series(c).rolling(BOLL_N).mean().to_numpy()
+    sd = pd.Series(c).rolling(BOLL_N).std(ddof=1).to_numpy()
+    lower = mid - BOLL_K * sd
+    upper = mid + BOLL_K * sd
+    r = _rsi(c, RSI_N)
+    r_prev = np.concatenate([[np.nan], r[:-1]])
+    long_ = (l <= lower) & (r < RSI_OS) & (r > r_prev)
+    short_ = (h >= upper) & (r > RSI_OB) & (r < r_prev)
+    return np.where(long_, 1.0, np.where(short_, -1.0, 0.0))
+
+
 SIGNALS = {
     "retrace_ma13": ("回踩 MA13 + 斜率定方向（= 06 的进场条件，基准锚）", _s_retrace_ma13),
     "cross_ma13":   ("收盘上/下穿 MA13", _s_cross_ma13),
@@ -278,6 +319,7 @@ SIGNALS = {
     "hl_pullback":  ("价格行为·更高低点/更低高点回踩（趋势中）", _s_hl_pullback),
     "fvg_retrace":    ("SMC·FVG 失衡缺口回踩（三 K 不重叠后回补）", _s_fvg_retrace),
     "equal_hl_sweep": ("SMC·等高等低被扫（两段低/高点同水平后假破收回）", _s_equal_hl_sweep),
+    "boll_rsi":       ("布林带+RSI 三重确认（触轨 & 超买超卖 & 拐头）", _s_boll_rsi_reversal),
 }
 
 
@@ -298,7 +340,8 @@ def cost_points(key):
 
 
 # ---------------------------------------------------------------- 体检
-def screen_one(key, sig_name, df, diag=False):
+def screen_one(key, sig_name, df, diag=False, stop_mult=None):
+    sm = STOP_ATR_MULT if stop_mult is None else float(stop_mult)
     o = df["open"].to_numpy(float)
     h = df["high"].to_numpy(float)
     l = df["low"].to_numpy(float)
@@ -327,7 +370,7 @@ def screen_one(key, sig_name, df, diag=False):
     # ---- L0：固定持有期、无止损 ----
     fwd = (o[idx + 1 + HOLD] - entry) * sgn
     # ---- L1：进场 + 固定 2ATR 止损 ----
-    stop = np.where(sgn > 0, entry - STOP_ATR_MULT * atr[idx], entry + STOP_ATR_MULT * atr[idx])
+    stop = np.where(sgn > 0, entry - sm * atr[idx], entry + sm * atr[idx])
     exit_px = o[idx + 1 + HOLD].copy()
     hit = np.zeros(len(idx), dtype=bool)
     for j, (e_i, st, s) in enumerate(zip(idx, stop, sgn)):
@@ -389,6 +432,8 @@ def main():
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--diag", action="store_true", help="附持有期诊断曲线")
     ap.add_argument("--selftest", action="store_true", help="未来函数截断检验")
+    ap.add_argument("--stop", type=float, default=STOP_ATR_MULT,
+                    help="止损 ATR 倍数（默认 2.0，与项目口径一致；战法原版可传 1.5）")
     a = ap.parse_args()
 
     if a.list:
@@ -410,7 +455,7 @@ def main():
 
     L = []
     L.append("=" * 112)
-    L.append(f"进场体检  ｜  HOLD={HOLD} 根(5min)  ｜  止损={STOP_ATR_MULT}×ATR  ｜  "
+    L.append(f"进场体检  ｜  HOLD={HOLD} 根(5min)  ｜  止损={a.stop:g}×ATR  ｜  "
              f"滑点={SLIP}跳  ｜  手数=固定 1 手  ｜  窗口 2021-2023（**已污染，只能判死**）")
     L.append("=" * 112)
     L.append(f"{'信号':<14}{'品种':<7}{'笔数':>7}{'笔/日':>7}{'成本(点)':>9}"
@@ -424,7 +469,7 @@ def main():
             if df is None or len(df) < 1000:
                 print(f"  [skip] {k} 无缓存数据（先跑 拉数据.py）")
                 continue
-            r = screen_one(k, nm, df, diag=a.diag)
+            r = screen_one(k, nm, df, diag=a.diag, stop_mult=a.stop)
             rows.append(r)
             v = "✅" if (r.get("ratio") or -9) >= 2.0 and r["L1_net"] > 0 else "❌"
             L.append(f"{nm:<14}{r['name_cn']:<7}{r['n']:>7}{r['per_day']:>7.2f}{r['cost_pts']:>9.2f}"
@@ -446,6 +491,8 @@ def main():
     txt = "\n".join(L)
     print(txt)
     tag = "ALL" if a.all else names[0]
+    if abs(a.stop - STOP_ATR_MULT) > 1e-9:
+        tag += f"_stop{a.stop:g}"
     out = os.path.join(_HERE, f"体检结果_{tag}.txt")
     with open(out, "w", encoding="utf-8") as f:
         f.write(txt + "\n")
