@@ -429,17 +429,20 @@ def _save_underlying(record_dir, key, sym):
         pass                      # 落盘失败不能影响交易
 
 
-def _find_orphan(api, s, cur_sym):
+def _find_orphan(api, s, cur_sym, exclude=None):
     """★ 历史孤儿仓检测（2026-10-13 收尾修复）：修复前开的旧合约持仓，磁盘上
     没有 underlying_{key}.json，启动后 s["underlying"]=None，对代码完全隐形——
     现有换月检测只在 `s["underlying"]!=None` 时生效，所以旧仓永远扫不到。
 
     本函数不靠猜旧合约代码，而是枚举账户**全部**持仓（api.get_position() 不传
-    symbol 返回含所有持仓的 Entity），挑出「同品种不同月份、且非当前主连」的非零
-    仓位。返回旧合约代码（如 'DCE.JD2611'）或 None。
+    symbol 返回含所有持仓的 Entity），挑出「同品种不同月份、且非当前主连、且非
+    exclude（本地正在跟踪的合约）」的非零仓位。返回旧合约代码或 None。
 
-    仅读取、不改任何状态；只在 s["underlying"] 为 None 的首帧调用一次（见
-    _sync_cloud_pos），正常运行后不再扫描，零额外开销。
+    ⚠️ exclude 必须传本地正在跟踪的合约：boot 接管会先把 s["underlying"] 落盘为
+       当前主连（如 DCE.jd2612），若不排除它，正常持仓会被误判成孤儿。
+
+    仅读取、不改任何状态；_sync_cloud_pos 每次对账都会调用（api.get_position()
+    是本地内存查询，无网络开销），扫到并平仓移交后云端归零即不再命中。
     """
     if not cur_sym or "." not in cur_sym or len(cur_sym) <= 4:
         return None
@@ -451,7 +454,7 @@ def _find_orphan(api, s, cur_sym):
     try:
         for sym, p in all_pos.items():
             sym = str(sym)
-            if sym == cur_sym or not sym.startswith(prefix):
+            if sym == cur_sym or sym == exclude or not sym.startswith(prefix):
                 continue
             net = int(getattr(p, "pos", 0) or 0)   # 净持仓（多正空负），与 _cloud_pos 同口径
             if net != 0:
@@ -706,30 +709,60 @@ def _sync_cloud_pos(api, s, allow_trade):
         return
     rec = s["rec"]
 
-    # ---- ★★ 换月检测：本地记录的持仓合约 ≠ 当前主连指向的合约 ----
-    #   若 s["underlying"] 为 None（修复前开的旧仓、磁盘无记录），先做一次孤儿扫描：
-    #   枚举账户全部持仓，找「同品种不同月份」的非零仓位；找到即当作 held_sym，
-    #   复用下方换月移交/平仓逻辑，从而把历史孤儿仓也纳入管理（修鸡蛋 16 手缺口的收尾）。
+    # ---- ★★ 换月检测 + 孤儿扫描 ----
+    #   孤儿扫描**不只**在 s["underlying"] 为 None 时跑（首版条件，实测有盲区）：
+    #   boot 接管（_attach_stop_on_boot）会先把 s["underlying"] 落盘为当前主连
+    #   合约（如 DCE.jd2612），此后 held_sym 永远非 None ⇒ 历史孤儿（DCE.jd2611）
+    #   永远扫不到。⇒ 改为**每次对账都扫**，exclude 本地正在跟踪的合约
+    #   （held_sym），保证正常持仓不被误判；api.get_position() 是本地内存查询，
+    #   无网络开销。扫到即当作 held_sym，复用下方换月移交/平仓逻辑。
     held_sym = s.get("underlying")
-    if not held_sym:
-        orphan = _find_orphan(api, s, cur_sym)
+    orphan_hit = False
+    if not held_sym or held_sym == cur_sym:
+        orphan = _find_orphan(api, s, cur_sym, exclude=held_sym)
         if orphan:
-            held_sym = orphan
-            s["rec"].event("ORPHAN",
-                           f"⚠️ 发现历史孤儿仓：账户在 {orphan} 持有非零仓位、"
-                           f"但本进程无记录（修复前遗留）→ 将按换月逻辑移交/平仓")
+            orphan_hit = True
+            rec.event("ORPHAN",
+                      f"⚠️ 发现历史孤儿仓：账户在 {orphan} 持有非零仓位、"
+                      f"但本进程无记录（修复前遗留）→ 将按换月逻辑移交/平仓")
             print(f"[{s['name']}][孤儿] 发现历史孤儿仓 {orphan}（修复前遗留），"
                   f"将按换月逻辑处理", flush=True)
+            held_sym = orphan
+        elif s.get("rollover_pending"):
+            # 孤儿已平干净（扫描不命中）⇒ 解除防重闸门（旧 pending 指向的合约
+            # 已不在账户里，留着只会挡住未来的正常换月报单）
+            s["rollover_pending"] = None
+            s["rollover_pending_hands"] = 0
+            s["rollover_wait_logged"] = False
     if held_sym and held_sym != cur_sym:
         old_pos = _cloud_pos(api, s, held_sym)     # 读旧合约（非当前主连）的持仓
         if old_pos is None:
-            old_pos = s["pos"]                      # 云端读不到 ⇒ 兜底用内存记录
+            if orphan_hit:
+                return                              # 孤儿仓云端读不到 ⇒ 下拍再试，禁用本地仓位兜底
+            old_pos = s["pos"]                      # 正常换月：云端读不到 ⇒ 兜底用内存记录
         if old_pos != 0:
+            # ★★ 防重闸门：平仓单已报、云端仓位仍未归零（撮合窗口内/单被拒/
+            #    非交易时段排队）⇒ 不重复报单，只等下拍复查——防「一次测试重复
+            #    报约 50 单」事故在换月/孤儿路径重演。
+            #    例外：部分成交（云端剩余手数 < 报单手数）⇒ 解除闸门，下面对剩余量补报。
+            if s.get("rollover_pending") == held_sym:
+                pend_hands = int(s.get("rollover_pending_hands") or 0)
+                if abs(old_pos) >= pend_hands > 0:
+                    if allow_trade and not s.get("rollover_wait_logged"):
+                        rec.event("ROLLOVER_WAIT",
+                                  f"{held_sym} 平仓单已报 {pend_hands} 手、云端仍有 "
+                                  f"{abs(old_pos)} 手 → 等待撮合/开盘，不重复报单")
+                        s["rollover_wait_logged"] = True
+                    return
+                s["rollover_pending"] = None          # 部分成交 ⇒ 允许补报剩余
             # 平多=SELL / 平空=BUY（与 _process 出场方向一致）
             direction = "SELL" if old_pos > 0 else "BUY"
             if allow_trade:
                 api.insert_order(held_sym, direction, "CLOSE", abs(old_pos))
                 s["last_order_ts"] = time.time()    # 等撮合窗口，防自平仓被误接管
+                s["rollover_pending"] = held_sym    # 防重：归零前不再报
+                s["rollover_pending_hands"] = abs(old_pos)
+                s["rollover_wait_logged"] = False
                 rec.fill("多" if old_pos > 0 else "空", "平", abs(old_pos),
                          float(q.last_price), held_sym)
                 rec.event("ROLLOVER",
@@ -756,6 +789,9 @@ def _sync_cloud_pos(api, s, allow_trade):
             # 旧合约已无持仓（已平/已到期）：直接切到新合约
             if s.get("rollover_logged"):
                 s["rollover_logged"] = False
+            if s.get("rollover_pending") == held_sym:
+                s["rollover_pending"] = None        # 平仓已确认归零，解除防重闸门
+                s["rollover_pending_hands"] = 0
             s["pos"] = 0; s["entry"] = 0.0; s["stop"] = 0.0; s["bars_in"] = 0
             s["underlying"] = cur_sym
             _save_underlying(s.get("record_dir"), s["key"], cur_sym)
