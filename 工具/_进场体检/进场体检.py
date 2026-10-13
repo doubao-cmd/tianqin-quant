@@ -77,6 +77,9 @@ RETRACE_TOL = 0.5  # 回踩容差（与 06 同）
 BREAK_N = 20       # 唐奇安突破窗口（经典外生值，不扫）
 TSMOM_N = 20       # 时序动量窗口（不扫）
 DIAG_HOLDS = [1, 2, 3, 6, 12, 24, 48]  # ⚠️ 仅供「诊断曲线」，**严禁据此择优**
+# ---- SMC 两个候选信号的外生参数（2026-10-13 新增，定死、不扫）----
+EQUAL_W = 10       # 等高等低的窗口（5min×10 ≈ 50 分钟）
+EQUAL_TOL = 0.25   # 「等高/等低」容差（ATR 倍数）
 # ==============================================================================
 
 DATA_DIR = os.path.join(_HERE, "数据")
@@ -214,6 +217,53 @@ def _s_hl_pullback(o, h, l, c, atr, ma):
     return np.where(bull, 1.0, np.where(bear, -1.0, 0.0))
 
 
+def _s_fvg_retrace(o, h, l, c, atr, ma):
+    """SMC·FVG 失衡缺口回踩（Fair Value Gap）。
+
+    FVG 定义（外生固定，无参数）：三根连续 K 线 A/B/C，A 与 C **不重叠**——
+      看涨缺口：A.high < C.low  ⇒ 缺口区间 = [A.high, C.low]
+      看跌缺口：A.low  > C.high ⇒ 缺口区间 = [C.high, A.low]
+    进场：当根 low/high 进入缺口区间、且收盘站回缺口**另一侧**（缺口被尊重）
+          ⇒ 顺缺口方向进场（看涨缺口做多 / 看跌缺口做空）。
+
+    ⚠️ 禁未来函数：缺口由「上一根完成」的三 K 确定（A=i-3, B=i-2, C=i-1），
+       回踩判定只用当根已收盘 O/H/L/C ⇒ `--selftest` 截断检验可逐值复现。
+    """
+    n = len(c)
+    nan = np.full(n, np.nan)
+    A_h = np.concatenate([nan[:3], h[:-3]])      # h[i-3]（缺口的「后沿」）
+    A_l = np.concatenate([nan[:3], l[:-3]])      # l[i-3]
+    C_l = np.concatenate([nan[:1], l[:-1]])      # l[i-1]（缺口的「前沿」）
+    C_h = np.concatenate([nan[:1], h[:-1]])      # h[i-1]
+    up_gap = A_h < C_l                           # 看涨缺口存在
+    dn_gap = A_l > C_h                           # 看跌缺口存在
+    touch_up = (l <= C_l) & (c >= A_h) & (c > o)   # 回踩缺口下沿并收回
+    touch_dn = (h >= C_h) & (c <= A_l) & (c < o)
+    return np.where(up_gap & touch_up, 1.0, np.where(dn_gap & touch_dn, -1.0, 0.0))
+
+
+def _s_equal_hl_sweep(o, h, l, c, atr, ma):
+    """SMC·等高等低被扫（liquidity sweep at equal highs/lows）。
+
+    与 `spring`/`upthrust` 的区别：它们只要求「跌破前 BREAK_N 根区间」；本信号额外要求
+    **两段分离窗口的低点（或高点）落在同一水平**（SMC 的 equal lows/highs「等低/等高」
+    结构 = 止损确实在同一位置堆积过），再被假破后收回。
+
+    ⚠️ 参数（EQUAL_W=10 / EQUAL_TOL=0.25ATR）**外生定死、不扫**（规则 2）。
+    """
+    L_near = pd.Series(l).rolling(EQUAL_W).min().shift(1).to_numpy()       # [i-W, i-1]
+    L_prior = pd.Series(l).rolling(EQUAL_W).min().shift(1 + EQUAL_W).to_numpy()  # [i-2W, i-W-1]
+    H_near = pd.Series(h).rolling(EQUAL_W).max().shift(1).to_numpy()
+    H_prior = pd.Series(h).rolling(EQUAL_W).max().shift(1 + EQUAL_W).to_numpy()
+    eq_low = np.abs(L_near - L_prior) <= EQUAL_TOL * atr      # 两段低点「等低」
+    eq_high = np.abs(H_near - H_prior) <= EQUAL_TOL * atr     # 两段高点「等高」
+    lvl_l = np.fmax(L_near, L_prior)                          # 支撑水平（取较高者）
+    lvl_h = np.fmin(H_near, H_prior)                          # 阻力水平（取较低者）
+    sweep_low = eq_low & (l < lvl_l) & (c > lvl_l) & (c > o)
+    sweep_high = eq_high & (h > lvl_h) & (c < lvl_h) & (c < o)
+    return np.where(sweep_low, 1.0, np.where(sweep_high, -1.0, 0.0))
+
+
 SIGNALS = {
     "retrace_ma13": ("回踩 MA13 + 斜率定方向（= 06 的进场条件，基准锚）", _s_retrace_ma13),
     "cross_ma13":   ("收盘上/下穿 MA13", _s_cross_ma13),
@@ -226,6 +276,8 @@ SIGNALS = {
     "spring":       ("威科夫·spring（假跌破区间下沿后收回）", _s_spring),
     "upthrust":     ("威科夫·upthrust（假突破区间上沿后收回）", _s_upthrust),
     "hl_pullback":  ("价格行为·更高低点/更低高点回踩（趋势中）", _s_hl_pullback),
+    "fvg_retrace":    ("SMC·FVG 失衡缺口回踩（三 K 不重叠后回补）", _s_fvg_retrace),
+    "equal_hl_sweep": ("SMC·等高等低被扫（两段低/高点同水平后假破收回）", _s_equal_hl_sweep),
 }
 
 
