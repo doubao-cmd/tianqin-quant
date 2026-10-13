@@ -185,7 +185,8 @@ def main():
     L.append("⚠️ 窗口已污染 ⇒ 以上只用于「判死 / 定位亏损来源」，不构成任何 edge 证据。")
     txt = "\n".join(L)
     print(txt)
-    out = os.path.join(_HERE, f"盈亏归因_{a.signal}.md")
+    sfx = "" if abs(a.stop - es.STOP_ATR_MULT) < 1e-9 else f"_stop{a.stop:g}"
+    out = os.path.join(_HERE, f"盈亏归因_{a.signal}{sfx}.md")
     with open(out, "w", encoding="utf-8") as f:
         f.write(f"# 盈亏归因 · {a.signal}\n\n```\n{txt}\n```\n")
     print(f"\n[done] {out}")
