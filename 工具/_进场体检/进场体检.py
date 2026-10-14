@@ -472,6 +472,25 @@ def verdict(rows):
     }
 
 
+def _detect_window(period):
+    """从缓存文件名推断实际数据窗口（如 MA_1440min_2016-01-04_2021-12-31.csv）。
+    返回 (lo, hi) 或 None；用于如实标注窗口，避免硬编码『可作样本外验证』。"""
+    import glob, re
+    pats = sorted(glob.glob(os.path.join(DATA_DIR, f"*_{period}_*.csv")))
+    ds = []
+    for p in pats:
+        m = re.search(r"_(\d{4}-\d{2}-\d{2})_(\d{4}-\d{2}-\d{2})\.csv$", p)
+        if m:
+            ds.append((m.group(1), m.group(2)))
+    if not ds:
+        return None
+    return (min(d[0] for d in ds), max(d[1] for d in ds))
+
+
+# 06 战役已反复跑过的污染窗口（见 README 运行台账）
+_POLLUTED_06 = ("2021-01-01", "2023-12-31")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--signal", default=None)
@@ -511,8 +530,16 @@ def main():
 
     L = []
     L.append("=" * 112)
-    _win = ("干净区间 2016-2021（**未污染，可作一次样本外验证**）" if a.period != "5min"
-            else "窗口 2021-2023（**已污染，只能判死**）")
+    _w = _detect_window(a.period)
+    if _w is None:
+        _win = "窗口未知（未找到缓存数据，先跑 拉数据.py）"
+        _win_dates = "未知"
+    elif _w == _POLLUTED_06:
+        _win = f"窗口 {_w[0]}~{_w[1]}（**已污染，只能判死**）"
+        _win_dates = f"{_w[0]}~{_w[1]}"
+    else:
+        _win = f"窗口 {_w[0]}~{_w[1]}（**非样本外，IS 层诊断**）"
+        _win_dates = f"{_w[0]}~{_w[1]}"
     L.append(f"进场体检  ｜  周期={a.period}  ｜  HOLD={HOLD} 根  ｜  止损={a.stop:g}×ATR  ｜  "
              f"滑点={SLIP}跳  ｜  手数=固定 1 手  ｜  {_win}")
     L.append("=" * 112)
@@ -544,7 +571,8 @@ def main():
         L.append("-" * 112)
 
     L.append("")
-    L.append("⚠️ 本工具只能「判死」，不能「判生」：窗口 2021-2023 已污染，任何 ✅ 都不构成 edge 证据。")
+    L.append(f"⚠️ 本工具只能「判死」，不能「判生」：窗口 {_win_dates} 非样本外（已记入运行台账），"
+             f"任何 ✅ 都不构成 edge 证据。")
     L.append("⚠️ 批量模式（--all）跑 N 个信号 = N 次比较；**禁止挑最好的那个宣称有效**（规则 2 禁区）。")
     txt = "\n".join(L)
     print(txt)
@@ -553,8 +581,7 @@ def main():
         tag += f"_stop{a.stop:g}"
     if a.period != "5min":
         tag += f"_{a.period}"
-    if a.hold is not None:
-        tag += f"_hold{a.hold}"
+    tag += f"_hold{HOLD}"
     out = os.path.join(_HERE, f"体检结果_{tag}.txt")
     with open(out, "w", encoding="utf-8") as f:
         f.write(txt + "\n")
