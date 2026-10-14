@@ -35,8 +35,8 @@ import config_symbols  # noqa: E402
 
 KSEC = int(os.environ.get("EP_KSEC", "300"))   # 周期秒数：300=5min，900=15min
 TAG = f"{KSEC // 60}min"
-START = pd.Timestamp("2021-01-01")
-END = pd.Timestamp("2023-12-31")
+START = pd.Timestamp(os.environ.get("EP_START", "2021-01-01"))
+END = pd.Timestamp(os.environ.get("EP_END", "2023-12-31"))
 WARMUP_DAYS = 7
 INIT = 200000.0
 DATA_DIR = os.path.join(_HERE, "数据")

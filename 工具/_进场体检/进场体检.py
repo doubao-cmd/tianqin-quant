@@ -370,9 +370,12 @@ PERIOD = "5min"        # 数据周期（main 里可由 --period 覆盖；见 拉
 
 def load(key, period=None):
     period = period or PERIOD
-    p = os.path.join(DATA_DIR, f"{key}_{period}_2021-01-01_2023-12-31.csv")
-    if not os.path.exists(p):
+    import glob
+    # 兼容旧文件名（含硬编码日期）与新区间文件：取该周期下最新的缓存
+    cand = sorted(glob.glob(os.path.join(DATA_DIR, f"{key}_{period}_*.csv")))
+    if not cand:
         return None
+    p = cand[-1]
     df = pd.read_csv(p, encoding="utf-8-sig", parse_dates=["datetime"])
     return df
 
@@ -481,9 +484,13 @@ def main():
                     help="止损 ATR 倍数（默认 2.0，与项目口径一致；战法原版可传 1.5）")
     ap.add_argument("--period", default="5min",
                     help="数据周期：5min（默认）/ 15min 等（须先用 拉数据.py 拉好）")
+    ap.add_argument("--hold", type=int, default=None,
+                    help="L0/L1 持有期（根数，覆盖默认 HOLD=12）。日线 12 根=12 天，5min 12 根=1 小时")
     a = ap.parse_args()
-    global PERIOD
+    global PERIOD, HOLD
     PERIOD = a.period
+    if a.hold is not None:
+        HOLD = a.hold
 
     if a.list:
         print("可用候选信号：")
@@ -504,8 +511,10 @@ def main():
 
     L = []
     L.append("=" * 112)
+    _win = ("干净区间 2016-2021（**未污染，可作一次样本外验证**）" if a.period != "5min"
+            else "窗口 2021-2023（**已污染，只能判死**）")
     L.append(f"进场体检  ｜  周期={a.period}  ｜  HOLD={HOLD} 根  ｜  止损={a.stop:g}×ATR  ｜  "
-             f"滑点={SLIP}跳  ｜  手数=固定 1 手  ｜  窗口 2021-2023（**已污染，只能判死**）")
+             f"滑点={SLIP}跳  ｜  手数=固定 1 手  ｜  {_win}")
     L.append("=" * 112)
     L.append(f"{'信号':<14}{'品种':<7}{'笔数':>7}{'笔/日':>7}{'成本(点)':>9}"
              f"{'L0毛(点)':>10}{'L1毛(点)':>10}{'L1净(点)':>10}{'毛/成本':>9}{'胜率':>8}{'止损占比':>9}{'t':>7}{'判定':>6}")
@@ -544,6 +553,8 @@ def main():
         tag += f"_stop{a.stop:g}"
     if a.period != "5min":
         tag += f"_{a.period}"
+    if a.hold is not None:
+        tag += f"_hold{a.hold}"
     out = os.path.join(_HERE, f"体检结果_{tag}.txt")
     with open(out, "w", encoding="utf-8") as f:
         f.write(txt + "\n")
