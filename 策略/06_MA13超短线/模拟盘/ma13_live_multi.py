@@ -210,7 +210,7 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
                   "last_id": -1, "skip_first": False, "recovered": False,
                   "last_order_ts": 0.0,
                   # ★★ 换月移交：本地记录的持仓合约（持久化，重启不丢）+ 落盘目录
-                  "underlying": _load_underlying(record_dir, key),
+                  "underlying": _load_underlying(record_dir, s["key"]),
                   "record_dir": record_dir, "rollover_logged": False})
         def _hand_of(atr, equity, price=None, _s=s):
             if not atr or math.isnan(atr) or atr <= 0:
@@ -446,7 +446,7 @@ def _find_orphan(api, s, cur_sym, exclude=None):
     """
     if not cur_sym or "." not in cur_sym or len(cur_sym) <= 4:
         return None
-    prefix = cur_sym[:-4]         # DCE.JD2612 -> DCE.JD（去掉末尾 4 位 YYMM）
+    prefix = cur_sym.rsplit('.', 1)[0]   # "CZCE.SR701" -> "CZCE.SR"、"DCE.jm2701" -> "DCE.jm"（交易所.品种字母，精确匹配；兼容 CZCE 3 位码与 DCE/SHFE 4 位码，不再用固定 [: -4] 切片）
     try:
         all_pos = api.get_position()          # 不传 symbol = 账户全部持仓（Entity）
     except Exception:
@@ -763,8 +763,10 @@ def _sync_cloud_pos(api, s, allow_trade):
                 s["rollover_pending"] = held_sym    # 防重：归零前不再报
                 s["rollover_pending_hands"] = abs(old_pos)
                 s["rollover_wait_logged"] = False
-                rec.fill("多" if old_pos > 0 else "空", "平", abs(old_pos),
-                         float(q.last_price), held_sym)
+                # ★ 换月移交平仓**不记 FILL 行**：held_sym 是旧合约、q.last_price 是本品种现价，
+                # 记上去会串品种价格污染台账（本事件 10-15 首次重启即误平 SR701，4 进程各发一笔、
+                # 1 成交 3 拒即源于此）。真实成交价由下方 ROLLOVER event 描述 + _cloud_fill_stats 浮盈亏反映。
+                pass
                 rec.event("ROLLOVER",
                           f"⚠️ 检测到主连换月：本地持仓合约 {held_sym} → 当前主连 {cur_sym}，"
                           f"旧持仓 {old_pos} 手已在 {held_sym} 平仓（换月移交，避免脱管裸奔）")

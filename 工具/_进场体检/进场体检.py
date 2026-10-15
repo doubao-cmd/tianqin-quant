@@ -343,6 +343,23 @@ def _s_rsi_divergence(o, h, l, c, atr, ma):
     return np.where(bull, 1.0, np.where(bear, -1.0, 0.0))
 
 
+def _s_boll_meanrev(o, h, l, c, atr, ma):
+    """布林带均值回归（= 07 布林带 的**进场条件本身**）：收盘 ≤ 下轨 → 多；收盘 ≥ 上轨 → 空。
+
+    中轨 = MA(BOLL_N)；上下轨 = 中轨 ± BOLL_K×样本标准差（ddof=1）。
+    与 07 档案「BOLL(20,2.0σ)」同口径。出场由体检工具统一用 2ATR 止损 + HOLD 固定持有，
+    不复制 07 的「回到中轨平仓 / 1ATR 止损 / 20 根时间止损」——体检只隔离**进场**信号，
+    以便与另 17 个信号放在同一把尺子下比。
+    """
+    mid = pd.Series(c).rolling(BOLL_N).mean().to_numpy()
+    sd = pd.Series(c).rolling(BOLL_N).std(ddof=1).to_numpy()
+    upper = mid + BOLL_K * sd
+    lower = mid - BOLL_K * sd
+    long_ = c <= lower
+    short_ = c >= upper
+    return np.where(long_, 1.0, np.where(short_, -1.0, 0.0))
+
+
 SIGNALS = {
     "retrace_ma13": ("回踩 MA13 + 斜率定方向（= 06 的进场条件，基准锚）", _s_retrace_ma13),
     "cross_ma13":   ("收盘上/下穿 MA13", _s_cross_ma13),
@@ -361,6 +378,7 @@ SIGNALS = {
     "rsi_oversold":   ("RSI 极值反转（RSI 当主信号：<30 多 / >70 空）", _s_rsi_oversold),
     "rsi_cross":      ("RSI 穿越阈值（上穿 30 多 / 下穿 70 空）", _s_rsi_cross),
     "rsi_divergence": ("RSI 背离（价格创新极值但 RSI 未同步）", _s_rsi_divergence),
+    "boll_meanrev":    ("布林带均值回归（收盘≤下轨多/≥上轨空，BOLL(20,2σ)，= 07 布林带入场）", _s_boll_meanrev),
 }
 
 
