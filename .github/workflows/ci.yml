@@ -46,7 +46,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      # ★ 刻意**不装** requirements.txt：四个自检脚本只用标准库
+      # ★ 刻意**不装** requirements.txt：各自检脚本只用标准库
       #   + 本项目 lib/（2026-10-09 实测 import 扫描确认，无第三方包）。
       #   装 tqsdk 要拉pandas/numpy/aiohttp 等十几个包，
       #   在只用离线算式的自检上纯属浪费时间和 Actions 配额。
@@ -61,6 +61,11 @@ jobs:
 
       - name: 自检 · 会话重启（13 项）
         run: python 工具/自检_会话重启_20261008.py
+
+      # ★ 2026-10-17 新增：L449「孤儿扫描前缀」回归。
+      #   此前 18 场景 mock 只存在于历史会话、未入库，这条回归一直没有测试拦。
+      - name: 自检 · 孤儿扫描前缀（L449 回归，12 项）
+        run: python 工具/自检_孤儿扫描_20261017.py
 
       - name: 行尾体检（bat/cmd 必须是 CRLF）
         run: |

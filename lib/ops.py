@@ -90,6 +90,37 @@ class BarGate:
         return self.seen.get(key)
 
 
+def leg_prefix(sym):
+    """品种级前缀（孤儿扫描用）："DCE.p2701" -> "DCE.p"、"CZCE.SR701" -> "CZCE.SR"。
+
+    ★ 不能用 `sym.rsplit('.', 1)[0]` —— 那会得到**交易所级**前缀（"DCE"），
+      多腿并存时同交易所的其它品种持仓会被误判成孤儿、互相平仓（2026-10-15/17 事故根因）。
+    """
+    if not sym or "." not in str(sym):
+        return ""
+    return str(sym).rstrip("0123456789")
+
+
+def find_orphan(pos_map, cur_sym, exclude=None):
+    """从账户持仓里挑出「本品种旧月份」的孤儿仓；没有返回 None。
+
+    pos_map: {symbol: net_pos}（多正空负）。纯函数，便于单测/CI。
+    """
+    prefix = leg_prefix(cur_sym)
+    if not prefix:
+        return None
+    for sym, net in (pos_map or {}).items():
+        sym = str(sym)
+        if sym == cur_sym or sym == exclude or not sym.startswith(prefix):
+            continue
+        try:
+            if int(net or 0) != 0:
+                return sym
+        except Exception:
+            continue
+    return None
+
+
 # ===================== 订单生命周期 =====================
 class OrderLedger:
     """三层记账：ORDER_SENT（意图）/ FILL_CONFIRMED（成交）/ ORDER_REJECTED（拒单）。
@@ -183,12 +214,15 @@ class RiskGate:
       3. 当日亏损比例        -daily_pnl / balance <= max_daily_loss
     """
 
-    def __init__(self, max_hands=20, max_margin_ratio=0.60, max_daily_loss=0.03):
+    def __init__(self, max_hands=20, max_margin_ratio=0.60, max_daily_loss=0.03,
+                 max_same_side_ratio=2.0):
         self.max_hands = int(max_hands)
         self.max_margin_ratio = float(max_margin_ratio)
         self.max_daily_loss = float(max_daily_loss)
+        self.max_same_side_ratio = float(max_same_side_ratio)
 
-    def check_open(self, hands, balance=None, margin=None, daily_pnl=None):
+    def check_open(self, hands, balance=None, margin=None, daily_pnl=None,
+                   same_side_notional=None, order_notional=None):
         """返回 (ok: bool, reason: str)。参数缺失时对应检查跳过（不误杀）。"""
         if hands is None or hands <= 0:
             return False, "手数为 0"
@@ -206,6 +240,15 @@ class RiskGate:
                 loss = -float(daily_pnl)
                 if loss > 0 and loss / float(balance) >= self.max_daily_loss:
                     return False, f"当日亏损 {-loss / float(balance):.2%} ≥ 熔断线 {self.max_daily_loss:.1%}"
+        except Exception:
+            pass
+        # 4. 同向敞口（多腿同向叠加）：已有同向名义 + 本笔 <= 上限 × 权益
+        try:
+            if balance and same_side_notional is not None and order_notional:
+                r = (float(same_side_notional) + float(order_notional)) / float(balance)
+                if r > self.max_same_side_ratio:
+                    return False, (f"同向敞口 {r:.2f}× 权益 > 上限 "
+                                   f"{self.max_same_side_ratio:.2f}×")
         except Exception:
             pass
         return True, ""
@@ -282,13 +325,28 @@ def selftest():
     assert g.check_open(4, 1_000_000, 100_000, -30_000)[0] is False  # 日亏 3%
     assert g.check_open(0)[0] is False
 
-    # 5) reconcile
+    # 5) leg_prefix / find_orphan（L449 回归）
+    assert leg_prefix("DCE.p2701") == "DCE.p", leg_prefix("DCE.p2701")
+    assert leg_prefix("CZCE.SR701") == "CZCE.SR", leg_prefix("CZCE.SR701")
+    assert leg_prefix("SHFE.rb2410") == "SHFE.rb"
+    assert leg_prefix("") == "" and leg_prefix("BAD") == ""
+    pos = {"DCE.p2701": -4, "DCE.jm2701": -4, "DCE.m2701": -8,
+           "DCE.jd2612": -8, "CZCE.SR701": 7}
+    for cur in pos:                                    # 多腿并存：谁也不许命中别人
+        assert find_orphan(pos, cur, exclude=cur) is None, (cur, find_orphan(pos, cur, exclude=cur))
+    assert find_orphan(pos, "CZCE.SR701", exclude="CZCE.SF701") is None   # CZCE 同字母族不误伤
+    pos["DCE.jm2609"] = -2                             # 真孤儿：只有焦煤腿能命中
+    assert find_orphan(pos, "DCE.jm2701", exclude="DCE.jm2701") == "DCE.jm2609"
+    assert find_orphan(pos, "DCE.p2701", exclude="DCE.p2701") is None
+
+    # 6) reconcile
     r = reconcile({"DCE.p2701": 4, "DCE.jm2701": -2},
                   {"DCE.p2701": 4, "DCE.jm2701": 0, "DCE.m2701": 3})
     kinds = {x["symbol"]: x["kind"] for x in r}
     assert kinds == {"DCE.jm2701": "missing_cloud", "DCE.m2701": "missing_local"}, kinds
 
-    print("  OK: 原子写/BarGate 幂等/订单三层账+僵尸+重启恢复/RiskGate/reconcile 全部通过")
+    print("  OK: 原子写 / BarGate 幂等 / 订单三层账+僵尸+重启恢复 / RiskGate / "
+          "leg_prefix+孤儿扫描(L449 回归) / reconcile 全部通过")
     return True
 
 

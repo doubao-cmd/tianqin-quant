@@ -32,7 +32,8 @@ if _ROOT not in sys.path:
 
 from tqsdk import TqApi, TqSim, TqKq, TqAuth
 from lib.engine import _LiveRecorder
-from lib.ops import OrderLedger, RiskGate, atomic_write_json, read_json
+from lib.ops import (OrderLedger, RiskGate, atomic_write_json, read_json,
+                     leg_prefix, find_orphan)
 import config_account
 import config_symbols
 
@@ -112,6 +113,8 @@ RETRACE_TOL, STOP_BUFFER, STOP_CAP, MAX_HOLD = 0.5, 0.5, 2.0, 15
 RISK_PCT, SLIP, HAND_MIN, HAND_MAX = 0.01, 1, 1, 8
 NOTIONAL_CAP = 2.0   # 名义敞口上限（倍权益）：手数 ≤ 权益×2÷每手名义价值（与回测同步 2026-10-07）
 OPS_MAX_MARGIN_RATIO = 0.60   # 运维闸门：保证金占用 >60% 拒绝**开仓**（平仓永不被挡）
+OPS_MAX_SAME_SIDE = 2.0       # 运维闸门：同向名义敞口 >2.0×权益 拒绝开仓
+#                              正常态：4 空腿约 1.28×，5 腿约 1.66× —— 2.0 只在失控时触发
 INIT = 200000.0
 RISK_EQUITY = 200000.0     # 手数计算基数（锁死 20 万，与回测 INIT 严格对齐）
 # ★ 2026-10-08 切 TqKq 云端账户后 RISK_EQUITY 由「兜底值」升级为「强制值」：
@@ -236,7 +239,8 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
         try:
             s["ledger"] = (OrderLedger(os.path.join(record_dir, s["name"] + "_订单生命周期.csv"))
                            if record_dir else None)
-            s["risk"] = RiskGate(max_hands=HAND_MAX, max_margin_ratio=OPS_MAX_MARGIN_RATIO)
+            s["risk"] = RiskGate(max_hands=HAND_MAX, max_margin_ratio=OPS_MAX_MARGIN_RATIO,
+                                 max_same_side_ratio=OPS_MAX_SAME_SIDE)
         except Exception:
             s["ledger"], s["risk"] = None, None
 
@@ -454,7 +458,27 @@ def _ops_sent(s, symbol, dir_cn, offset_cn, hands, ref_price, bar_time):
         return None
 
 
-def _risk_check(s, acc, hand):
+def _same_side_notional(shared, side_sign):
+    """账户级**同向**名义敞口（元）。side_sign=+1 多 / -1 空。
+
+    数据来自 shared（各腿每拍更新纯标量，跨线程安全）。
+    正常态参考：4 空腿约 1.28×权益、5 腿约 1.66×权益。"""
+    total = 0.0
+    for key, sh in (shared or {}).items():
+        try:
+            p = int(sh.get("pos") or 0)
+            if p == 0 or (p > 0) != (side_sign > 0):
+                continue
+            px = float(sh.get("price") or 0)
+            mult = float(config_symbols.SYMBOLS[key][2])
+            if px > 0 and mult > 0:
+                total += abs(p) * px * mult
+        except Exception:
+            continue
+    return total
+
+
+def _risk_check(s, acc, hand, shared=None, side_sign=1, price=None):
     """开仓前风控闸门（**只挡开仓，绝不挡平仓**）。异常一律放行。"""
     try:
         g = s.get("risk")
@@ -462,7 +486,15 @@ def _risk_check(s, acc, hand):
             return True, ""
         bal = getattr(acc, "balance", None) if acc is not None else None
         mg = getattr(acc, "margin", None) if acc is not None else None
-        return g.check_open(hand, balance=bal, margin=mg)
+        ssn = _same_side_notional(shared, side_sign) if shared is not None else None
+        on = None
+        try:
+            if price and hand:
+                on = abs(float(hand)) * float(price) * float(s["mult"])
+        except Exception:
+            on = None
+        return g.check_open(hand, balance=bal, margin=mg,
+                            same_side_notional=ssn, order_notional=on)
     except Exception:
         return True, ""
 
@@ -482,27 +514,19 @@ def _find_orphan(api, s, cur_sym, exclude=None):
     仅读取、不改任何状态；_sync_cloud_pos 每次对账都会调用（api.get_position()
     是本地内存查询，无网络开销），扫到并平仓移交后云端归零即不再命中。
     """
-    if not cur_sym or "." not in cur_sym or len(cur_sym) <= 4:
+    if not cur_sym or "." not in cur_sym:
         return None
-    # ★ 2026-10-17 修：原 `rsplit('.',1)[0]` 会得到**交易所级**前缀（"DCE.p2701"->"DCE"），
-    #   导致同交易所别的品种持仓被当成孤儿、重启后各腿互相平仓。
-    #   `rstrip("0123456789")` 精确剥掉月份数字：DCE.p2701->DCE.p、CZCE.SR701->CZCE.SR。
-    prefix = cur_sym.rstrip("0123456789")
     try:
         all_pos = api.get_position()          # 不传 symbol = 账户全部持仓（Entity）
     except Exception:
         return None
     try:
-        for sym, p in all_pos.items():
-            sym = str(sym)
-            if sym == cur_sym or sym == exclude or not sym.startswith(prefix):
-                continue
-            net = int(getattr(p, "pos", 0) or 0)   # 净持仓（多正空负），与 _cloud_pos 同口径
-            if net != 0:
-                return sym
+        pos_map = {str(sym): int(getattr(p, "pos", 0) or 0) for sym, p in all_pos.items()}
     except Exception:
         return None
-    return None
+    # ★ 2026-10-17：选择逻辑抽到 lib/ops.find_orphan（纯函数，已入 CI 自检）。
+    #   prefix 由 leg_prefix 计算（rstrip 数字），**不用** rsplit('.')（那是交易所级，会跨品种误伤）。
+    return find_orphan(pos_map, cur_sym, exclude)
 
 
 def _cloud_pos(api, s, sym=None):
@@ -1003,7 +1027,10 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
                    f"MA13回踩顺势 stop≈{stop_new:.1f}" + ("" if allow_trade else " 【观察模式不报单】"))
         if allow_trade and hand > 0:
             # ★ 运维闸门（2026-10-17）：只挡**开仓**，平仓永不被挡。异常一律放行。
-            _ok, _why = _risk_check(s, acc, hand)
+            _ok, _why = _risk_check(
+                s, acc, hand, shared=shared,
+                side_sign=(1 if dir_trend > 0 else -1),
+                price=(float(_lp) if _lp and not math.isnan(_lp) else None))
             if not _ok:
                 rec.event("RISKBLOCK", f"风控拒开 {dir_cn} {hand}手 | {_why}")
                 print(f"[{s['name']}][RISKBLOCK] {_why}", flush=True)
