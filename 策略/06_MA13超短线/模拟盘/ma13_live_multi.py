@@ -32,6 +32,7 @@ if _ROOT not in sys.path:
 
 from tqsdk import TqApi, TqSim, TqKq, TqAuth
 from lib.engine import _LiveRecorder
+from lib.ops import OrderLedger, RiskGate, atomic_write_json, read_json
 import config_account
 import config_symbols
 
@@ -110,6 +111,7 @@ MA_N, SLOPE_N, ATR_N = 13, 5, 14
 RETRACE_TOL, STOP_BUFFER, STOP_CAP, MAX_HOLD = 0.5, 0.5, 2.0, 15
 RISK_PCT, SLIP, HAND_MIN, HAND_MAX = 0.01, 1, 1, 8
 NOTIONAL_CAP = 2.0   # 名义敞口上限（倍权益）：手数 ≤ 权益×2÷每手名义价值（与回测同步 2026-10-07）
+OPS_MAX_MARGIN_RATIO = 0.60   # 运维闸门：保证金占用 >60% 拒绝**开仓**（平仓永不被挡）
 INIT = 200000.0
 RISK_EQUITY = 200000.0     # 手数计算基数（锁死 20 万，与回测 INIT 严格对齐）
 # ★ 2026-10-08 切 TqKq 云端账户后 RISK_EQUITY 由「兜底值」升级为「强制值」：
@@ -228,6 +230,15 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
             return h
         s["hand_of"] = _hand_of
         s["rec"] = _LiveRecorder(record_dir, s["name"], heartbeat_sec=heartbeat_sec)
+        # ---- 运维层（2026-10-17）：订单三层账 + 开仓风控闸门 ----
+        #   <品种>_订单生命周期.csv：ORDER_SENT / FILL_CONFIRMED / ORDER_REJECTED / ORDER_UNCONFIRMED
+        #   与既有「成交流水.csv」并存（后者保留为"意图时刻"，统计只认 CONFIRMED）。
+        try:
+            s["ledger"] = (OrderLedger(os.path.join(record_dir, s["name"] + "_订单生命周期.csv"))
+                           if record_dir else None)
+            s["risk"] = RiskGate(max_hands=HAND_MAX, max_margin_ratio=OPS_MAX_MARGIN_RATIO)
+        except Exception:
+            s["ledger"], s["risk"] = None, None
 
     names = " / ".join(s["name"] for s in specs)
     for s in specs:
@@ -410,23 +421,50 @@ def _underlying_path(record_dir, key):
 
 
 def _load_underlying(record_dir, key):
+    """★ 2026-10-17：改为容错读 —— 半个 JSON / 空文件一律返回 None（旧版已如此），
+    但改用 ops.read_json 统一，避免各处 json.load 各自处理。"""
     try:
-        with open(_underlying_path(record_dir, key), "r", encoding="utf-8") as f:
-            d = json.load(f)
+        d = read_json(_underlying_path(record_dir, key), None) or {}
         return d.get("underlying") or None
     except Exception:
         return None
 
 
 def _save_underlying(record_dir, key, sym):
+    """★ 2026-10-17：改为**原子写**（tmp + os.replace）。
+    旧版直接覆盖写 —— 进程在写盘瞬间被强杀会留下半个 JSON，重启后读到坏值。"""
     if not record_dir or not sym:
         return
+    atomic_write_json(_underlying_path(record_dir, key),
+                      {"underlying": sym,
+                       "update": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=None)
+
+
+def _ops_sent(s, symbol, dir_cn, offset_cn, hands, ref_price, bar_time):
+    """订单**意图**落三层账（ORDER_SENT）；返回幂等键，供成交回填时配对。
+    永不抛异常（运维记账不允许打断交易）。"""
     try:
-        with open(_underlying_path(record_dir, key), "w", encoding="utf-8") as f:
-            json.dump({"underlying": sym,
-                       "update": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
+        L = s.get("ledger")
+        if L is None:
+            return None
+        key = f"{symbol}|{bar_time}|{dir_cn}{offset_cn}|{int(hands)}"
+        L.sent(key, symbol, dir_cn, offset_cn, hands, ref_price)
+        return key
     except Exception:
-        pass                      # 落盘失败不能影响交易
+        return None
+
+
+def _risk_check(s, acc, hand):
+    """开仓前风控闸门（**只挡开仓，绝不挡平仓**）。异常一律放行。"""
+    try:
+        g = s.get("risk")
+        if g is None:
+            return True, ""
+        bal = getattr(acc, "balance", None) if acc is not None else None
+        mg = getattr(acc, "margin", None) if acc is not None else None
+        return g.check_open(hand, balance=bal, margin=mg)
+    except Exception:
+        return True, ""
 
 
 def _find_orphan(api, s, cur_sym, exclude=None):
@@ -446,7 +484,10 @@ def _find_orphan(api, s, cur_sym, exclude=None):
     """
     if not cur_sym or "." not in cur_sym or len(cur_sym) <= 4:
         return None
-    prefix = cur_sym.rsplit('.', 1)[0]   # "CZCE.SR701" -> "CZCE.SR"、"DCE.jm2701" -> "DCE.jm"（交易所.品种字母，精确匹配；兼容 CZCE 3 位码与 DCE/SHFE 4 位码，不再用固定 [: -4] 切片）
+    # ★ 2026-10-17 修：原 `rsplit('.',1)[0]` 会得到**交易所级**前缀（"DCE.p2701"->"DCE"），
+    #   导致同交易所别的品种持仓被当成孤儿、重启后各腿互相平仓。
+    #   `rstrip("0123456789")` 精确剥掉月份数字：DCE.p2701->DCE.p、CZCE.SR701->CZCE.SR。
+    prefix = cur_sym.rstrip("0123456789")
     try:
         all_pos = api.get_position()          # 不传 symbol = 账户全部持仓（Entity）
     except Exception:
@@ -665,6 +706,18 @@ def _cloud_fill_stats(api, s):
             else:
                 rec.event("FILLX", f"{p['dir']}{p['side']} {p['hands']}手 "
                                    f"决策价={ref:.2f} 云端均价未就绪（未读到）")
+            # ★ 三层账收口（2026-10-17）：有云端均价 -> FILL_CONFIRMED；否则 -> ORDER_UNCONFIRMED
+            #   注意：既有 FILL 行仍然只是"下单意图"，**统计与对账只认 CONFIRMED**。
+            try:
+                _L = s.get("ledger")
+                _k = p.get("key")
+                if _L is not None and _k:
+                    if avg and ref > 0:
+                        _L.confirmed(_k, avg, p["hands"])
+                    else:
+                        _L.unconfirmed(_k, "云端均价未就绪（平仓后持仓归零，读不到均价）")
+            except Exception:
+                pass
         s["pending_fill"] = keep
 
 
@@ -907,9 +960,10 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
             api.insert_order(q.underlying_symbol, "SELL", "CLOSE", abs(pos))
             s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
             rec.fill("多", "平", abs(pos), float(_lp), q.underlying_symbol)
+            _k = _ops_sent(s, q.underlying_symbol, "多", "平", abs(pos), float(_lp), q.datetime)
             s.setdefault("pending_fill", []).append(
                 {"ts": s["last_order_ts"], "side": "平", "dir": "多",
-                 "hands": abs(pos), "ref_price": float(_lp)})
+                 "hands": abs(pos), "ref_price": float(_lp), "key": _k})
         rec.stoploss("多", s["stop"], c,
                      f"止损触发={l <= s['stop']} 时间止损={s['bars_in'] >= MAX_HOLD}")
         print(f"[{s['name']}][EXIT] 多 {abs(pos)}手 止损={l <= s['stop']} "
@@ -920,9 +974,10 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
             api.insert_order(q.underlying_symbol, "BUY", "CLOSE", abs(pos))
             s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
             rec.fill("空", "平", abs(pos), float(_lp), q.underlying_symbol)
+            _k = _ops_sent(s, q.underlying_symbol, "空", "平", abs(pos), float(_lp), q.datetime)
             s.setdefault("pending_fill", []).append(
                 {"ts": s["last_order_ts"], "side": "平", "dir": "空",
-                 "hands": abs(pos), "ref_price": float(_lp)})
+                 "hands": abs(pos), "ref_price": float(_lp), "key": _k})
         rec.stoploss("空", s["stop"], c,
                      f"止损触发={h >= s['stop']} 时间止损={s['bars_in'] >= MAX_HOLD}")
         print(f"[{s['name']}][EXIT] 空 {abs(pos)}手 止损={h >= s['stop']} "
@@ -947,17 +1002,24 @@ def _process(api, s, allow_trade, shared, acc_box, fuse):
         rec.signal(dir_cn, hand, c, q.datetime, c, a,
                    f"MA13回踩顺势 stop≈{stop_new:.1f}" + ("" if allow_trade else " 【观察模式不报单】"))
         if allow_trade and hand > 0:
+            # ★ 运维闸门（2026-10-17）：只挡**开仓**，平仓永不被挡。异常一律放行。
+            _ok, _why = _risk_check(s, acc, hand)
+            if not _ok:
+                rec.event("RISKBLOCK", f"风控拒开 {dir_cn} {hand}手 | {_why}")
+                print(f"[{s['name']}][RISKBLOCK] {_why}", flush=True)
+                return
             api.insert_order(q.underlying_symbol,
                              "BUY" if dir_trend > 0 else "SELL", "OPEN", hand)
             s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
             rec.fill(dir_cn, "开", hand, float(_lp), q.underlying_symbol)
+            _k = _ops_sent(s, q.underlying_symbol, dir_cn, "开", hand, float(_lp), q.datetime)
             # ★ 只补记：把本笔挂进"待回填"队列，等撮合完成（FIX_WAIT_SEC 之后）
             #   由 _cloud_fill_stats 读云端真实成交均价 → FILLX 行。
             #   ★ 不能在下单这一刻读云端：撮合有几秒延迟，此刻读到的还是**旧仓**，
             #     会把上一笔的价格错记成本笔成交价（比原FILL 更糟）。
             s.setdefault("pending_fill", []).append(
                 {"ts": s["last_order_ts"], "side": "开", "dir": dir_cn,
-                 "hands": hand, "ref_price": float(_lp)})
+                 "hands": hand, "ref_price": float(_lp), "key": _k})
             # 已修复单品种版 led 未定义的 NameError；账本对接见 运营SOP 欠账#6
         print(f"[{s['name']}][{'OPEN' if allow_trade else 'SIGNAL'}] {dir_cn} {hand}手 "
               f"@≈{c:.1f} 止损≈{stop_new:.1f} ATR={a:.2f}", flush=True)
