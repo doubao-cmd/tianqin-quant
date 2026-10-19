@@ -1,0 +1,223 @@
+/* 复盘终端主题：所有视觉调整只改 :root 变量（P0-A / P5-1）
+   ★ 五期约定：只许**加**新变量，不许改 --up/--down/--on 的现有含义（§1.1 红线）。 */
+:root{
+  --bg:#0f1117; --panel:#1a1d26; --border:#2a2f3a; --text:#e6e6e6;
+  --muted:#9aa3af; --on:#e5484d; --up:#ef4444; --down:#22c55e;
+  --accent:#f2a900; --note:#f59e0b;
+  --brand1:#111827; --brand2:#1f2b45; --brand3:#151d2e; --brand4:#1f2d47;
+  --btn-hover:#3a4350; --warn-bg:#2a1f12; --warn-border:#5a3a1a; --warn-text:#f0b45a;
+  --sel-bg:#5a1a1a; --sel-text:#ffb3b3; --up-text:#ff6b6b; --down-text:#4ade80;
+  /* ★ P5-1 尺寸令牌：改这一处全站生效。
+     验收方法：把 --btn-h 临时改成 40px，全站按钮应同步变高（说明变量真的被引用）。 */
+  --btn-h:30px; --btn-px:10px; --gap:6px; --radius:6px;
+  /* ★ 五期 T3.4 字体四档（原 10/11/11.5/12/12.5/13 六档太密）
+     xs=小字/表格单元 · sm=正文 · md=强调 · lg=大数字 */
+  --fs-xs:11px; --fs-sm:13px; --fs-md:15px; --fs-lg:24px;
+  /* ★ 五期 T3.2 间距网格：只加新变量，--gap(6px) 保持不动（已被 20 处引用） */
+  --gap-1:4px; --gap-2:8px; --gap-3:12px;
+  --btn-fs:var(--fs-sm);
+}
+*{box-sizing:border-box}
+/* ★ T3.1 等宽数字：数字列不抖动。只给"数字为主"的元素上等宽字体，
+   中文标签（.name/.ct/.stat-h）保持雅黑 —— 给中文上 mono 会变成两倍宽。 */
+body{margin:0;background:var(--bg);color:var(--text);font-family:"Microsoft YaHei",Arial,sans-serif;
+  font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+.px,td.num,#qstrip .px,#cap,#rpos,.tr-num,.num{
+  font-family:"Consolas","Cascadia Mono",monospace;font-variant-numeric:tabular-nums}
+#app{position:relative;height:100vh;padding:8px;display:flex;flex-direction:column;gap:6px;
+  --rb-accent:var(--note)}
+/* ★ T1.2：回放中给 #app 一条左色条。用 box-shadow inset 而不是 border-left ——
+   border 会让 #app 内容整体右移 3px，进/出回放各触发一次 Plotly 尺寸变化（P5 红线）。 */
+#app.replay-on{box-shadow:inset 3px 0 0 var(--rb-accent)}
+#app.train{--rb-accent:var(--accent)}
+#top{display:flex;align-items:center;gap:8px;padding:6px 10px;background:linear-gradient(90deg,var(--brand1),var(--brand2));border-radius:6px}
+.brand{font-weight:700;font-size:var(--fs-md);white-space:nowrap}
+.brand span{font-size:var(--fs-xs);opacity:.5;margin-left:6px;font-weight:400}
+.spacer{flex:1}
+.watch{position:relative;display:inline-flex;align-items:center}
+.sym-btn{font-weight:700;min-width:92px;text-align:left}
+.sym-picker{position:absolute;top:calc(100% + 4px);left:0;z-index:60;background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:4px;display:none;min-width:128px;box-shadow:0 6px 20px rgba(0,0,0,.55)}
+.sym-picker .sym-item{display:block;width:100%;text-align:left;padding:6px 10px;background:transparent;color:var(--text);border:none;border-radius:4px;font-weight:400;white-space:nowrap}
+.sym-picker .sym-item:hover{background:var(--btn-hover)}
+.sym-picker .sym-item.on{color:#fff;background:var(--on);border-color:var(--on);font-weight:700}
+.data-info{font-size:var(--fs-xs);color:var(--muted);white-space:nowrap}
+#replaybar .autopause{font-size:var(--fs-xs);color:var(--muted);display:inline-flex;align-items:center;gap:3px;white-space:nowrap}
+#replaybar .autopause input{vertical-align:middle}
+.mode-btn{font-weight:700;min-width:76px}
+.mode-btn.train{background:var(--accent);border-color:var(--accent);color:#1a1d26}
+.lcol-btn{font-size:var(--fs-xs);min-width:62px}
+.lcol-btn.off{opacity:.62}
+.btns{display:flex;gap:4px;flex-wrap:wrap}
+button{height:var(--btn-h);min-width:34px;padding:0 var(--btn-px);background:#1b2029;color:#d6dae2;border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-family:inherit;font-size:var(--btn-fs);line-height:1;transition:background .12s,border-color .12s,color .12s;user-select:none;white-space:nowrap}
+button:hover{background:#232a36;border-color:var(--btn-hover)}
+button:active{transform:translateY(1px)}
+button.on{background:var(--on);border-color:var(--on);color:#fff;font-weight:700}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+select{background:var(--panel);color:#d6dae2;border:1px solid var(--border);border-radius:4px;padding:4px 6px;font-family:inherit;font-size:var(--fs-xs);outline:none}
+button:disabled{opacity:.4;cursor:not-allowed}
+/* ★ T1.1 回放条分两层：容器竖排两行；#rbMain 永不换行（1280px 也单行）；
+   #rbMoreBox 展开时允许换行，但它是"更多"里的低频操作。 */
+#replaybar{display:flex;flex-direction:column;gap:var(--gap-1);padding:4px 8px;background:var(--brand3);border:1px solid var(--border);border-radius:6px}
+.rb-row{display:flex;align-items:center;gap:6px;min-width:0}
+#rbMain{flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden}
+#rbMoreBox{flex-wrap:wrap}
+#rbMain .spacer{flex:1 0 8px}
+/* ★ P5-1：回放条是主操作区，比常规按钮再大一号；播放键用主色 */
+#replaybar button{height:calc(var(--btn-h) + 4px);font-size:calc(var(--btn-fs) + 1px);font-weight:600}
+#replaybar #rplay{min-width:96px;background:#1e3a5f;border-color:#3b82f6;color:#bfdbfe}
+#replaybar #rplay:hover{background:#2563eb;color:#fff;border-color:#60a5fa}
+#replaybar .rl{color:var(--muted)}
+#replaybar .rsep{width:1px;height:16px;background:var(--border);margin:0 2px;flex:0 0 1px}
+.rb-more{min-width:66px;color:#9aa3af}
+input[type=date]{background:var(--bg);color:#d6dae2;border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-family:inherit;font-size:var(--fs-xs);color-scheme:dark}
+#rscrub{width:140px;min-width:90px;flex:0 1 140px;accent-color:var(--accent);vertical-align:middle;cursor:pointer}
+#rscrub:disabled{opacity:.35;cursor:not-allowed}
+#rpos{font-size:var(--fs-xs);color:var(--muted);margin-left:4px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ★ T1.2 回放横幅（22px，只在回放中显示） */
+.rb-banner{display:flex;align-items:center;gap:var(--gap-2);height:22px;padding:0 8px;
+  font-size:var(--fs-xs);border-radius:4px;white-space:nowrap;overflow:hidden;
+  background:#172033;border:1px solid #1e3a5f;color:#93c5fd}
+.rb-banner b{color:#dbeafe;font-weight:700}
+.rb-banner.train{background:#2a1f12;border-color:var(--warn-border);color:var(--warn-text)}
+.rb-banner.train b{color:#ffe1a8}
+/* ★ T2.4 上次进度提示条 */
+.rb-resume{display:flex;align-items:center;gap:var(--gap-2);padding:3px 8px;font-size:var(--fs-xs);
+  background:#1b2436;border:1px solid #2f405c;border-radius:4px;color:#c7d2fe;white-space:nowrap;overflow:hidden}
+.rb-resume button{height:22px;font-size:var(--fs-xs);min-width:44px}
+.future-tag{display:inline-block;margin-left:6px;padding:0 5px;font-size:var(--fs-xs);font-weight:700;color:var(--note);border:1px solid var(--note);border-radius:3px;vertical-align:1px}
+/* ★ P2-1 模拟下单 */
+.trade-btn{font-size:var(--fs-sm);font-weight:800;padding:5px 14px;border-radius:5px;letter-spacing:1px}
+.trade-btn.buy{background:#7f1d1d;border-color:#dc2626;color:#fecaca}
+.trade-btn.buy:hover{background:#b91c1c;color:#fff;border-color:#ef4444}
+.trade-btn.sell{background:#14532d;border-color:#16a34a;color:#bbf7d0}
+.trade-btn.sell:hover{background:#15803d;color:#fff;border-color:#22c55e}
+.trade-btn.closeb{background:#78350f;border-color:#d97706;color:#fde68a}
+.trade-btn.closeb:hover{background:#b45309;color:#fff;border-color:#f59e0b}
+/* ★ T3.3 面板过渡 120ms（显示/隐藏切换时触发；**绝不给 #main 加**，Plotly 会尺寸错乱） */
+@keyframes paneIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.pane{animation:paneIn .12s ease-out}
+#simpanel{position:absolute;right:14px;top:126px;z-index:90;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;box-shadow:0 10px 28px rgba(0,0,0,.65);width:400px;animation:paneIn .12s ease-out}
+#simpanel .sp-row{display:flex;align-items:center;gap:6px;margin:5px 0;font-size:var(--fs-xs)}
+#simpanel label{color:var(--muted);min-width:42px;text-align:right;white-space:nowrap}
+#simpanel .sp-title{font-weight:700;font-size:var(--fs-sm);flex:1}
+#simpanel .sp-dir{font-weight:800;font-size:var(--fs-md);min-width:24px}
+#simpanel input[type=number]{width:82px;background:var(--bg);color:#e6e6e6;border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-family:inherit;font-size:var(--fs-xs);outline:none;color-scheme:dark}
+#simpanel input[type=number]:focus{border-color:var(--accent)}
+.simgrp{opacity:.95}
+.simgrp.pend{color:var(--note);cursor:pointer;border-bottom:1px dashed var(--note)}
+.sim-pos{font-size:var(--fs-xs);line-height:1.7;padding:3px 2px;border-bottom:1px dashed #20242e;color:#c7cedb;margin-bottom:3px}
+/* ★ P2-2 决策标记 */
+.mark-btn{font-size:var(--fs-sm);font-weight:800;padding:5px 14px;border-radius:5px;letter-spacing:1px;background:#1e3a5f;border-color:#3b82f6;color:#bfdbfe}
+.mark-btn:hover{background:#2563eb;color:#fff;border-color:#60a5fa}
+#mkPanel{position:absolute;right:430px;top:126px;z-index:91;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:10px 12px;box-shadow:0 10px 28px rgba(0,0,0,.65);width:400px;max-width:calc(100vw - 40px);animation:paneIn .12s ease-out}
+#mkPanel .sp-row{display:flex;align-items:center;gap:6px;margin:5px 0;font-size:var(--fs-xs)}
+#mkPanel label{color:var(--muted);min-width:42px;text-align:right;white-space:nowrap}
+#mkPanel .sp-title{font-weight:700;font-size:var(--fs-sm);flex:1}
+#mkPanel .muted{color:var(--muted);line-height:1.5}
+#mkPanel input[type=text]{flex:1;background:var(--bg);color:#e6e6e6;border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-family:inherit;font-size:var(--fs-xs);outline:none;color-scheme:dark}
+#mkPanel input[type=text]:focus{border-color:var(--accent)}
+#mkPanel .mk-vrow{gap:4px}
+.mk-btn{flex:1;font-weight:700;padding:5px 0;letter-spacing:.5px}
+.mk-btn.buy{background:#14532d;border-color:#16a34a;color:#bbf7d0}
+.mk-btn.buy:hover{background:#15803d;color:#fff}
+.mk-btn.sell{background:#14532d;border-color:#16a34a;color:#bbf7d0}
+.mk-btn.sell:hover{background:#15803d;color:#fff}
+.mk-btn.no{background:#7f1d1d;border-color:#dc2626;color:#fecaca}
+.mk-btn.no:hover{background:#b91c1c;color:#fff}
+.mk-btn.unsure{background:#374151;border-color:#6b7280;color:#d1d5db}
+.mk-btn.unsure:hover{background:#4b5563;color:#fff}
+.mk-btn.on{outline:2px solid var(--accent);outline-offset:-2px;font-weight:800}
+#grid{flex:1;min-height:0;display:grid;grid-template-columns:220px 1fr;gap:8px}
+#grid.with-right{grid-template-columns:220px 1fr 340px}
+/* ★ T1.3 左栏可折叠：220px → 0。折叠时 display:none，避免 0 宽元素仍占 gap 与焦点 */
+#grid.left-off{grid-template-columns:0 1fr}
+#grid.with-right.left-off{grid-template-columns:0 1fr 340px}
+#grid.left-off #left{display:none}
+#left,#right{display:flex;flex-direction:column;gap:6px;min-height:0}
+#grid #right{display:none}
+#grid.with-right #right{display:flex}
+#center{display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:6px}
+.ct{font-size:var(--fs-xs);color:var(--muted);margin-bottom:2px}
+#intra{height:190px}
+#qcard{font-size:var(--fs-xs);line-height:1.75;color:#d6dae2}
+#qstrip{display:flex;align-items:baseline;gap:12px;padding:5px 10px;background:linear-gradient(90deg,var(--brand3),var(--brand4));border-radius:6px;white-space:nowrap;overflow:hidden}
+#qstrip .name{font-size:var(--fs-md);font-weight:700}
+#qstrip .px{font-size:var(--fs-lg);font-weight:800}
+#qstrip .chg{font-size:var(--fs-sm)}
+#qstrip .ohlc{font-size:var(--fs-xs);opacity:.75}
+#qstrip .seg{margin-left:auto;font-size:var(--fs-xs);opacity:.65}
+#qstrip .posgrp{margin-left:14px;display:inline-flex;gap:12px;align-items:baseline;font-size:var(--fs-xs)}
+#qstrip .posgrp .pl{opacity:.9;font-weight:600}
+#main{flex:1;min-height:0}
+/* ★ T1.4 #cap 拆两行：第一行价格/指标，第二行上下文（更暗）。不再整体省略号。 */
+#cap{font-size:var(--fs-xs);color:var(--muted);white-space:normal;overflow:visible;line-height:1.5}
+#cap .cap1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+#cap .cap2{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#6b7280;font-size:var(--fs-xs)}
+/* ★ 数据新鲜度角标（S4）。正常=灰，过期/失败=红底，让它一眼可见 */
+#fresh{font-size:var(--fs-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+  padding:1px 6px;border-radius:3px;color:var(--muted);background:transparent}
+#fresh.stale{color:#fff;background:#b91c1c;font-weight:600}
+/* ★ T2.2 成交表筛选 chip */
+.tchips{display:flex;gap:var(--gap-1);flex-wrap:wrap;padding:0 2px;min-height:22px}
+.chip{height:22px;padding:0 9px;font-size:var(--fs-xs);background:#1b2029;border:1px solid var(--border);
+  border-radius:11px;color:var(--muted);cursor:pointer;line-height:20px}
+.chip:hover{background:#232a36;color:#e6e6e6}
+.chip.on{background:var(--on);border-color:var(--on);color:#fff;font-weight:700}
+.chip.dis{opacity:.45;cursor:not-allowed}
+#trades{flex:1;min-height:0;overflow:auto;padding:4px}
+table{width:100%;border-collapse:collapse;font-size:var(--fs-sm)}
+th{position:sticky;top:0;background:var(--panel);color:var(--muted);font-weight:400;text-align:left;padding:3px 4px;border-bottom:1px solid var(--border)}
+/* ★ T2.2 可排序表头（升/降/取消 三态） */
+th.sortable{cursor:pointer;user-select:none;white-space:nowrap}
+th.sortable:hover{color:#fff}
+th.sortable .arr{margin-left:2px;opacity:.55;font-size:10px}
+td{padding:3px 4px;border-bottom:1px solid #20242e}
+tr{cursor:pointer}
+tr:hover td{background:#20242e}
+tr.on td{background:var(--sel-bg);color:var(--sel-text);font-weight:700}
+@keyframes flash{from{background:#1e3a5f}to{background:transparent}}
+tr.new td{animation:flash .6s ease-out}
+.up{color:var(--up-text)}.down{color:var(--down-text)}.muted{color:var(--muted)}
+.note{font-size:var(--fs-xs);color:var(--note);padding:2px 4px 5px;line-height:1.45}
+#detail{font-size:var(--fs-xs);line-height:1.7;color:#d6dae2;min-height:60px}
+#detail b{color:#fff}
+.tabs{display:flex;gap:var(--gap-1)}
+.tabs button{flex:1;min-width:0;padding:0 2px}
+.pane{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}
+#paneStats{overflow:auto}
+#stats{overflow:auto}
+.stat-h{font-size:var(--fs-sm);font-weight:700;color:#cfd6e4;margin:6px 0 2px;border-top:1px solid var(--border);padding-top:4px}
+.stat-line{font-size:var(--fs-xs);line-height:1.7;color:#c7cedb}
+.stat-line b{color:#fff}
+.stat-note{font-size:var(--fs-xs);color:var(--muted);margin:1px 0 2px}
+.warn{font-size:var(--fs-xs);line-height:1.6;color:var(--warn-text);background:var(--warn-bg);border:1px solid var(--warn-border);border-radius:6px;padding:5px 7px;margin-top:6px}
+#stats table{font-size:var(--fs-xs);margin:2px 0 4px}
+#stats th,#stats td{padding:2px 3px;white-space:nowrap}
+
+/* ★ T2.1 训练曲线（跨会话趋势）：Plotly 内嵌，不引入新依赖 */
+#trChart{width:100%;height:210px;margin-top:2px}
+.tr-empty{font-size:var(--fs-xs);color:var(--muted);padding:6px 2px}
+
+/* ★ T2.3 标记 tab 列表 */
+#paneMk{overflow:auto}
+#mklist{overflow:auto}
+#mklist table{font-size:var(--fs-xs)}
+#mklist th,#mklist td{padding:2px 3px;white-space:nowrap}
+#mklist td.mknote{white-space:normal;word-break:break-word;max-width:150px;color:var(--muted)}
+#mklist tr{cursor:pointer}
+#mklist .v-warn{color:var(--up-text)}
+#mklist .v-down{color:var(--down-text)}
+
+/* ★ P2-5 对照面板（右侧第 4 个 tab）：本根并排 + 分歧台账 */
+#paneCmp{overflow:auto}
+#cmpList{overflow:visible}
+.cmp-2col{display:flex;gap:8px;margin-top:4px}
+.cmp-col{flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:6px 8px}
+.cmp-lab{font-size:var(--fs-xs);color:var(--muted);margin-bottom:3px;letter-spacing:.4px}
+.cmp-val{font-size:var(--fs-xs);line-height:1.6;word-break:break-word}
+.cmp-div{margin-top:6px;text-align:center}
+.cmp-badge{display:inline-block;font-size:var(--fs-xs);font-weight:700;padding:2px 10px;border:1px solid;border-radius:10px}
+#cmpList table{font-size:var(--fs-xs);margin:3px 0}
+#cmpList th,#cmpList td{padding:2px 3px;white-space:nowrap}
+#cmpList tr{cursor:default}

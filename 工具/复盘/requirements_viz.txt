@@ -1,0 +1,45 @@
+# 复盘工具 · 独立 venv 依赖（与策略 requirements.txt 分开）
+# 简报 §2.1 / §7：★ 绝不装进 envs\tqsdk，否则会连带升级 pandas/numpy 导致回测口径漂移
+# 解释器：C:\Users\cc\Desktop\天勤量化\.venv_viz\Scripts\python.exe（Python 3.12.1）
+# 重建：python -m venv .venv_viz && .venv_viz\Scripts\python -m pip install -r requirements_viz.txt
+#
+# 顶层直接依赖：streamlit plotly pandas numpy duckdb pyarrow
+# 以下为 .venv_viz 实测 pip freeze（2026-10-17）
+
+altair==6.3.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+charset-normalizer==3.5.2
+click==8.5.0
+duckdb==1.5.6
+h11==0.16.0
+idna==3.20
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+MarkupSafe==3.0.4
+narwhals==2.27.1
+numpy==2.5.4
+packaging==26.3
+pandas==3.0.6
+pillow==12.3.0
+plotly==7.1.0
+protobuf==7.36.2
+pyarrow==26.0.0
+pydeck==0.9.3
+python-dateutil==2.9.0.post0
+python-multipart==0.0.32
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.9.1
+six==1.17.0
+starlette==1.8.0
+streamlit==1.66.0
+typing_extensions==4.16.0
+tzdata==2026.5
+urllib3==2.8.0
+uvicorn==0.54.0
+watchdog==6.0.0
+websockets==17.2

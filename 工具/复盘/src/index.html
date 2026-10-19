@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>复盘终端</title>
+<script src="__PLOTLY_SRC__"></script>
+<link rel="stylesheet" href="__THEME_SRC__">
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div class="brand">复盘终端<span>REVIEW TERMINAL</span></div>
+    <div id="watch" class="watch"></div>
+    <span id="dataInfo" class="data-info"></span>
+    <span id="modeSlot"></span>
+    <div class="spacer"></div>
+    <div class="btns">
+      <button id="lcolBtn" class="lcol-btn" title="折叠/展开左栏（Ctrl+←）：左栏是分时图，看 1min/5min 时和主图重复">◀ 分时</button>
+    </div>
+    <div id="periods" class="btns"></div>
+    <div id="ranges" class="btns"></div>
+    <div class="btns">
+      <select id="ind" title="副图指标">
+        <option value="vol">副图：成交量</option>
+        <option value="atr">副图：ATR14</option>
+        <option value="macd">副图：MACD</option>
+        <option value="rsi">副图：RSI14</option>
+        <option value="kdj">副图：KDJ</option>
+      </select>
+      <button id="tbtn">成交</button>
+    </div>
+  </div>
+  <!-- ★ 五期 T1.1：回放条分两层。
+       常驻行 #rbMain = 高频（步进/播放/逐笔跳/进度），任何屏宽都不换行（nowrap）；
+       折叠区 #rbMoreBox = 一次性操作（选起播日/速度/自动暂停/退出/下单/标记）。
+       为什么不用 media query 隐藏：那会变成"看不见但还在"，键盘和 Tab 仍能摸到。 -->
+  <div id="replaybar">
+    <div class="rb-row" id="rbMain">
+      <span class="rl">回放</span>
+      <button id="rprev">◀ 上一根</button>
+      <button id="rplay">播放 ▶</button>
+      <button id="rnext">下一根 ▶</button>
+      <span class="rsep"></span>
+      <button id="rjprev">◀ 上一笔</button>
+      <button id="rjnext">下一笔 ▶</button>
+      <input type="range" id="rscrub" min="0" max="0" step="1" value="0" title="回放进度：拖动只看位置，松手才跳转（P1-6）">
+      <span id="rpos"></span>
+      <span class="spacer"></span>
+      <button id="rbMore" class="rb-more" title="更多操作：选起播日 / 速度 / 自动暂停 / 退出 / 下单 / 标记">更多 ▾</button>
+    </div>
+    <div class="rb-row" id="rbMoreBox" style="display:none">
+      <input type="date" id="rdate">
+      <button id="rstart">从该日回放</button>
+      <select id="rspeed" title="播放速度（每根停留毫秒，P1-2）">
+        <option value="5000">极慢 5s</option>
+        <option value="3000">很慢 3s</option>
+        <option value="1500">慢 1.5s</option>
+        <option value="600" selected>中 0.6s</option>
+        <option value="200">快 0.2s</option>
+      </select>
+      <label class="autopause"><input type="checkbox" id="rauto"> 自动暂停</label>
+      <button id="rexit">退出回放</button>
+      <span class="rsep"></span>
+      <button id="bBuy" class="trade-btn buy" disabled title="模拟开多（下一根开盘成交）">买 B</button>
+      <button id="bSell" class="trade-btn sell" disabled title="模拟开空（下一根开盘成交）">卖 S</button>
+      <button id="bClose" class="trade-btn closeb" disabled title="模拟平仓（下一根开盘成交）">平 C</button>
+      <button id="mMark" class="mark-btn" disabled title="决策标记：记录你在这根 bar 的判断（M）">标记 M</button>
+    </div>
+  </div>
+  <!-- ★ T1.2：回放状态横幅（22px）。只在回放中显示，颜色随模式变 -->
+  <div id="rbBanner" class="rb-banner" style="display:none"></div>
+  <!-- ★ T2.4：上次进度提示条（非阻塞，可选"继续"） -->
+  <div id="rbResume" class="rb-resume" style="display:none"></div>
+  <div id="simpanel" style="display:none">
+    <div class="sp-row"><span class="sp-title" id="spTitle">模拟开仓</span><button id="spX">✕</button></div>
+    <div class="sp-row">
+      <label>方向</label><span id="spDir" class="sp-dir"></span>
+      <label>手数</label><input type="number" id="spQty" min="1" max="20" step="1">
+    </div>
+    <div class="sp-row">
+      <label>止损价</label><input type="number" id="spStop" step="0.01">
+      <label>止盈价</label><input type="number" id="spTarget" step="0.01" placeholder="留空=不设">
+    </div>
+    <div class="sp-row muted" id="spHint"></div>
+    <div class="sp-row"><button id="spOk" class="trade-btn buy">确认下单（下一根开盘成交）</button><button id="spCancel">取消</button></div>
+  </div>
+  <div id="mkPanel" style="display:none">
+    <div class="sp-row"><span class="sp-title" id="mkBar">标记</span><button id="mkX">✕</button></div>
+    <div class="sp-row mk-vrow">
+      <button id="mkBuy" class="mk-btn buy" data-v="会进多">会进多</button>
+      <button id="mkSell" class="mk-btn sell" data-v="会进空">会进空</button>
+      <button id="mkNo" class="mk-btn no" data-v="不进">不进</button>
+      <button id="mkUnsure" class="mk-btn unsure" data-v="不确定">不确定</button>
+    </div>
+    <div class="sp-row">
+      <label>理由</label><input type="text" id="mkNote" maxlength="200" placeholder="可选，一句话（≤200 字）">
+    </div>
+    <div class="sp-row muted" id="mkHint"></div>
+    <div class="sp-row">
+      <button id="mkOk" class="trade-btn buy">保存标记</button>
+      <button id="mkDel" disabled>删除</button>
+      <button id="mkCancel">取消</button>
+      <span class="spacer"></span>
+      <button id="mkExport" title="导出全部标记为 CSV（utf-8-sig，Excel 直接打开不乱码）">导出 CSV</button>
+      <button id="mkLedger" title="导出演习台账（P2-3：含累计全部会话一行一条）">导出台账</button>
+    </div>
+  </div>
+  <div id="grid">
+    <div id="left">
+      <div class="card"><div class="ct" id="ititle">分时</div><div id="intra"></div></div>
+      <div class="card" id="qcard"></div>
+    </div>
+    <div id="center">
+      <div id="qstrip"></div>
+      <div id="main"></div>
+      <div id="cap"></div>
+      <!-- ★ S4/A-freshness：数据新鲜度角标。超过 24h 或更新失败 ⇒ 变红（方案 §2.6） -->
+      <div id="fresh" class="fresh"></div>
+    </div>
+    <div id="right">
+      <div class="tabs">
+        <button id="tabT" class="on">成交</button>
+        <button id="tabB">模拟</button>
+        <button id="tabS">统计</button>
+        <button id="tabC" title="与实盘对照（P2-5）：只在复看模式可用">对照</button>
+        <button id="tabM" title="决策标记列表（T2.3）：训练模式不渲染">标记</button>
+      </div>
+      <div id="paneTrade" class="pane">
+        <div id="tchips" class="tchips"></div>
+        <div class="card" id="trades"><div class="ct" id="ttitle"></div><div id="tbody"></div></div>
+        <div class="card" id="detail"></div>
+      </div>
+      <div id="paneBook" class="pane" style="display:none">
+        <div class="card" id="simpane"><div class="ct" id="simtitle"></div><div id="simbody"></div></div>
+      </div>
+      <div id="paneStats" class="pane" style="display:none">
+        <div class="card" id="stats"></div>
+      </div>
+      <div id="paneCmp" class="pane" style="display:none">
+        <div class="card" id="cmpNow"></div>
+        <div class="card" id="cmpList"></div>
+      </div>
+      <div id="paneMk" class="pane" style="display:none">
+        <div class="card" id="mklist"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script type="module" src="__BOOT_SRC__"></script>
+</body>
+</html>
