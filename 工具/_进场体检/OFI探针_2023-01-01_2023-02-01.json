@@ -1,0 +1,20 @@
+[
+  {
+    "key": "RB",
+    "name_cn": "螺纹钢",
+    "signal": "ofi",
+    "n": 1117,
+    "per_day": 1117.0,
+    "days": 31,
+    "cost_pts": 2.8,
+    "L0_gross": -0.575,
+    "L0_t": -0.92,
+    "L1_gross": 0.082,
+    "L1_net": -2.718,
+    "L1_t": -5.0,
+    "L1_winrate": 0.4091,
+    "stop_share": 0.3644,
+    "ratio": 0.029,
+    "ofi_total": 85456.0
+  }
+]

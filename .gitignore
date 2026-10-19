@@ -191,6 +191,9 @@ HTML效果参考手册.html
 #    （见上文「回测结果/**/*.txt 一律不入库」）。保留卡/结论/json 摘要。
 工具/_进场体检/数据/
 工具/_截面因子_基差/数据/
+工具/_supertrend_ts/data/
+# np.db 是运行时库，connect() 会 CREATE TABLE IF NOT EXISTS 重建；核实结论另有 核实结果.json 入库
+工具/_np_data/np.db
 工具/_保本止损/结果/*_逐笔.txt
 策略/**/台账/_样本量快照_*.txt
 

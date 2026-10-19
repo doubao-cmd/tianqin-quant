@@ -1,0 +1,131 @@
+{
+  "probed_at": "2026-10-19T14:27:50",
+  "date": "20261016",
+  "akshare": "1.19.1",
+  "results": [
+    {
+      "source": "shfe_receipt",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 34,
+      "n_rows": 557,
+      "elapsed_s": 4.14,
+      "probed_at": "2026-10-19T14:27:32",
+      "depth": "20100104"
+    },
+    {
+      "source": "czce_receipt",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 27,
+      "n_rows": 1377,
+      "elapsed_s": 1.29,
+      "probed_at": "2026-10-19T14:27:33",
+      "depth": "20160104"
+    },
+    {
+      "source": "gfex_receipt",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 1,
+      "n_rows": 3,
+      "elapsed_s": 0.17,
+      "probed_at": "2026-10-19T14:27:33",
+      "depth": "20240102"
+    },
+    {
+      "source": "dce_receipt",
+      "date": "20261016",
+      "attempts": 3,
+      "status": "FAIL",
+      "n_key": 0,
+      "n_rows": 0,
+      "error": "APIError: API Error: 大连商品交易所网站启用了瑞数反爬虫验证，暂时无法通过程序获取仓单日报数据 (Status code: 412)",
+      "elapsed_s": 3.53,
+      "probed_at": "2026-10-19T14:27:36",
+      "depth": ""
+    },
+    {
+      "source": "shfe_rank",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 73,
+      "n_rows": 1533,
+      "elapsed_s": 1.47,
+      "probed_at": "2026-10-19T14:27:38",
+      "depth": "20100104"
+    },
+    {
+      "source": "czce_rank",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 133,
+      "n_rows": 2494,
+      "elapsed_s": 2.02,
+      "probed_at": "2026-10-19T14:27:40",
+      "depth": "20160104"
+    },
+    {
+      "source": "gfex_rank",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 10,
+      "n_rows": 200,
+      "elapsed_s": 3.5,
+      "probed_at": "2026-10-19T14:27:43",
+      "depth": "20240102"
+    },
+    {
+      "source": "dce_rank",
+      "date": "20261016",
+      "attempts": 3,
+      "status": "FAIL",
+      "n_key": 0,
+      "n_rows": 0,
+      "error": "BadZipFile: File is not a zip file",
+      "elapsed_s": 3.52,
+      "probed_at": "2026-10-19T14:27:47",
+      "depth": ""
+    },
+    {
+      "source": "inv_99qh",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 1,
+      "n_rows": 20,
+      "elapsed_s": 0.3,
+      "probed_at": "2026-10-19T14:27:47",
+      "depth": "仅最近20期(约5个月); 翻页参数实测全部无效"
+    },
+    {
+      "source": "spot_basis",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 1,
+      "n_rows": 54,
+      "elapsed_s": 1.06,
+      "probed_at": "2026-10-19T14:27:48",
+      "depth": "20130104"
+    },
+    {
+      "source": "em_inventory",
+      "date": "20261016",
+      "attempts": 1,
+      "status": "OK",
+      "n_key": 1,
+      "n_rows": 67,
+      "elapsed_s": 1.68,
+      "probed_at": "2026-10-19T14:27:50",
+      "depth": ""
+    }
+  ],
+  "depth_probed_at": "2026-10-19T14:28:28"
+}
