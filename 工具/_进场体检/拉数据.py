@@ -66,7 +66,11 @@ def pull_one(key, user, pwd):
         op = k["open"].to_numpy(float)
         hi = k["high"].to_numpy(float)
         lo = k["low"].to_numpy(float)
-        for j in range(len(dts)):
+        # ★★ 2026-10-17 修复（同 06 回测的同一处 bug）：
+        #   原 `for j in range(len(dts))` 会**见到新 bar 就 append** —— 那一刻新 bar
+        #   只有第一个 tick，于是 high/low/close 全 == open（实测 5min 94.3%、日线 100% 退化）。
+        #   滚动窗口的最后一根永远在形成中 ⇒ 必须排除它，只收**已收盘**的 bar。
+        for j in range(max(0, len(dts) - 1)):
             if dts[j] > last_ns:
                 dts_l.append(dts[j]); c_l.append(cl[j]); o_l.append(op[j])
                 h_l.append(hi[j]); l_l.append(lo[j]); last_ns = dts[j]

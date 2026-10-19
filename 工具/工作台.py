@@ -5,7 +5,7 @@
 2026-09-30 新建 ｜ 2026-10-11 改造（修过时入口 + 新增自检/作品集能力）
 
 【设计原则】
-    本文件不实现任何业务逻辑，只把散落的入口收拢成五个区块。
+    本文件不实现任何业务逻辑，只把散落的入口收拢成六个区块。
     回测逻辑原样复用 工具/菜单.py（import 菜单），以后菜单改了这里自动跟着变。
 
 【命令行直通】（不进菜单时）
@@ -21,6 +21,7 @@
     [体检自检]   防未来函数 / 本地自检 / 环境自检 / 行尾 / 密钥 / 05-07体检
     [复盘作品]   README / 三段对照 / 项目路线 / 基础补强 / 学习目录 / 汇总报告
     [系统]       git 状态 / 回滚 / 目录地图 / 打开根目录
+    [复盘工具]   一键启动 工具/复盘/app.py（Streamlit 本地网页：K线/回放/时段画像/截断盘）
 
 ★ 2026-10-11 改造要点（对照旧版的差异）：
     ① 修 BUG：模拟盘区原来指向已删除的「启动_P_EB_观察模式.bat」（P/EB 双品种旧方案），
@@ -29,6 +30,12 @@
     ③ 新增「复盘与作品集」区：README / 三段对照 / 三条学习路线 HTML 一键打开。
     ④ 主菜单顶部显示 **熔断状态**（原来要点进模拟盘区才看得到）。
     ⑤ 代码卫生工具（行尾 / 密钥扫描）纳入「体检自检」区。
+
+★ 2026-10-17 新增（复盘工具区，阶段 7）：
+    ⑥ 新增【6】复盘工具：一键起 工具/复盘/app.py（Streamlit 本地网页）。
+       ⚠️ **绝不能用 `PY` 去跑它** —— `PY` 是运行工作台的解释器（策略 venv），
+          里面没有 streamlit；必须用复盘独立 venv `.venv_viz`（简报 D5）。
+       ⚠️ **绝不能用 `_跑脚本`** —— Streamlit 是常驻进程永不返回，会把工作台整个卡死。
 """
 
 import os
@@ -71,6 +78,17 @@ HTML_项目路线 = os.path.join(根, "项目仓库_可打勾路线.html")
 HTML_基础补强 = os.path.join(根, "基础补强_可打勾路线.html")
 HTML_学习目录 = os.path.join(根, "量化职场学习路线图.html")
 README = os.path.join(根, "README.md")
+
+# ---- 复盘工具（阶段 7）★★ 这里是唯一"跨 venv"的地方，改前先读 _启复盘 的注释 ----
+PY_复盘 = os.path.join(根, ".venv_viz", "Scripts", "python.exe")   # ★ 独立 venv，绝不用 PY
+目录_复盘 = os.path.join(_HERE, "复盘")
+APP_复盘 = os.path.join(目录_复盘, "app.py")
+PORT_复盘 = 8501                                                   # 固定端口（占用=很可能已开着一个）
+
+# Streamlit **首次运行**会弹「Welcome to Streamlit! … Email:」并**阻塞**（此时服务还没起，
+# 浏览器永远等不到）—— 阶段 7 第一次实跑就撞上这个。凭据文件只从用户主目录读，路径不可配。
+凭据_目录 = os.path.join(os.path.expanduser("~"), ".streamlit")
+凭据_文件 = os.path.join(凭据_目录, "credentials.toml")
 
 import 菜单  # noqa: E402  （复用回测菜单的全部选项函数）
 
@@ -130,6 +148,61 @@ def _开新窗口(脚本路径, cwd=None):
     subprocess.Popen(["cmd", "/c", 脚本路径], cwd=cwd or os.path.dirname(脚本路径), env=env,
                      creationflags=subprocess.CREATE_NEW_CONSOLE)
     return True
+
+
+def _确保不复述首次提问():
+    """代填 Streamlit 的首次「Email」提问，避免它阻塞住服务启动（阶段 7 实测坑）。
+
+    Streamlit 第一次跑时会在控制台问 Email 并要求回车，**在回车之前 server 根本没起**，
+    所以「点进去能开页面」这条验收会失败。留空回车 = 不订阅邮件 = 写出 `email = ""`，
+    这里直接把这等价结果写好（**只在不存在时写**，绝不覆盖用户已有配置）。
+    """
+    if os.path.isfile(凭据_文件):
+        return
+    try:
+        os.makedirs(凭据_目录, exist_ok=True)
+        with open(凭据_文件, "w", encoding="utf-8") as f:
+            f.write('[general]\nemail = ""\n')
+    except OSError as e:
+        # 写不了也不该拦住启动，顶多第一次跑时手动留空回车
+        print(f"\n  ⚠️ 未能写入 Streamlit 首次配置（{e}）；若新窗口停在「Welcome to Streamlit!」，"
+              "请直接留空回车。")
+
+
+def _启复盘():
+    """一键启动复盘工具（Streamlit 本地网页），在**新控制台窗口**起，不阻塞工作台。
+
+    ★ 两个必须记牢的点（阶段 7 的坑，写在这里防止以后被"顺手简化"掉）：
+      1. **不能用 `PY`**：`PY = sys.executable` 是"运行工作台的解释器"，也就是策略 venv；
+         那里**没有 streamlit**（也不能装，简报 §6·1 会连带升级 pandas 让回测数字漂移）。
+         必须指向复盘独立 venv `.venv_viz`（D5）。
+      2. **不能用 `_跑脚本`**：Streamlit 是常驻服务、`subprocess.call` 会一直阻塞，
+         会把工作台整个卡死。必须 `Popen(..., CREATE_NEW_CONSOLE)`。
+    """
+    if not os.path.isfile(PY_复盘):
+        print(f"\n  ⛔ 找不到复盘独立 venv 的解释器：")
+        print(f"     {PY_复盘}")
+        print("     请先按交接简报「阶段 0」建好 .venv_viz"
+              "（streamlit / plotly / pandas / numpy / duckdb / pyarrow）。")
+        _暂停()
+        return
+    if not os.path.isfile(APP_复盘):
+        print(f"\n  ⛔ 找不到复盘入口：{APP_复盘}")
+        _暂停()
+        return
+    env = dict(os.environ)
+    env["PYTHONUTF8"] = "1"          # 中文标题/日志不乱码
+    _确保不复述首次提问()            # ★ 否则首次跑会卡在「Email:」提问上，服务起不来、浏览器不开
+    subprocess.Popen(
+        [PY_复盘, "-m", "streamlit", "run", APP_复盘,
+         "--server.port", str(PORT_复盘),
+         "--browser.gatherUsageStats", "false"],
+        cwd=根, env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
+    print("\n  复盘工具已在新控制台窗口启动。")
+    print(f"  浏览器稍后会自动打开： http://localhost:{PORT_复盘}")
+    print(f"  若新窗口报「端口被占用」，多半是**已经有一个复盘页开着** —— 先去看那个窗口。")
+    print("  关闭：关掉那个新窗口，或在窗口里按 Ctrl+C。")
+    _暂停()
 
 
 def _熔断信息():
@@ -318,6 +391,26 @@ def 区_复盘作品():
             return
 
 
+# ---------------------------------------------------------------- 复盘工具区（阶段 7）
+
+def 区_复盘工具():
+    while True:
+        print(f"""
+
+  ── 复盘工具（Streamlit 本地网页）───────────
+    [1] 启动复盘页（K线/指标 · 回放 · 时段画像 · 截断盘）
+    [2] 打开 工具/复盘/ 目录（代码与缓存）
+    [回车] 返回工作台""")
+        c = input("  请输入：").strip()
+        if c == "1":
+            _启复盘()
+        elif c == "2":
+            _开目录(os.path.join("工具", "复盘"))
+            _暂停()
+        else:
+            return
+
+
 # ---------------------------------------------------------------- 系统区
 
 def 区_系统():
@@ -388,6 +481,7 @@ def 主菜单():
         print("  【3】体检与自检    防未来函数 / 本地自检 / 环境自检 / 体检")
         print("  【4】复盘与作品集   README / 三段对照 / 三条路线 / 汇总报告")
         print("  【5】系统          git / 回滚 / 目录地图 / 打开根目录")
+        print("  【6】复盘工具      启动 Streamlit 复盘页（K线/回放/时段画像）")
         print()
         print("  【0】退出")
         print(线)
@@ -404,6 +498,8 @@ def 主菜单():
             区_复盘作品()
         elif c == "5":
             区_系统()
+        elif c == "6":
+            区_复盘工具()
         elif c == "0":
             print("\n  再见。\n")
             return

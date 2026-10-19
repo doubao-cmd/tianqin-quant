@@ -64,6 +64,18 @@ INIT        = 200000.0     # 初始资金（元）
 #          ⇒ 对齐模拟盘实测（成交价可差止损线 −22.11 点）
 #   False = 旧口径（按止损线理想价成交，零滑点零跳空）⇒ 系统性虚高，仅供对照
 GAP_FILL   = True
+# ★ STOP_FILL（2026-10-17 新增）：止损成交价口径。
+#   ⚠️ 三者都**只用触发那根 bar 的 open/close 与止损线**，不引用任何 i+1 的数据 —— 无未来函数。
+#   "line"      = min/max(止损线, 开盘)        —— 旧口径：假设在止损线成交（偏乐观）
+#   "tick"      = min/max(止损线∓1跳, 开盘)    —— 模拟「1 分钟收盘触发」的实际成交（与模拟盘对齐）
+#   "bar_close" = 当根收盘价                   —— 模拟「5 分钟收盘触发」的现状（最保守）
+STOP_FILL  = os.environ.get("MA13_STOP_FILL", "line").strip().lower()
+# ★★ BAR_ON_CLOSE（2026-10-17 发现并修复的**数据 bug**）：
+#   原收集循环「一见到新 bar 就 append」—— 那一刻新 bar 只有第一个 tick，
+#   于是 high/low/close 全都 == open（实测 open=high=low=close）。
+#   后果：ATR 退化成「开盘价差」、止损只剩「跳空才触发」、止损成交价三口径无差别。
+#   BAR_ON_CLOSE=1 -> 排除滚动窗口里**正在形成**的最后一根，只收已收盘 bar。
+BAR_ON_CLOSE = os.environ.get("MA13_BAR_CLOSE", "0") == "1"
 # COMPOUND：手数预算基数。
 #   False = 锁死 20 万（对齐模拟盘 RISK_EQUITY，★用户 2026-10-09 拍板方案 A）
 #          ⇒ 保住单腿收益可加性，E[组合]=ΣwᵢE[腿ᵢ] 成立
@@ -79,6 +91,23 @@ if os.environ.get("MA13_START"):
     START = pd.Timestamp(os.environ["MA13_START"])
 if os.environ.get("MA13_END"):
     END = pd.Timestamp(os.environ["MA13_END"])
+
+
+def _stop_exit_price(side, stop_price, bar_open, bar_close):
+    """止损成交价（★ 无未来函数：只用**触发那根 bar** 的 open/close 与止损线，不引用 i+1）。
+
+    side=+1 多头（卖出，越卖越低越差）/ -1 空头（买入，越买越高越差）。
+    """
+    if STOP_FILL == "bar_close":
+        return float(bar_close)          # 5 分钟收盘触发（现状口径，最保守）
+    if STOP_FILL == "tick":
+        base = float(stop_price) - TICK if side > 0 else float(stop_price) + TICK
+    else:                                # "line"（旧口径）
+        if not GAP_FILL:
+            return float(stop_price)
+        base = float(stop_price)
+    # 跳空：开盘已越过 -> 用开盘价（更差的那个）
+    return min(base, float(bar_open)) if side > 0 else max(base, float(bar_open))
 
 
 def _window_name(start, end):
@@ -153,7 +182,8 @@ def run_backtest(start=None, end=None):
         op = k["open"].to_numpy(float)
         hi = k["high"].to_numpy(float)
         lo = k["low"].to_numpy(float)
-        for j in range(len(dts)):
+        _lim = (len(dts) - 1) if BAR_ON_CLOSE else len(dts)   # 排除正在形成的最后一根
+        for j in range(_lim):
             if dts[j] > last_ns:
                 d_list.append(dts[j]); c_list.append(cl[j]); o_list.append(op[j])
                 h_list.append(hi[j]); l_list.append(lo[j]); last_ns = dts[j]
@@ -236,18 +266,23 @@ def run_backtest(start=None, end=None):
             if pos > 0:
                 if low[i] <= stop_price:
                     exit_now = True
-                    # ★ GAP_FILL：跳空低开时成交在开盘价（保守），否则在止损线
-                    exit_price = min(stop_price, open_[i]) if GAP_FILL else stop_price
+                    exit_price = _stop_exit_price(+1, stop_price, open_[i], close[i])
                     reason = "止损"
                 elif bars_in >= MAX_HOLD:
                     exit_now = True; exit_price = open_[i]; reason = "时间止损"
             elif pos < 0:
                 if high[i] >= stop_price:
                     exit_now = True
-                    exit_price = max(stop_price, open_[i]) if GAP_FILL else stop_price
+                    exit_price = _stop_exit_price(-1, stop_price, open_[i], close[i])
                     reason = "止损"
                 elif bars_in >= MAX_HOLD:
                     exit_now = True; exit_price = open_[i]; reason = "时间止损"
+
+            if os.environ.get("MA13_DEBUG_STOP") and exit_now and reason == "止损":
+                print(f"[dbg] {pd.Timestamp(dts_arr[i])} 方向={'多' if cur_dir > 0 else '空'} "
+                      f"stop={stop_price:.2f} open={open_[i]:.2f} high={high[i]:.2f} "
+                      f"low={low[i]:.2f} close={close[i]:.2f} "
+                      f"-> exit={exit_price:.2f} (mode={STOP_FILL})", flush=True)
 
             if exit_now and pos != 0:
                 exit_cost = SLIP * TICK * MULT * abs(pos) + COMM * abs(pos)
@@ -382,9 +417,15 @@ def run_backtest(start=None, end=None):
                if not COMPOUND else
                f"手数=当前权益×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]")
             + f"+名义敞口≤权益×{NOTIONAL_CAP:.0f}倍; "
-            + ("止损=GAP_FILL保守成交(多头min(止损线,开盘)/空头max)" if GAP_FILL
-               else "止损=理想价成交(零滑点零跳空,系统性虚高,仅供对照)")
-            + f"; 乘数{MULT}; 一跳{TICK}; 标定2026-10-10"
+            + {"line": ("止损=止损线成交(跳空用开盘)" if GAP_FILL
+                        else "止损=理想价成交(零滑点零跳空,系统性虚高,仅供对照)"),
+               "tick": "止损=止损线∓1跳(模拟1分钟收盘触发; 无未来函数)",
+               "bar_close": "止损=当根收盘价(模拟5分钟收盘触发; 无未来函数)"}.get(
+                   STOP_FILL, f"止损=未知口径({STOP_FILL})")
+            + f"; 乘数{MULT}; 一跳{TICK}; "
+            + ("K线=仅收盘bar(2026-10-17 修 bar 采集 bug)" if BAR_ON_CLOSE
+               else "K线=⚠含未收盘bar(历史口径, OHLC退化为同一价)")
+            + "; 标定2026-10-10"
         ),
     }
     kline_history = [{"dt": int(d_list[i]), "open": float(o_list[i]), "high": float(h_list[i]),
@@ -824,7 +865,10 @@ def main():
     os.makedirs(res_dir, exist_ok=True)
     # ★ 2026-10-11：窗口名由起止年份自动推断（原来是硬编码「开发窗」，跑三段会互相覆盖）
     win_tag = _window_name(out["start"], out["end"])
-    base = f"{name_cn}_MA13超短线_5min_{win_tag}"
+    # ★ 口径不同不许互相覆盖：非默认口径加后缀
+    _sf = ("_barc" if BAR_ON_CLOSE else "") + \
+          ("" if STOP_FILL == "line" else f"_stop{STOP_FILL}")
+    base = f"{name_cn}_MA13超短线_5min_{win_tag}{_sf}"
     html_path = os.path.join(res_dir, base + ".html")
     txt_path = os.path.join(res_dir, base + ".txt")
     json_path = os.path.join(res_dir, base + "_参数.json")

@@ -19,6 +19,9 @@ __pycache__/
 *.pyo
 .pytest_cache/
 *.pyd
+# ★ 复盘工具独立 venv（2026-10-17 新增）——
+#   与策略环境 entvs\tqsdk 物理隔离；体积大可再生产，绝不入库。
+.venv_viz/
 
 # ===== WorkBuddy 本地数据 =====
 .workbuddy/

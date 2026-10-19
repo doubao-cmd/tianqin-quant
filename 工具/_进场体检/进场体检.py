@@ -26,6 +26,16 @@
   ④ 显著性   |t| ≥ 2.0（按笔，非按 bar）
   ⑤ 一致性   至少 **多数品种**（≥ ⌈品种数/2⌉）同时满足 ②③
 
+★ 三档分级（2026-10-18 修订）—— 二元生死 → 三档
+----------------------------------------------------
+  A 真死   毛/成本 < 1.0          净亏，无 edge      → ❌ 归档，禁止复活
+  B 薄利   1.0 ≤ 毛/成本 < 2.0    正期望但薄利        → ⚠️ 候补，不进 full backtest，**但不算死**
+  C 值得进 毛/成本 ≥ 2.0          有资格进下一轮      → ✅ 走预注册卡（仍需换干净样本）
+
+  修订理由：原判定把「毛/成本 < 2.0」一律判死，但 (1.0, 2.0) 区间**净 > 0 是正期望**。
+  「判死」的准确语义是「不值得进 full backtest」，不是「无 edge」。
+  注：③ 是 ② 的算术推论（毛 ≥ 2×成本 ⇒ 净 ≥ 1×成本 > 0），从未独立判过任何一格。
+
 ⚠️⚠️ 两条纪律（本工具存在的意义就是它们）
 ----------------------------------------------------
   1. **本工具只能「判死」，不能「判生」。** 跑在 2021-2023（已污染窗口）上，
@@ -177,6 +187,19 @@ def _s_vol_break(o, h, l, c, atr, ma):
     rng = c - np.roll(c, 1)
     big = np.abs(rng) > 2.0 * atr
     return np.where(big, np.sign(rng), 0.0)
+
+
+def _s_ha_trend(o, h, l, c, atr, ma):
+    """Heikin-Ashi 趋势方向（不可约核心单变量，对应双重平滑策略的底层信号）。
+    HA收盘=(O+H+L+C)/4；HA开盘[i]=(HA开盘[i-1]+HA收盘[i-1])/2（递归，纯价格平滑）。
+    信号 = sign(HA收盘 − HA开盘)：绿=多、红=空。无未来函数、无新息源。"""
+    N = len(c)
+    ha_c = (o + h + l + c) / 4.0
+    ha_o = np.empty(N)
+    ha_o[0] = (o[0] + c[0]) / 2.0
+    for i in range(1, N):
+        ha_o[i] = (ha_o[i - 1] + ha_c[i - 1]) / 2.0
+    return np.sign(ha_c - ha_o)
 
 
 def _s_pin_bar(o, h, l, c, atr, ma):
@@ -360,6 +383,148 @@ def _s_boll_meanrev(o, h, l, c, atr, ma):
     return np.where(long_, 1.0, np.where(short_, -1.0, 0.0))
 
 
+
+# ================================================================ 2026-10-15 新增：用户指定补测的价格指标
+# 参数全部用经典外生值、定死不扫；均为 OHLC 的确定性函数，预期判死（机械复核，
+# 非新发现——呼应元结论「MACD/KDJ/均线/布林/ATR/唐奇安 同理，全是价格的函数」）。
+MACD_FAST = 12
+MACD_SLOW = 26
+MACD_SIG = 9
+KDJ_N = 9
+CCI_N = 20
+CCI_BAND = 100.0
+ROC_N = 12
+SAR_AF0 = 0.02
+SAR_AF_STEP = 0.02
+SAR_AF_MAX = 0.20
+
+
+def _ema(x, n):
+    """标准 EMA，seed=x[0]，alpha=2/(n+1)。仅用已收盘数据（无未来函数）。"""
+    N = len(x)
+    out = np.full(N, np.nan)
+    if N == 0:
+        return out
+    alpha = 2.0 / (n + 1)
+    prev = x[0]
+    out[0] = x[0]
+    for i in range(1, N):
+        prev = alpha * x[i] + (1.0 - alpha) * prev
+        out[i] = prev
+    return out
+
+
+def _s_macd(o, h, l, c, atr, ma):
+    """MACD 金叉/死叉方向信号：DIF=EMA12-EMA26，DEA=EMA9(DIF)，hist=DIF-DEA；
+    sign(hist) 即「MACD 交叉买卖点」（用户明确：此用法必死）。"""
+    dif = _ema(c, MACD_FAST) - _ema(c, MACD_SLOW)
+    dea = _ema(dif, MACD_SIG)
+    hist = dif - dea
+    sig = np.sign(hist)
+    warm = np.isnan(hist) | (np.arange(len(c)) < MACD_SLOW)
+    return np.where(warm, 0.0, sig)
+
+
+def _s_kdj(o, h, l, c, atr, ma):
+    """KDJ 金叉/死叉方向信号：RSV=(C-LLV9)/(HHV9-LLV9)*100；K=2/3·K_- +1/3·RSV；
+    D=2/3·D_- +1/3·K；sign(K-D) 即「KDJ 金叉死叉买卖点」。"""
+    N = len(c)
+    llv = np.full(N, np.nan)
+    hhv = np.full(N, np.nan)
+    for i in range(N):
+        a = max(0, i - KDJ_N + 1)
+        llv[i] = np.min(l[a:i + 1])
+        hhv[i] = np.max(h[a:i + 1])
+    rng = hhv - llv
+    rsv = np.where(rng > 0, (c - llv) / rng * 100.0, 50.0)
+    K = np.full(N, np.nan)
+    D = np.full(N, np.nan)
+    K[0] = 50.0
+    D[0] = 50.0
+    for i in range(1, N):
+        K[i] = (2.0 / 3.0) * K[i - 1] + (1.0 / 3.0) * rsv[i]
+        D[i] = (2.0 / 3.0) * D[i - 1] + (1.0 / 3.0) * K[i]
+    sig = np.sign(K - D)
+    warm = np.isnan(K) | (np.arange(N) < KDJ_N)
+    return np.where(warm, 0.0, sig)
+
+
+def _s_cci(o, h, l, c, atr, ma):
+    """CCI 突破 ±100 方向信号：TP=(H+L+C)/3，CCI=(TP-SMA20)/(0.015·MAD20)；
+    CCI>100→多，CCI<-100→空，区间内=0。"""
+    tp = (h + l + c) / 3.0
+    N = len(c)
+    sma = _sma(tp, CCI_N)
+    mad = np.full(N, np.nan)
+    for i in range(N):
+        a = max(0, i - CCI_N + 1)
+        seg = tp[a:i + 1]
+        mad[i] = np.mean(np.abs(seg - np.mean(seg)))
+    denom = 0.015 * mad
+    cci = np.where(denom > 0, (tp - sma) / denom, 0.0)
+    sig = np.zeros(N)
+    sig = np.where(cci > CCI_BAND, 1.0, sig)
+    sig = np.where(cci < -CCI_BAND, -1.0, sig)
+    warm = np.isnan(cci) | (np.arange(N) < CCI_N)
+    return np.where(warm, 0.0, sig)
+
+
+def _s_roc(o, h, l, c, atr, ma):
+    """ROC 动量方向：ROC=(C[i]-C[i-N])/C[i-N]*100；sign(ROC)=动量方向。
+    （与 tsmom_20 同类，仅窗口/百分比口径不同，预期同死。）"""
+    N = len(c)
+    roc = np.full(N, np.nan)
+    for i in range(N):
+        if i >= ROC_N:
+            base = c[i - ROC_N]
+            roc[i] = (c[i] - base) / base * 100.0 if base != 0 else 0.0
+    sig = np.sign(roc)
+    warm = np.isnan(roc) | (np.arange(N) < ROC_N)
+    return np.where(warm, 0.0, sig)
+
+
+def _s_sar(o, h, l, c, atr, ma):
+    """抛物线 SAR 方向状态：close>SAR→多，close<SAR→空。
+    ⚠️ SAR 为递归状态量（依赖全程 EP/AF），--selftest 截断会误报「不一致」——
+    属长记忆递归而非未来函数；L0/L1 本身无未来函数，照常判死。"""
+    N = len(c)
+    if N < 2:
+        return np.zeros(N)
+    sar = np.full(N, np.nan)
+    bull = True
+    af = SAR_AF0
+    ep = h[0]
+    sar[0] = l[0]
+    for i in range(1, N):
+        prev = sar[i - 1]
+        if bull:
+            new_sar = prev + af * (ep - prev)
+            cap = l[i - 1] if i < 2 else min(l[i - 1], l[i - 2])
+            new_sar = min(new_sar, cap)
+            if l[i] < new_sar:            # 翻转为空
+                bull = False
+                new_sar = ep
+                ep = l[i]
+                af = SAR_AF0
+            elif h[i] > ep:
+                ep = h[i]
+                af = min(af + SAR_AF_STEP, SAR_AF_MAX)
+        else:
+            new_sar = prev - af * (prev - ep)
+            cap = h[i - 1] if i < 2 else max(h[i - 1], h[i - 2])
+            new_sar = max(new_sar, cap)
+            if h[i] > new_sar:            # 翻转为多
+                bull = True
+                new_sar = ep
+                ep = h[i]
+                af = SAR_AF0
+            elif l[i] < ep:
+                ep = l[i]
+                af = min(af + SAR_AF_STEP, SAR_AF_MAX)
+        sar[i] = new_sar
+    return np.where(c > sar, 1.0, -1.0)
+
+
 SIGNALS = {
     "retrace_ma13": ("回踩 MA13 + 斜率定方向（= 06 的进场条件，基准锚）", _s_retrace_ma13),
     "cross_ma13":   ("收盘上/下穿 MA13", _s_cross_ma13),
@@ -379,6 +544,12 @@ SIGNALS = {
     "rsi_cross":      ("RSI 穿越阈值（上穿 30 多 / 下穿 70 空）", _s_rsi_cross),
     "rsi_divergence": ("RSI 背离（价格创新极值但 RSI 未同步）", _s_rsi_divergence),
     "boll_meanrev":    ("布林带均值回归（收盘≤下轨多/≥上轨空，BOLL(20,2σ)，= 07 布林带入场）", _s_boll_meanrev),
+    "ha_trend":       ("Heikin-Ashi 趋势方向（HA收盘>HA开盘=多/<为空，递归式 HA_open）", _s_ha_trend),
+    "macd":        ("MACD 金叉/死叉方向（sign(DIF-DEA) 的 hist，= 经典「MACD 买卖点」）", _s_macd),
+    "kdj":         ("KDJ 金叉/死叉方向（sign(K-D)，= 经典 KDJ 买卖点）", _s_kdj),
+    "cci":         ("CCI 突破 ±100 方向（>100 多 / <-100 空，区间=0）", _s_cci),
+    "roc":         ("ROC 动量方向（N=12 收益率符号，与 tsmom_20 同类）", _s_roc),
+    "sar":         ("抛物线 SAR 方向状态（close>SAR 多 / <SAR 空，长记忆递归）", _s_sar),
 }
 
 
@@ -476,17 +647,53 @@ def screen_one(key, sig_name, df, diag=False, stop_mult=None):
     return out
 
 
+def grade(r):
+    """★ 三档分级（2026-10-18 修订，替代原二元生死）
+
+    原二元判定的问题：「毛/成本 < 2.0」被判死，但 (1.0, 2.0) 区间是**正期望**的
+    （净 = 毛 − 成本 > 0），只是薄利。判死的准确语义是「不值得进 full backtest」，
+    不是「无 edge」。所以必须把「真死」和「薄利」分开。
+
+      A 真死    ratio < 1.0         净亏，无 edge            → 归档，禁止复活
+      B 薄利    1.0 <= ratio < 2.0  正期望但薄利              → 候补，不进 full backtest，但不算死
+      C 值得进  ratio >= 2.0        毛 >= 2 倍成本            → 走预注册卡（仍需换干净样本）
+    """
+    rt = r.get("ratio")
+    if rt is None or rt < 1.0:
+        return "A"
+    if rt < 2.0:
+        return "B"
+    return "C"
+
+
 def verdict(rows):
-    """按跑前定死的五条门槛判定（跨品种一致性）。"""
+    """按跑前定死的五条门槛判定（跨品种一致性）+ 三档分级统计。"""
     ok = [r for r in rows if r["n"] >= 30]
     hard = [r for r in ok if (r.get("ratio") or -9) >= 2.0 and r["L1_net"] > 0]
     sig_ok = [r for r in hard if abs(r["L1_t"]) >= 2.0]
     need = math.ceil(len(ok) / 2) if ok else 1
+    g = {"A": 0, "B": 0, "C": 0}
+    for r in ok:
+        g[grade(r)] += 1
+    if len(hard) >= need:
+        vd = "PASS（仅表示值得换干净样本再验，不是 edge 证据）"
+    elif g["B"] > 0:
+        # ★ 有薄利格但不够格进 full backtest —— 不是「死」，是「候补」
+        vd = (f"FAIL→候补（{g['B']} 个薄利格毛/成本∈[1.0,2.0)，"
+              f"正期望但不足以进 full backtest；不算死，记入候补清单）")
+    elif g["C"] > 0:
+        # ⚠️ 2026-10-19 修正：原 else 分支一律写「全部 A 档」，但 C 档格存在时该文字不成立
+        #    （实例：kdj/sar 1440min 有 4/3 个 C 格，却被标成「全部 A 档」）。
+        #    这里只改**文字**，不改任何门槛/档位判定。
+        vd = (f"FAIL（跨品种一致性不足：C 档 {g['C']} 个、A 档 {g['A']} 个，"
+              f"但过硬门槛只 {len(hard)} 个 < 需要 {need} 个）")
+    else:
+        vd = "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
     return {
         "n_sym": len(ok), "need": need,
         "pass_hard": len(hard), "pass_sig": len(sig_ok),
-        "verdict": "PASS（仅表示值得换干净样本再验，不是 edge 证据）"
-                   if len(hard) >= need else "FAIL（判死）",
+        "grade_A": g["A"], "grade_B": g["B"], "grade_C": g["C"],
+        "verdict": vd,
     }
 
 
@@ -574,7 +781,9 @@ def main():
                 continue
             r = screen_one(k, nm, df, diag=a.diag, stop_mult=a.stop)
             rows.append(r)
-            v = "✅" if (r.get("ratio") or -9) >= 2.0 and r["L1_net"] > 0 else "❌"
+            # ★ 三档（2026-10-18）：A 真死 ❌ / B 薄利 ⚠️（不算死）/ C 值得进 ✅
+            _g = grade(r)
+            v = {"A": "❌", "B": "⚠️", "C": "✅"}[_g]
             L.append(f"{nm:<14}{r['name_cn']:<7}{r['n']:>7}{r['per_day']:>7.2f}{r['cost_pts']:>9.2f}"
                      f"{r['L0_gross']:>10.3f}{r['L1_gross']:>10.3f}{r['L1_net']:>10.3f}"
                      f"{(r.get('ratio') or float('nan')):>9.2f}{r['L1_winrate']*100:>7.1f}%"
@@ -586,6 +795,8 @@ def main():
         summary[nm] = {"verdict": vd, "rows": rows}
         L.append(f"{'':14}└─ 样本量够的品种 {vd['n_sym']} 个；过硬门槛 {vd['pass_hard']} 个"
                  f"（需 ≥{vd['need']}）；其中显著 {vd['pass_sig']} 个  ⇒  **{vd['verdict']}**")
+        L.append(f"{'':14}   三档：A 真死(毛/成本<1.0) {vd['grade_A']} 个 ｜ "
+                 f"B 薄利[1.0,2.0) {vd['grade_B']} 个 ｜ C 值得进(≥2.0) {vd['grade_C']} 个")
         L.append("-" * 112)
 
     L.append("")

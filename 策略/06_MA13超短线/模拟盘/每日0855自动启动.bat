@@ -49,14 +49,15 @@ if errorlevel 1 (
 
 echo ============================================================
 echo  MA13 SIM auto start - REAL ORDERS on TqKq cloud account
-echo  symbols: JM + M + JD + P + SR   (5 legs, 2026-10-08 reselected)
+echo  symbols: auto = workbench.json selected (card-C two-stage pick)
 echo  guards : DD fuse 20pct / heartbeat 300s / double-start lock
 echo  stop   : close this window or Ctrl+C
 echo ============================================================
 REM ★ 2026-10-08fix: was calling sim_watchdog.py which does NOT exist here.
 REMThe real watchdog is ma13_watchdog_main.py (same file ma13_start_now.cmd
 REM   uses). That typo meant the 08:55 auto-start task silently did nothing.
-"%PY%" -u "%~dp0ma13_watchdog_main.py" --symbols JM,M,JD,P,SR --trade
+REM * 2026-10-18: --symbols auto -> watchdog reads workbench.json selected.
+"%PY%" -u "%~dp0ma13_watchdog_main.py" --symbols auto --trade
 
 echo.
 echo [EXIT] simulator stopped.

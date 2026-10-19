@@ -20,17 +20,10 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM ---- 5 legs, picked 2026-10-08 by correlation over IS2016-2019 ----
-REM   JM must stay (user). JM + M + JD + P + SR has the LOWEST worst-pair
-REM   |rho| = 0.292 of all 70 possible combos (criterion = min max-pair,
-REM   NOT min average: what actually hurts live is one pair moving together).
-REM   Full matrix: _收纳/输出_20261008/选5腿结论_20261008.md
-REM     (2026-10-08 the reports were moved into _收纳/ by the dir cleanup,
-REM      so the older path 工具/_输出/... no longer exists)
-REM   ⚠️ HAND_MAX=8 caps every leg, so RISK_PCT=1% never binds and the 5
-REM      legs are NOT equal-risk (JM ~35.6%/yr vs SR ~13.5%/yr). Known, not fixed.
-echo [START] MA13 simulator launching (JM + M + JD + P + SR, TqKq cloud sim)...
-"%PY%" -u "%~dp0ma13_watchdog_main.py" --symbols JM,M,JD,P,SR --trade
+REM * 2026-10-18: symbols auto = workbench.json selected (card-C pick).
+REM   Change symbols via: run_workbench.py --auto-select --write  (no 5-place edit)
+echo [START] MA13 simulator launching (workbench selected, TqKq cloud sim)...
+"%PY%" -u "%~dp0ma13_watchdog_main.py" --symbols auto --trade
 
 echo.
 echo [EXIT] simulator stopped.

@@ -5,7 +5,10 @@
       "need": 5,
       "pass_hard": 3,
       "pass_sig": 1,
-      "verdict": "FAIL（判死）"
+      "grade_A": 6,
+      "grade_B": 0,
+      "grade_C": 3,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
     },
     "rows": [
       {
