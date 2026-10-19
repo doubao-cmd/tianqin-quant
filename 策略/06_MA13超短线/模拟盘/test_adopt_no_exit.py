@@ -69,9 +69,13 @@ def test_confirmation_checks_position_delta():
     src = open(os.path.join(_HERE, "ma13_live_multi.py"), encoding="utf-8").read()
     assert "expect_net" in src, "pending_fill 没有记录目标净仓 ⇒ 无法核对成交"
     assert "filled = " in src, "没有 filled 判定"
-    # expect_net 必须在三处下单点都被写入
+    # expect_net 必须被写入。★ 2026-10-19 改：三处平仓已归并到 _send_close
+    #   （上期所平今拆单要用同一套记账），所以现在只剩 2 处字面量：
+    #   _send_close（覆盖盘中扫损/收盘出场/换月之外的平仓）+ 开仓。
+    #   平仓侧覆盖度由 test_close_offset.py 的 test_send_close_* 行为测试保证。
     n_expect = src.count('"expect_net":')
-    assert n_expect >= 3, f"expect_net 只写了 {n_expect} 处（应为 3：盘中扫损/出场/开仓）"
+    assert n_expect >= 2, f"expect_net 只写了 {n_expect} 处（应为 2：_send_close / 开仓）"
+    assert src.count("_send_close(") >= 3, "平仓未统一走 _send_close ⇒ 拆单记账会漏"
     # confirmed 必须被 filled 门控
     i_filled = src.find("if not filled:")
     i_confirmed = src.find("_L.confirmed(")

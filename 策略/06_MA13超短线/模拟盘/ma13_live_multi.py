@@ -460,7 +460,14 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
             #   直接迭代一个正在被追加的列表不安全。
             for s in list(specs):
                 sh = shared[s["key"]]
-                s["rec"].heartbeat(sh["dt"], sh["price"], sh["pos"], sh["tgt"])
+                # ★ 2026-10-19 修（P0，实测）：「持仓」取 s["pos"]（真相源），不取 sh["pos"]（缓存）。
+                #   那个缓存只在「有新 bar 且走完流程」时 sh.update（见文件末尾），
+                #   而 RECOVER 接管是**不依赖新 bar** 的 —— 10-19 14:55:30 云端接管把
+                #   s["pos"] 改回 -6，缓存仍停在 0，之后收盘再无新 bar ⇒ 心跳 5 分钟一行
+                #   全写 0，与 EQUITY 行的 -6 打架，看起来像"仓位丢了"。
+                #   s["pos"] 是普通 int，跨线程读安全（本线程铁律只禁碰 tqsdk 对象）。
+                s["rec"].heartbeat(sh["dt"], sh["price"],
+                                   int(s.get("pos", sh["pos"])), sh["tgt"])
 
     threading.Thread(target=_hb_loop, daemon=True, name="heartbeat").start()
 
@@ -649,14 +656,15 @@ def _save_underlying(record_dir, key, sym):
                        "update": time.strftime("%Y-%m-%d %H:%M:%S")}, indent=None)
 
 
-def _ops_sent(s, symbol, dir_cn, offset_cn, hands, ref_price, bar_time):
+def _ops_sent(s, symbol, dir_cn, offset_cn, hands, ref_price, bar_time, key_suffix=""):
     """订单**意图**落三层账（ORDER_SENT）；返回幂等键，供成交回填时配对。
-    永不抛异常（运维记账不允许打断交易）。"""
+    永不抛异常（运维记账不允许打断交易）。
+    key_suffix：上期所平仓拆成今/昨两张单时用于区分幂等键，否则两张单同键会串号。"""
     try:
         L = s.get("ledger")
         if L is None:
             return None
-        key = f"{symbol}|{bar_time}|{dir_cn}{offset_cn}|{int(hands)}"
+        key = f"{symbol}|{bar_time}|{dir_cn}{offset_cn}|{int(hands)}{key_suffix}"
         L.sent(key, symbol, dir_cn, offset_cn, hands, ref_price)
         return key
     except Exception:
@@ -895,10 +903,25 @@ def _cloud_fill_stats(api, s):
             #   expect_net 是下单时按「当前净仓 + 带符号手数」算出的目标净仓。
             expect = p.get("expect_net")
             filled = (expect is None) or (int(net) == int(expect))
+            # ★★ 2026-10-19 新增：未成交时必须**带上委托的真实状态**。
+            #   原实现只写"持仓未变化"，交易所的拒单文本被彻底丢掉 ——
+            #   10-19 FU 平今废单（offset 用了 CLOSE，昨仓为 0）只能靠横向对比
+            #   + 读 tqsdk 文档才定位出来，代价是一整天的仓位裸奔。
+            _ord = p.get("order")
+            _st = str(getattr(_ord, "status", "") or "") if _ord is not None else ""
+            _msg = str(getattr(_ord, "last_msg", "") or "") if _ord is not None else ""
+            _dead = bool(getattr(_ord, "is_dead", False)) if _ord is not None else False
+            _off = str(p.get("offset") or "")
+            # 判定为「拒单/废单」：委托已终结(is_dead) 且带回拒单文本
+            # （普通"未撮合/休市排队"的单 is_dead=False，仍记 ORDER_UNCONFIRMED）
+            _rej = bool(_dead and _msg)
             if not filled:
                 rec.event("FILLX",
                           f"{p['dir']}{p['side']} {p['hands']}手 决策价={ref:.2f} "
-                          f"**持仓未变化（云端净仓 {net}，应为 {expect}）⇒ 判为未成交**")
+                          f"**持仓未变化（云端净仓 {net}，应为 {expect}）⇒ "
+                          f"{'委托被拒/废单' if _rej else '判为未成交'}**"
+                          f" | offset={_off or '?'} 状态={_st or '?'} "
+                          f"回报={_msg or '无'}")
             elif avg and ref > 0:
                 # 滑点 = 决策价 vs 云端成交均价（换算成元，正=更不利方向）
                 # 乘数从 config_symbols 取（s 里没存 mult，它只活在 _hand_of 的闭包里）
@@ -925,8 +948,13 @@ def _cloud_fill_stats(api, s):
                 _k = p.get("key")
                 if _L is not None and _k:
                     if not filled:
-                        _L.unconfirmed(
-                            _k, f"持仓未变化（云端净仓 {net}，应为 {expect}）⇒ 未成交")
+                        if _rej:
+                            # 有明确拒单文本 ⇒ 单独一类，便于 zombies() 与人工核对区分
+                            _L.rejected(
+                                _k, f"offset={_off or '?'} 状态={_st} 回报={_msg}")
+                        else:
+                            _L.unconfirmed(
+                                _k, f"持仓未变化（云端净仓 {net}，应为 {expect}）⇒ 未成交")
                     elif avg and ref > 0:
                         _L.confirmed(_k, avg, p["hands"])
                     else:
@@ -986,16 +1014,63 @@ def _ref_px(api, s, symbol):
     return None
 
 
+# ★★ 上期所/上期能源**分平今平昨**（2026-10-19 实盘事故）
+#   tqsdk/api.py:1201 官方原文：
+#     "offset: OPEN / CLOSE / CLOSETODAY (上期所和上期能源分平今/平昨,
+#      平今用 CLOSETODAY, 平昨用 CLOSE; 其他交易所直接用 CLOSE)"
+#   事故：FU 10:44 当天开空 6 手（pos_short_today=6, his=0），三处平仓一律发
+#   "CLOSE" = 报"平昨 6 手"、昨仓为 0 ⇒ 交易所**废单**。而 insert_order 对废单
+#   不抛异常（异步回报），代码照常写 FILL ⇒ 14:04/14:55 两次平仓全落空，
+#   仓位裸奔到收盘，台账只能写一句含糊的"持仓未变化⇒未成交"。
+#   新池 S2 于 10-19 首次引入上期所品种，这条路径历史台账里从未走过。
+CLOSE_SPLIT_EXCH = {"SHFE", "INE"}
+
+
+def _close_plan(api, symbol, direction, volume):
+    """平仓拆单计划 [(offset, vol), ...]。
+
+    非上期所/能源 ⇒ [("CLOSE", volume)]，行为与改动前**逐字相同**。
+    上期所/能源 ⇒ 按云端「今仓/昨仓」拆：先 CLOSETODAY（今仓），余量才 CLOSE（昨仓）。
+    读不到持仓时（查询滞后）先按"当日开当日平"试 CLOSETODAY，下一拍会再判 ——
+    **绝不同时发平今+平昨**，那会稳定制造一张废单。
+    """
+    v_all = int(volume)
+    if v_all <= 0:
+        return []
+    IF = str(symbol).split(".")[0].upper()
+    if IF not in CLOSE_SPLIT_EXCH:
+        return [("CLOSE", v_all)]
+    try:
+        p = api.get_position(symbol)
+        if str(direction).upper() == "BUY":        # 平空
+            t, h = int(p.pos_short_today or 0), int(p.pos_short_his or 0)
+        else:                                      # 平多
+            t, h = int(p.pos_long_today or 0), int(p.pos_long_his or 0)
+    except Exception:
+        t, h = 0, 0
+    if t + h <= 0:
+        return [("CLOSETODAY", v_all)]
+    out, v_today = [], min(v_all, t)
+    if v_today > 0:
+        out.append(("CLOSETODAY", v_today))
+    if v_all - v_today > 0:
+        out.append(("CLOSE", v_all - v_today))
+    return out
+
+
 def _order(api, s, symbol, direction, offset, volume, ref_price=None):
-    """统一下单入口。返回 (ok, note)。
+    """统一下单入口。返回 (ok, note, order)。
 
     ok=False 表示**没有发出任何委托**（缺参考价/一跳），调用方必须跳过记账，
     下拍再试 —— 绝不能像以前那样先写 FILL 再发现单据根本没到交易所。
+    order = tqsdk 的 Order 对象（2026-10-19 新增）。原实现把它直接丢弃，
+    于是废单只能靠 30 秒后"持仓没变"倒推成一句"未成交"，**原因不可见**；
+    现在挂进 pending_fill，确认阶段读 status / last_msg / is_dead 落台账。
     """
     exch = str(symbol).split(".")[0].upper()
     if exch not in NO_MARKET_EXCH:
-        api.insert_order(symbol, direction, offset, volume)      # 原行为，零改动
-        return True, "market"
+        _o = api.insert_order(symbol, direction, offset, volume)      # 原行为，零改动
+        return True, "market", _o
     tick = _tick_of(s.get("key") if isinstance(s, dict) else None)
     px = ref_price
     if px is None:
@@ -1007,11 +1082,42 @@ def _order(api, s, symbol, direction, offset, volume, ref_price=None):
     except Exception:
         px = None
     if px is None or tick <= 0:
-        return False, f"{exch} 需限价单但参考价/一跳缺失（px={px}, tick={tick}）"
+        return False, f"{exch} 需限价单但参考价/一跳缺失（px={px}, tick={tick}）", None
     sign = 1 if str(direction).upper() == "BUY" else -1
     limit = round(px + sign * LIMIT_TICKS * tick, _px_dec(tick))
-    api.insert_order(symbol, direction, offset, volume, limit_price=limit)
-    return True, f"limit={limit}"
+    _o = api.insert_order(symbol, direction, offset, volume, limit_price=limit)
+    return True, f"limit={limit}", _o
+
+
+def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_before):
+    """发平仓单：上期所/能源按今昨仓自动拆成 1~2 张，其余交易所仍是 1 张 CLOSE。
+
+    记账口径与改动前一致：每张单各写 FILL（=下单意图）/ ORDER_SENT / pending_fill。
+    真实成交仍由 FILLX 核对云端持仓后确认，**FILL 不是成交凭证**。
+    """
+    plan = _close_plan(api, symbol, side, hands)
+    if not plan:
+        return False, f"平仓手数非法（hands={hands}）", []
+    rec = s["rec"]
+    sign = 1 if int(pos_before) > 0 else -1      # 平多：净仓减少；平空：净仓增加
+    cum, sent = 0, []
+    for i, (off, vol) in enumerate(plan):
+        ok, note, o = _order(api, s, symbol, side, off, vol, ref_price=ref_price)
+        if not ok:
+            return False, note, sent
+        s["last_order_ts"] = time.time()          # 等撮合窗口，防自平仓被误接管
+        cum += int(vol)
+        expect = int(pos_before) - sign * cum     # 每张单各自的目标净仓
+        suffix = "" if len(plan) == 1 else f"#{i + 1}{'今' if off == 'CLOSETODAY' else '昨'}"
+        rec.fill(dir_cn, "平", vol, float(ref_price), symbol)
+        _k = _ops_sent(s, symbol, dir_cn, "平", vol, float(ref_price), bar_time,
+                       key_suffix=suffix)
+        s.setdefault("pending_fill", []).append(
+            {"ts": s["last_order_ts"], "side": "平", "dir": dir_cn,
+             "hands": int(vol), "ref_price": float(ref_price), "key": _k,
+             "expect_net": expect, "order": o, "offset": off})
+        sent.append((off, int(vol)))
+    return True, ("split" if len(plan) > 1 else plan[0][0]), sent
 
 
 def _sync_cloud_pos(api, s, allow_trade, sig=None):
@@ -1104,11 +1210,13 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None):
             # 平多=SELL / 平空=BUY（与 _process 出场方向一致）
             direction = "SELL" if old_pos > 0 else "BUY"
             if allow_trade:
-                _ok_o, _note_o = _order(api, s, held_sym, direction, "CLOSE", abs(old_pos))
-                if not _ok_o:
-                    # 拿不到参考价 ⇒ 本拍不报单，下拍再试（不能既报不出去又改本地状态）
-                    rec.event("ORDERERR", f"{held_sym} 换月平仓未报出：{_note_o}")
-                    return
+                # 2026-10-19：旧合约若是**当日开**的（上期所/能源），换月移交同样要平今
+                for _off, _vol in _close_plan(api, held_sym, direction, abs(old_pos)):
+                    _ok_o, _note_o, _o = _order(api, s, held_sym, direction, _off, _vol)
+                    if not _ok_o:
+                        # 拿不到参考价 ⇒ 本拍不报单，下拍再试（不能既报不出去又改本地状态）
+                        rec.event("ORDERERR", f"{held_sym} 换月平仓未报出：{_note_o}")
+                        return
                 s["last_order_ts"] = time.time()    # 等撮合窗口，防自平仓被误接管
                 s["rollover_pending"] = held_sym    # 防重：归零前不再报
                 s["rollover_pending_hands"] = abs(old_pos)
@@ -1252,22 +1360,15 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                 _dir = "多" if s["pos"] > 0 else "空"
                 _hands = abs(s["pos"])
                 if allow_trade:
-                    _ok_o, _note_o = _order(api, s, q.underlying_symbol, _side, "CLOSE",
-                                            _hands, ref_price=float(_lp_s))
+                    # 统一走 _send_close：上期所/能源按今昨仓拆单（2026-10-19）
+                    _ok_o, _note_o, _sent = _send_close(
+                        api, s, q.underlying_symbol, _side, _dir, _hands,
+                        float(_lp_s), q.datetime, s["pos"])
                     if not _ok_o:
                         rec.event("ORDERERR", f"盘中扫损平仓未报出：{_note_o}")
                         s.setdefault("_ordererr_n", 0)
                         s["_ordererr_n"] += 1
                         return            # 止损仍在，下 tick 继续判触价
-                    s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
-                    rec.fill(_dir, "平", _hands, float(_lp_s), q.underlying_symbol)
-                    _k = _ops_sent(s, q.underlying_symbol, _dir, "平", _hands,
-                                  float(_lp_s), q.datetime)
-                    s.setdefault("pending_fill", []).append(
-                        {"ts": s["last_order_ts"], "side": "平", "dir": _dir,
-                         "hands": _hands, "ref_price": float(_lp_s), "key": _k,
-                         # ★ 目标净仓：平掉 s["pos"] 全部 ⇒ 归零
-                         "expect_net": 0})
                 rec.stoploss(_dir, s["stop"], float(_lp_s),
                              "盘中触价扫损(平台止损单行为,≈±1跳)")
                 print(f"[{s['name']}][STOP] 盘中扫损 {_dir} {_hands}手 @≈{_lp_s:.1f} "
@@ -1317,19 +1418,13 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
             _dir = "多" if pos > 0 else "空"
             _side = "SELL" if pos > 0 else "BUY"
             if allow_trade:
-                _ok_o, _note_o = _order(api, s, q.underlying_symbol, _side, "CLOSE",
-                                        abs(pos), ref_price=float(_lp))
+                # 统一走 _send_close：上期所/能源按今昨仓拆单（2026-10-19）
+                _ok_o, _note_o, _sent = _send_close(
+                    api, s, q.underlying_symbol, _side, _dir, abs(pos),
+                    float(_lp), q.datetime, pos)
                 if not _ok_o:
                     rec.event("ORDERERR", f"收盘出场平仓未报出：{_note_o}")
                     return                # 持仓与止损保持不变，下一根再判
-                s["last_order_ts"] = time.time()      # 等撮合窗口，防自开仓被误接管
-                rec.fill(_dir, "平", abs(pos), float(_lp), q.underlying_symbol)
-                _k = _ops_sent(s, q.underlying_symbol, _dir, "平", abs(pos),
-                               float(_lp), q.datetime)
-                s.setdefault("pending_fill", []).append(
-                    {"ts": s["last_order_ts"], "side": "平", "dir": _dir,
-                     "hands": abs(pos), "ref_price": float(_lp), "key": _k,
-                     "expect_net": 0})          # ★ 全平 ⇒ 目标净仓归零
             rec.stoploss(_dir, s["stop"], c,
                          "止损触发" if why == "stop" else "时间止损(MAX_HOLD)")
             print(f"[{s['name']}][EXIT] {_dir} {abs(pos)}手 "
@@ -1371,8 +1466,8 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                 print(f"[{s['name']}][RISKBLOCK] {_why}", flush=True)
                 return
             _side_o = "BUY" if dir_trend > 0 else "SELL"
-            _ok_o, _note_o = _order(api, s, q.underlying_symbol, _side_o, "OPEN", hand,
-                                    ref_price=(float(_lp) if _lp and not math.isnan(_lp) else None))
+            _ok_o, _note_o, _ord_o = _order(api, s, q.underlying_symbol, _side_o, "OPEN", hand,
+                                            ref_price=(float(_lp) if _lp and not math.isnan(_lp) else None))
             if not _ok_o:
                 rec.event("ORDERERR", f"开仓未报出 {dir_cn} {hand}手：{_note_o}")
                 print(f"[{s['name']}][ORDERERR] {_note_o}", flush=True)
@@ -1388,7 +1483,9 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                 {"ts": s["last_order_ts"], "side": "开", "dir": dir_cn,
                  "hands": hand, "ref_price": float(_lp), "key": _k,
                  # ★ 开仓目标净仓 = 方向 × 手数（开仓前必为空仓，s["pos"]==0 才走到这里）
-                 "expect_net": (hand if dir_trend > 0 else -hand)})
+                 "expect_net": (hand if dir_trend > 0 else -hand),
+                 # 订单对象：确认阶段读 status/last_msg 落「废单原因」（2026-10-19）
+                 "order": _ord_o, "offset": "OPEN"})
             # 已修复单品种版 led 未定义的 NameError；账本对接见 运营SOP 欠账#6
         print(f"[{s['name']}][{'OPEN' if allow_trade else 'SIGNAL'}] {dir_cn} {hand}手 "
               f"@≈{c:.1f} 止损≈{stop_new:.1f} ATR={a:.2f}", flush=True)
