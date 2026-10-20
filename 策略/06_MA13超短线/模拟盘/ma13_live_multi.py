@@ -34,6 +34,8 @@ from tqsdk import TqApi, TqSim, TqKq, TqAuth
 from lib.engine import _LiveRecorder
 from lib.ops import (OrderLedger, RiskGate, atomic_write_json, read_json,
                      leg_prefix, find_orphan)
+# ★ 2026-10-20 新增：撤单重报 / 撤单预算 / 反手同拍净仓口径（纯逻辑，可离线单测）
+from lib import live_resend as _rs
 import config_account
 import config_symbols
 
@@ -169,6 +171,27 @@ SYNC_CLOUD = True        # 是否以云端持仓为准同步（关掉=退回旧�
 #   误判成外部遗留持仓而假接管。实测撮合延迟 < 2s，取 30s 留足余量
 #   （宁可晚 30 秒才对账，也不能错一次止损线）。
 FIX_WAIT_SEC = 30
+
+# ---- ★★ P0-1 撤单重报（2026-10-20 新增，见 交接\06模拟盘_风控增强任务书_20261019.md）----
+#   缺口：原实现只在 FIX_WAIT_SEC 后判一次「成交/未成交」，**从不撤单**。
+#   两种后果：① 该平没平掉 ⇒ 裸奔；② 让价 2 跳不够 ⇒ 单子永久挂着占额度。
+#   做法：未成交超 RESEND_WAIT_SEC ⇒ 撤单 → 按未成交量加价重报 **1 次** → 日撤单计数。
+#   红线（任务书 §六-1）：必须节流，不得触发交易所报撤单限制。
+#     tqsdk 内置 RiskManager 只限**每秒**操作数，**不管日上限** ⇒ 日计数自建（lib/live_resend）。
+#   红线（任务书 §六-2）：撤单只为补救成交，**绝不改变出场点位**（不碰提前出场家族）。
+RESEND_WAIT_SEC = _rs.RESEND_WAIT_SEC          # 45s（须 > FIX_WAIT_SEC）
+MAX_RESEND_PER_ORDER = _rs.MAX_RESEND_PER_ORDER  # 1 次
+_RS_BUDGET = None
+
+
+def _rs_budget(record_dir):
+    """进程级撤单预算单例（**跨腿共享**：交易所上限是账户级的，不是每腿一份）。"""
+    global _RS_BUDGET
+    if _RS_BUDGET is None:
+        p = (os.path.join(record_dir, "撤单预算_%s.json" % _rs.trading_day())
+             if record_dir else None)
+        _RS_BUDGET = _rs.CancelBudget(p)
+    return _RS_BUDGET
 
 # ★ 2026-10-18：默认列表同步为当前卡C 选品种结果（MA,JM,EB,FU,M,EG）。
 #   ⚠️ 唯一真相源 = 工作台/workbench.json 的 selected；正式启动一律走
@@ -889,6 +912,9 @@ def _cloud_fill_stats(api, s):
     pend = s.get("pending_fill")
     if pend:
         now = time.time()
+        # 行情是否还在走（休市/断流时不撤单不重报，避免白烧撤单额度）
+        _mkt_live = not _rs.quote_stale(s.get("q"), now)
+        _bg = _rs_budget(s.get("record_dir"))
         keep = []
         for p in pend:
             if now - float(p["ts"]) < FIX_WAIT_SEC:
@@ -901,7 +927,12 @@ def _cloud_fill_stats(api, s):
             #   实测：鸡蛋 22:02:34 报平仓单（休市，未成交），22:03:05 就被判 CONFIRMED，
             #   而云端持仓始终 -8 ⇒ 台账写了假的平仓，本地 pos 归零、状态与云端脱钩。
             #   expect_net 是下单时按「当前净仓 + 带符号手数」算出的目标净仓。
-            expect = p.get("expect_net")
+            # ★★ 2026-10-20 修（P1-1，今日实测 4/4）：反手同拍「平旧+开新」时，
+            #   云端净仓是**整批**的结果（0 或 ±8），单张平仓单的 expect_net=0 必然对不上
+            #   ⇒ 稳定误报「持仓未变化⇒判为未成交」（豆粕 09:35/14:50、沥青 09:45、eg 13:30）。
+            #   改为与**同批最后一张单**的累计目标比，见 lib/live_resend.batch_expect。
+            #   对"平腿真没成交"仍然有效：此时净仓会变成 ±16 ≠ ±8，照样报未成交。
+            expect = _rs.batch_expect(p, pend)
             filled = (expect is None) or (int(net) == int(expect))
             # ★★ 2026-10-19 新增：未成交时必须**带上委托的真实状态**。
             #   原实现只写"持仓未变化"，交易所的拒单文本被彻底丢掉 ——
@@ -915,6 +946,69 @@ def _cloud_fill_stats(api, s):
             # 判定为「拒单/废单」：委托已终结(is_dead) 且带回拒单文本
             # （普通"未撮合/休市排队"的单 is_dead=False，仍记 ORDER_UNCONFIRMED）
             _rej = bool(_dead and _msg)
+            # ---- ★★ P0-1 撤单重报（2026-10-20）：未成交先按处置策略走，------
+            #   不允许"可能还挂着"就写一句未成交了事（那正是裸奔的来源）。
+            #   giveup 才落到下面的原记账路径（废单/已重报过/额度用尽/休市）。
+            if not filled:
+                _act, _note = _rs.decide(p, now, _bg, market_live=_mkt_live)
+                if _act == "wait":
+                    keep.append(p)
+                    continue
+                if _act == "cancel":
+                    try:
+                        api.cancel_order(_ord)          # 下次 wait_update 生效
+                        _used = _bg.add(str(p.get("symbol") or "").split(".")[0])
+                        p["rs"]["cancel_ts"] = now
+                        rec.event("RSCANCEL",
+                                  f"{p['dir']}{p['side']} {p['hands']}手 {p.get('symbol') or '?'} "
+                                  f"撤单重报：{_note} | 今日该所撤单 {_used} 笔")
+                        print(f"[{s['name']}][RSCANCEL] {_note}", flush=True)
+                    except Exception as _e:             # noqa: BLE001
+                        # ★ 撤单被风控拒会抛 TqRiskRuleError（risk_manager.py:49）；
+                        #   这里**绝不能**让异常冒泡——10-19 市价单异常就是靠异常把连接
+                        #   炸掉、每 10 分钟重连一次。撤不掉就放弃，交原路径记未成交。
+                        rec.event("RSCANCEL",
+                                  f"{p['dir']}{p['side']} {p['hands']}手 撤单失败："
+                                  f"{type(_e).__name__}: {_e}")
+                        print(f"[{s['name']}][RSCANCEL] 撤单失败 {_e}", flush=True)
+                        _act = "giveup"
+                    if _act != "giveup":
+                        keep.append(p)                  # 下拍看撤单是否生效
+                        continue
+                elif _act == "resend":
+                    _n = int(getattr(_ord, "volume_left", 0) or 0)
+                    _sym2 = str(p.get("symbol") or "")
+                    _d2 = (("BUY" if p["dir"] == "多" else "SELL") if p["side"] == "开"
+                           else ("SELL" if p["dir"] == "多" else "BUY"))
+                    _off2 = str(p.get("offset") or "CLOSE")
+                    _bt = f"{p.get('bar_time') or ''}#re{int(now)}"
+                    try:
+                        _ok2, _note2, _o2 = _order(api, s, _sym2, _d2, _off2, _n)
+                    except Exception as _e:             # noqa: BLE001
+                        _ok2, _note2, _o2 = False, f"{type(_e).__name__}: {_e}", None
+                    if _ok2 and _n > 0:
+                        s["last_order_ts"] = time.time()
+                        _k2 = _ops_sent(s, _sym2, p["dir"], p["side"], _n,
+                                        float(p.get("ref_price") or 0), _bt,
+                                        key_suffix="#re")
+                        # ★ 不再写 FILL 行：FILL 是"下单意图"统计，重报同一笔会虚增成交量
+                        keep.append({"ts": s["last_order_ts"], "side": p["side"],
+                                     "dir": p["dir"], "hands": _n,
+                                     "ref_price": float(p.get("ref_price") or 0),
+                                     "key": _k2, "expect_net": _rs.resend_target(p, _n),
+                                     "order": _o2, "offset": _off2,
+                                     "symbol": _sym2, "bar_time": _bt,
+                                     "rs": {"done": True}})   # 只重报一次
+                        rec.event("RSEND",
+                                  f"{p['dir']}{p['side']} {_n}手 {_sym2} 重报 "
+                                  f"({_note2}) | 原委托 {p.get('key') or '?'} | {_note}")
+                        print(f"[{s['name']}][RSEND] {p['dir']}{p['side']} {_n}手 "
+                              f"{_sym2} {_note2}", flush=True)
+                    else:
+                        rec.event("RSEND", f"{p['dir']}{p['side']} {_n}手 {_sym2} "
+                                           f"重报未报出：{_note2}")
+                    # 原本单已终结（撤成功），无论重报是否成功都不再保留
+                    continue
             if not filled:
                 rec.event("FILLX",
                           f"{p['dir']}{p['side']} {p['hands']}手 决策价={ref:.2f} "
@@ -1115,7 +1209,9 @@ def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_be
         s.setdefault("pending_fill", []).append(
             {"ts": s["last_order_ts"], "side": "平", "dir": dir_cn,
              "hands": int(vol), "ref_price": float(ref_price), "key": _k,
-             "expect_net": expect, "order": o, "offset": off})
+             "expect_net": expect, "order": o, "offset": off,
+             # ★ 2026-10-20 撤单重报需要：合约（撤/重报都要按合约+交易所）与 bar_time（重报单的幂等键）
+             "symbol": symbol, "bar_time": bar_time})
         sent.append((off, int(vol)))
     return True, ("split" if len(plan) > 1 else plan[0][0]), sent
 
@@ -1485,7 +1581,9 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                  # ★ 开仓目标净仓 = 方向 × 手数（开仓前必为空仓，s["pos"]==0 才走到这里）
                  "expect_net": (hand if dir_trend > 0 else -hand),
                  # 订单对象：确认阶段读 status/last_msg 落「废单原因」（2026-10-19）
-                 "order": _ord_o, "offset": "OPEN"})
+                 "order": _ord_o, "offset": "OPEN",
+                 # ★ 2026-10-20 撤单重报所需（见 _send_close 同名注释）
+                 "symbol": q.underlying_symbol, "bar_time": q.datetime})
             # 已修复单品种版 led 未定义的 NameError；账本对接见 运营SOP 欠账#6
         print(f"[{s['name']}][{'OPEN' if allow_trade else 'SIGNAL'}] {dir_cn} {hand}手 "
               f"@≈{c:.1f} 止损≈{stop_new:.1f} ATR={a:.2f}", flush=True)
