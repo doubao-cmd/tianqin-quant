@@ -207,6 +207,9 @@ def connect(db_path=None) -> sqlite3.Connection:
     conn = sqlite3.connect(str(p))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    # ★ 2026-10-20：并发写（回填跑着、日更也想跑）时默认只等 5s 就抛 "database is locked"。
+    #   单批写入是毫秒级，等 30s 足够排上队；抛错会让那一整天被记成失败，属于假失败。
+    conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
     _migrate(conn)
