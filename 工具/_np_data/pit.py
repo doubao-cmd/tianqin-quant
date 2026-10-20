@@ -160,6 +160,11 @@ CREATE TABLE IF NOT EXISTS np_data (
     published_at TEXT    NOT NULL,
     available_at TEXT    NOT NULL,
     margin_sec   INTEGER NOT NULL,
+    -- 这个 published_at 是「实测出来的」还是「按规则假设的」——审计时必须能查。
+    -- 'measured' = probe_sources.py --watch 打出的 first_seen_at（有证据）
+    -- 'rule'     = 按交易所惯例填的保守值（无实测证据，允许但必须可见）
+    -- 'manual'   = 人工指定（需在 note/文档里写理由）
+    published_src TEXT   NOT NULL DEFAULT 'rule',
     value        REAL,
     revision     INTEGER NOT NULL DEFAULT 0,
     raw_url      TEXT    NOT NULL DEFAULT '',
@@ -204,22 +209,37 @@ def connect(db_path=None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     conn.executescript(_SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn) -> None:
+    """轻量迁移：老库缺列就补。只加列不改列，保证已写入的数据不动。"""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(np_data)")}
+    if "published_src" not in have:
+        conn.execute("ALTER TABLE np_data ADD COLUMN published_src TEXT NOT NULL DEFAULT 'rule'")
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
 # 行校验（写入口的结构断言）
 # ---------------------------------------------------------------------------
 _REQUIRED = ("source", "symbol", "metric", "period_start", "period_end", "published_at")
+_PUBLISHED_SRC = {"measured", "rule", "manual"}
 
 
 def make_row(source, symbol, metric, period_start, period_end, published_at, value,
              contract="", revision=0, raw_url="", margin_sec=None,
-             available_at=None, fetched_at=None) -> dict:
+             available_at=None, fetched_at=None, published_src="rule") -> dict:
     """构造一条规范化的记录（时间和 available_at 都算好）。
 
     `available_at` 一般不要传；传了也必须 >= published_at，否则报错。
+    `published_src` 必须坦白公布时刻的来源：measure / rule / manual（见 _SCHEMA 注释）。
     """
+    if published_src not in _PUBLISHED_SRC:
+        raise ValueError(
+            f"published_src 只能是 {sorted(_PUBLISHED_SRC)}：{published_src!r}\n"
+            f"  不知道这个时刻是怎么来的，就没法判断这条数据能不能用于回测。")
     pub = norm_dt(published_at, "published_at")
     ps = norm_date(period_start, "period_start")
     pe = norm_date(period_end, "period_end")
@@ -248,6 +268,7 @@ def make_row(source, symbol, metric, period_start, period_end, published_at, val
         "published_at": pub,
         "available_at": avail,
         "margin_sec": margin_for(source) if margin_sec is None else int(margin_sec),
+        "published_src": published_src,
         "value": value,
         "revision": int(revision),
         "raw_url": str(raw_url or ""),
@@ -276,6 +297,7 @@ def validate(row: dict) -> dict:
         contract=r.get("contract", ""), revision=r.get("revision", 0),
         raw_url=r.get("raw_url", ""), margin_sec=r.get("margin_sec"),
         available_at=r.get("available_at"), fetched_at=r.get("fetched_at"),
+        published_src=r.get("published_src", "rule"),
     )
 
     if fixed["period_end"] < fixed["period_start"]:
@@ -380,7 +402,7 @@ def write_records(rows, db_path=None, on_conflict: str = "raise") -> dict:
 # 查询：★ as_of 必填
 # ---------------------------------------------------------------------------
 _SELECT_COLS = ("source, symbol, contract, metric, period_start, period_end, "
-                "published_at, available_at, margin_sec, value, revision, raw_url")
+                "published_at, available_at, margin_sec, published_src, value, revision, raw_url")
 
 
 def query_available(as_of, source=None, symbol=None, contract=None, metric=None,

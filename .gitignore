@@ -202,6 +202,11 @@ HTML效果参考手册.html
 工具/_np_data/_raw/
 # 新鲜度标记每次运行都变，属运行状态不属源码
 工具/_np_data/_last_update.json
+# 回填的运行状态：进度 json / 失败清单 / 日志（都是"跑一次就变"，不是结论）
+工具/_np_data/_backfill_progress_*.json
+工具/_np_data/_BACKFILL_FAILED_*.txt
+工具/_np_data/_backfill_*.log
+工具/_np_data/_FAILED_*.txt
 #
 # ⑧ 工具/复盘（2026-10-19 新增）—— 源码入库，构建产物/缓存/临时脚本不入库
 #    复盘终端.html 与 dist/ 都是 build_static.py 的产物，可重建；_缓存 是 parquet 行情缓存。
