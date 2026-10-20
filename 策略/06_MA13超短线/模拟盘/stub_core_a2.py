@@ -10,10 +10,12 @@ stub_core_a2.py —— 看门狗 A2 验收专用「假核心」（测试夹具�
 调用方式与真核心一致：  python stub_core_a2.py --symbols FU,BU --trade
 行为由环境变量 STUB_CFG 指向的 JSON 决定：
   { "dir": 沙箱目录, "hb_dir": 心跳目录, "symbols": ["FU","BU"],
-    "mode": "normal|crash|freeze|script",
+    "mode": "normal|crash|crash1|freeze|script",
     "hb_sec": 1,             # 心跳间隔秒
     "freeze_after": 2,       # freeze 模式：写这么久后僵住（进程不退，心跳停）
     "script": ["crash","run:3","freeze","run:9999"] }
+  crash  = 启动即崩 rc=2（配置/令牌类）
+  crash1 = 启动期网络失败 rc=1（DNS 解析类，2026-10-20 23:55 真核心实测形态）
 """
 import os
 import sys
@@ -60,6 +62,8 @@ if MODE == "script":
     behave = SCRIPT[n - 1] if n <= len(SCRIPT) else "run:999999"
 elif MODE == "crash":
     behave = "crash"
+elif MODE == "crash1":
+    behave = "crash1"
 elif MODE == "freeze":
     behave = "freeze"
 else:
@@ -104,6 +108,13 @@ def _write_hb():
 if behave == "crash":
     print("[stub] 按剧本：启动即崩 rc=2", flush=True)
     sys.exit(2)
+
+if behave == "crash1":
+    # ★ 2026-10-21 T6-3 新增：模拟「启动期网络失败 rc=1」
+    #   实证来源：2026-10-20 23:55 T6-6 真核心验收时，核心因 auth.shinnytech.com
+    #   DNS 解析失败而以 rc=1 退出 —— 与「配置/令牌/席位/依赖」完全不同的失败类型。
+    print("[stub] 按剧本：启动期网络失败 rc=1（DNS 解析失败）", flush=True)
+    sys.exit(1)
 
 if behave == "freeze":
     # 先正常写一会儿心跳，然后「进程还在、但不动了」——模拟卡死/死循环/等网络

@@ -10,6 +10,7 @@ MA13 模拟盘 · 进程级守护（第二层保险）
   python ma13_watchdog_main.py --symbols auto --trade          # 前台（调试用）
   python ma13_watchdog_main.py --symbols auto --trade --detach # ★正式用法：脱离控制台
   python ma13_watchdog_main.py --hb-check                      # 一次性体检：各品种心跳多久没更新
+  python ma13_watchdog_main.py --hb-check --grace 900          # 核心刚重启时用：启动后 15min 内不判假死
   python ma13_watchdog_main.py --sandbox <目录> ...            # 仅测试用：日志/锁/心跳全部重定向
 
 ★★ 2026-10-20 A2 改造（事故驱动，见交接任务书 A2）：
@@ -17,7 +18,9 @@ MA13 模拟盘 · 进程级守护（第二层保险）
       启动它的那个 cmd 窗口随即退出。⇒ **关掉任何窗口都不会带走守护**。
       核心用 CREATE_NEW_CONSOLE 单独开窗，关掉核心窗口只会让它重启，不会停止程序。
    2) **假死检测**：核心卡死不退出（旧版完全发现不了）时，靠心跳文件 mtime 判死。
-      HB_STALL_SEC = 12 分钟（实测正常最大间隔 6.7min，见交接交付说明的标定证据）。
+      HB_STALL_SEC = 12 分钟。★★ 标定口径已于 2026-10-21 返工更正（原写「合法最大间隔 6.7min」
+      是错的）：剔除跨日停摆后的**实测最大间隔是 9.3 分钟**，且它属于「旧部署整控制台被关掉」，
+      不是合法空窗；详见 HB_STALL_SEC 处的注释与 HB_STALL_SRC（启动日志会打印出处）。
    3) **退避熔断**：30→60→120→300s，连续 5 次失败写【FATAL】，稳定运行 10 分钟计数归零。
 
 停止（★ 重要，因为守护已脱离窗口，关窗口不会停）：
@@ -50,15 +53,30 @@ BACKOFF = (30, 60, 120, 300)
 FATAL_AFTER = 5               # 连续失败达此次数 → 写【FATAL】
 HEALTHY_RESET_SEC = 10 * 60   # 成功运行超过这么久 → 失败计数归零
 
-# 假死判定（D2）。标定依据（2026-10-20 实测 6 个在跑品种共 3,700+ 条心跳）：
-#   · 正常节奏 p50/p95 = 300s，**合法最大间隔 6.7min**（含 6.5/6.6/6.7 三次边缘）；
-#   · 所有 >6.7min 的间隙，逐条核对后**全部对应「进程不在」**（例：今晚事故
-#     10-20 20:13:08 → 20:35:25 的 22.3min，正是核心被杀到重启的空窗）；
-#   · 心跳线程**与行情无关**（`_hb_loop` 独立线程，只读 shared 标量），
-#     断网/断线/休市都照写 —— 实测 10-19 21:00~10-20 09:00 每小时稳定 12 行。
-#   ⇒ 12 分钟 = 2 个周期 + 余量（1.8× 实测最大值），既能抓住真死，又不会被
-#     休市/深夜/周末误杀。**没有「合法但长时间不写心跳」的时段**，故未加交易时段判断。
+# 假死判定（D2）。
+#
+# ★★ 标定口径于 2026-10-21 返工更正（T6-1）。**原写「合法最大间隔 6.7min、所有 >6.7min
+#    的间隙全部对应进程不在」是错的**，被 D1 体检独立重算推翻，两处错误必须记住：
+#   ① **实测最大间隔（剔除跨日停摆）= 9.3 分钟**，不是 6.7 分钟：
+#      2026-10-18 22:06:53 → 22:16:11，**5 个品种同时**空窗 9.3min（豆粕当时持 −8 手）。
+#      根因不是「进程不在」，而是**旧部署下守护与核心共用控制台，被关窗一起带走**
+#      （守护日志：22:01:45 启动 pid=40424 → 22:16:03 发现僵尸锁接管 pid=47524）。
+#      ⇒ 这段是「旧部署的缺陷产物」，新部署（--detach + CREATE_NEW_CONSOLE）不再产生。
+#   ② **「心跳不规则」≠「进程死亡」**：2026-10-16 00:31:57 → 08:12:05 豆粕持仓恒为 8 手，
+#      心跳只写了 4 行、间隔 165/22/60/212 分钟，恢复后立刻回到 5 分钟 ⇒ 进程活着、
+#      线程被长时间挂起（**这就是止损裸奔 2.8 小时**，是 10-20 那次 19min 事故的 8.8 倍）。
+#      原标定把这一段并进「进程不在」，恰好把最该抓的场景从证据里抹掉了。
+#   · 仍然成立的事实：心跳节奏 p50/p95 = 300s；心跳线程**与行情无关**（`_hb_loop` 独立线程，
+#     只读 shared 标量、不碰 tqsdk 对象），断网/断线/休市都照写
+#     —— 实测 10-19 21:00~10-20 09:00 每小时稳定 12 行。所以「心跳停」只可能是线程跑不动了。
+#   ⇒ 12 分钟 = 2 个心跳周期 + 余量，**不是 1.8×「合法最大值」**（那个前提不存在）；
+#     刻意多留 5 分钟人为余量，是为了不误杀「人为排队/开盘瞬间卡顿」。
+#     没有「合法但长时间不写心跳」的时段 ⇒ 仍不加交易时段判断。
 HB_STALL_SEC = 12 * 60
+# A12 断言：打印阈值时必须同时打印「支撑它的历史证据及出处」，且该出处可被检索到。
+#   2026-10-21 由执行员填实（原为「6.7min」的错误口径）。
+HB_STALL_SRC = ("交接\\体检报告_A2进程守护_20261020.md §2.2「最大间隔（剔除跨日停摆）= 9.3 分钟」"
+                "（2026-10-18 22:06:53→22:16:11 五品种同时停，旧部署关窗连带）")
 POLL_SEC = 60                 # 看门狗巡视频率（心跳 5min 一行，1min 够；检测延迟 ≤13min）
 
 # Windows 进程创建标志
@@ -496,10 +514,29 @@ def _hb_stalled(keys, core_started):
     return (worst[4] > HB_STALL_SEC), worst[4], worst[2]
 
 
-def _hb_report(keys):
-    """--hb-check：一次性打印各品种心跳新鲜度（运维排障 / 应急预案第 1 步靠它）。"""
-    rows = _hb_state(keys, 0.0)
+def _hb_report(keys, grace=0.0):
+    """--hb-check：一次性打印各品种心跳新鲜度（运维排障 / 应急预案第 1 步靠它）。
+
+    ★ 2026-10-21 返工（T6-2 / 断言 A13）：增加 `grace` 参数，**与守护内部同口径**。
+      守护用 `_hb_state(keys, core_started)`，停滞起点 = `max(文件mtime, 核心启动时刻)`
+      ⇒ 核心刚重启时旧心跳文件是几十小时前的，但不会被判假死。
+      而运维手工跑 `--hb-check` 拿不到「核心启动时刻」，原来一律 base=mtime，
+      于是**核心刚重启就查会被报「★假死」，运维可能去杀一个完全健康的进程**。
+      ⇒ `--grace S` 的语义：等价于「视作核心 S 秒前刚启动」，即
+        core_started = now − S，停滞秒数 = now − max(mtime, now − S)。
+        当 S = HB_STALL_SEC 时，就是「启动后 12 分钟内不判假死」，
+        与 `_hb_stalled(keys, now−S)` 的判定**逐条一致**（A13 参数化单测覆盖）。
+    """
+    grace = float(grace or 0.0)
+    core_started = (time.time() - grace) if grace > 0 else 0.0
+    rows = _hb_state(keys, core_started)
     print(f"心跳目录：{HB_DIR}")
+    if grace > 0:
+        print(f"口径：--grace {grace:.1f}s（视作核心 {grace/60:.1f} 分钟前刚启动，"
+              f"启动后 {HB_STALL_SEC/60:.0f} 分钟内不判假死）")
+    else:
+        print("口径：无宽限（base=心跳文件mtime）。核心刚重启请加 --grace 900")
+    print(f"阈值 {HB_STALL_SEC/60:.0f} 分钟｜出处：{HB_STALL_SRC}")
     print(f"{'品种':<10}{'中文名':<10}{'最后写入':<21}{'停滞(分)':>10}  判定")
     bad = 0
     for key, name, path, mt, age in rows:
@@ -515,27 +552,144 @@ def _hb_report(keys):
 # ===========================================================================
 # ★ 2026-10-20 A2 新增：进程控制（D1 独立存活 / D3 退避熔断）
 # ===========================================================================
+# ===========================================================================
+# ★ 2026-10-21 返工 T6-4：Popen.pid 语义自检
+#
+# 为什么需要（D1 体检 §三 P2-A）：`_spawn_core` 用 `subprocess.Popen(cmd)`，
+#   `cmd[0] = PY = _console_python()`。
+#   ★★ D1 当时判「当前不构成 bug（python.exe 是真解释器，只有 pythonw.exe 是转发器）」，
+#      **2026-10-21 实测推翻**：本机 venv 的 `python.exe` **也是转发器** ——
+#      `Popen.pid=32600` 只拉起壳，真解释器是它的子进程 `47500`；
+#      系统 Python312 的 python.exe 则不转发（`Popen.pid == 真实 pid`）。
+#      线上同形态：守护 `Popen.pid=44396` → 真核心 `44052`（见 00:10 守护日志）。
+#   ⇒ 危害不是「将来换 pyenv 才会遇到」，而是**现在就在**：`proc.kill()` 只杀掉壳，
+#      真核心若成为孤儿会继续下单、继续持仓，且守护会再拉起一个 ⇒ 双核心。
+#      （`_kill_core` 已按此事实加固：先抓子孙 → kill 壳 → 补 taskkill /T → 复核子孙。）
+# ⇒ 本自检的职责是**留痕**：每次拉起后核对 Popen.pid 与真实核心是否同一个，可疑就 _log。
+#   判据两条（任一命中即告警）：
+#     ① Popen.pid 启动后 0.8s 内以 **rc=0** 自行退出 ⇒ 典型转发器行为（真核心不会这么快正常退出）；
+#     ② Popen.pid 存活，但它的**直接子进程里有 python** ⇒ 壳在跑、真身在子进程里。
+# ===========================================================================
+_PIDCHK_DONE = False          # 只打印一次「语义正确」的正向证据，避免每次重启刷屏
+
+
+def _pid_children(pid):
+    """返回父进程为 pid 的直接子进程 [(子PID, 映像名)]。
+
+    用 Toolhelp32 快照（纯 ctypes，无外部命令）—— 不依赖 wmic（Win11 已移除）/
+    PowerShell（启动 1s+，会拖慢重启路径）。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+        TH32CS_SNAPPROCESS = 0x00000002
+
+        class PROCESSENTRY32(ctypes.Structure):
+            _fields_ = [("dwSize", wintypes.DWORD),
+                        ("cntUsage", wintypes.DWORD),
+                        ("th32ProcessID", wintypes.DWORD),
+                        ("th32DefaultHeapID", ctypes.c_void_p),
+                        ("th32ModuleID", wintypes.DWORD),
+                        ("cntThreads", wintypes.DWORD),
+                        ("th32ParentProcessID", wintypes.DWORD),
+                        ("pcPriClassBase", ctypes.c_long),
+                        ("dwFlags", wintypes.DWORD),
+                        ("szExeFile", ctypes.c_char * 260)]
+
+        k = ctypes.windll.kernel32
+        h = k.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not h or h == ctypes.c_void_p(-1).value:
+            return []
+        out = []
+        try:
+            e = PROCESSENTRY32()
+            e.dwSize = ctypes.sizeof(PROCESSENTRY32)
+            more = k.Process32First(h, ctypes.byref(e))
+            while more:
+                if int(e.th32ParentProcessID) == int(pid):
+                    out.append((int(e.th32ProcessID),
+                                e.szExeFile.decode("mbcs", "replace")))
+                more = k.Process32Next(h, ctypes.byref(e))
+        finally:
+            k.CloseHandle(h)
+        return out
+    except Exception:
+        return []
+
+
+def _check_pid_semantics(proc):
+    """T6-4：拉起核心后核对「Popen.pid 是不是真实核心进程」，可疑则 _log 告警。
+
+    永不抛异常、永不阻断拉起 —— 自检只是留痕，不是闸门。
+    """
+    global _PIDCHK_DONE
+    try:
+        pid = getattr(proc, "pid", 0) or 0
+        if not pid:
+            return
+        # 0.8s 窗口：崩溃型核心（rc≠0）会立刻结束，不白等；存活型才走完窗口
+        t0 = time.time()
+        while time.time() - t0 < 0.8 and proc.poll() is None:
+            time.sleep(0.05)
+        rc = proc.poll()
+        if rc == 0 and (time.time() - t0) < 5.0:
+            _log(f"⚠️ PID 自检：Popen.pid={pid} 启动后 {time.time()-t0:.1f}s 内以 rc=0 自行退出 "
+                 f"⇒ **疑为解释器转发器**（Popen.pid 不是真实核心，kill 只杀壳会留孤儿）"
+                 f"｜PY={PY}")
+            return
+        if rc is not None:
+            return                     # 真的崩了（rc≠0）：属正常重启路径，不告警
+        kids = _pid_children(pid)
+        pykids = [(p, n) for p, n in kids if str(n).lower().startswith("python")]
+        if pykids:
+            _log(f"⚠️ PID 自检：Popen.pid={pid} 下存在 python 子进程 "
+                 f"{pykids} ⇒ 疑为解释器转发器（子进程才是真实核心，Popen.pid 只杀到壳）"
+                 f"｜PY={PY}")
+            return
+        if not _PIDCHK_DONE:
+            _PIDCHK_DONE = True
+            _log(f"PID 自检：Popen.pid={pid} 存活、无 python 子进程 "
+                 f"⇒ Popen.pid 即真实核心 PID（kill 能杀到真身）｜PY={os.path.basename(PY)}")
+    except Exception as e:
+        _log(f"PID 自检跳过（{type(e).__name__}: {e}）")
+
+
 def _spawn_core(cmd, new_console=True):
     """拉起核心。
 
     ★ CREATE_NEW_CONSOLE：核心独占一个控制台窗口。
       这样「关掉核心窗口」只会杀掉核心本身，不会顺着共享控制台把守护一起带走
       —— 这正是今晚 20:16–20:35 那 19 分钟空窗的根因（守护与核心同窗口）。
+    ★ 拉起后立刻做一次 PID 语义自检（T6-4），可疑只留痕、不阻断。
     """
     flags = CREATE_NEW_CONSOLE if new_console else 0
-    return subprocess.Popen(cmd, cwd=_HERE, creationflags=flags)
+    p = subprocess.Popen(cmd, cwd=_HERE, creationflags=flags)
+    _check_pid_semantics(p)
+    return p
 
 
 def _kill_core(proc):
-    """终止核心（假死时用）。先 kill，再兜底 taskkill /T。"""
+    r"""终止核心（假死时用）。
+
+    ★★ 2026-10-21 返工（自检发现的事实驱动）：本机 venv 的 `python.exe` **本身就是转发器**
+      —— 实测线上 `Popen.pid=44396`，而真正在跑核心的是它的子进程 `44052`
+      （`sys.executable` 指向 venv 启动器，它再拉起 base 解释器，即
+       `C:\Users\cc\AppData\Local\Programs\Python\Python312\python.exe`）。
+      于是旧写法「先 `proc.kill()`，等 15s 超时才 `taskkill /T`」有致命缺陷：
+      `proc.kill()` 杀掉的是**壳**，壳一死 `proc.wait()` 立刻返回 True ⇒ **永远走不到 /T 兜底**，
+      真核心要是没跟着壳一起死，就会**作为孤儿继续下单**，而守护接着又拉起一个新核心
+      ⇒ 双核心、双份下单，比不复位更危险。
+    ⇒ 改为：**杀之前先记下子孙**（壳死了就查不到了）→ kill 壳 → 无论超时与否都补 `taskkill /T`
+      → 逐个复核子孙是否真死，没死就补刀并留痕 → 只有「壳与子孙全清」才返回 True。
+    """
     pid = getattr(proc, "pid", None)
+    kids = _pid_children(pid) if pid else []      # ★ 必须在 kill 之前抓，壳死后树就断了
     try:
         proc.kill()
     except Exception:
         pass
     try:
         proc.wait(timeout=15)
-        return True
     except Exception:
         pass
     if pid:
@@ -544,11 +698,22 @@ def _kill_core(proc):
                            capture_output=True, timeout=30)
         except Exception:
             pass
-    try:
-        proc.wait(timeout=10)
-        return True
-    except Exception:
+    # ---- 复核：转发器场景下壳死了、真身可能还在 ⇒ 必须确认到「没有 python 子孙存活」----
+    left = [(p, n) for p, n in kids if _pid_alive(p)]
+    for cp, cn in left:
+        try:
+            subprocess.run(["taskkill", "/PID", str(cp), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        except Exception:
+            pass
+    still = [(p, n) for p, n in left if _pid_alive(p)]
+    if still:
+        _log(f"假死处置未完成：核心壳已死但子孙仍存活 {still} ⇒ 立即人工 taskkill /T")
         return False
+    if left:
+        _log(f"假死处置：壳 PID {pid} 已死，另补杀转发器背后的真核心 "
+             f"{[p for p, _n in left]}（若漏杀即双核心双份下单）")
+    return True
 
 
 def _spawn_detached(extra_argv):
@@ -612,6 +777,9 @@ def main():
                     help="脱离控制台运行（正式用法）：关窗口不影响守护")
     ap.add_argument("--stop", action="store_true", help="停止正在跑的守护（含核心）")
     ap.add_argument("--hb-check", action="store_true", help="一次性心跳体检后退出")
+    ap.add_argument("--grace", type=float, default=0.0,
+                    help="配合 --hb-check：视作核心 N 秒前刚启动，启动后不判假死"
+                         "（核心刚重启时用 --grace 900）")
     # 以下为内部/测试用，不写进 help 以免误用
     ap.add_argument("--detached", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--sandbox", default="", help=argparse.SUPPRESS)
@@ -683,7 +851,7 @@ def main():
         return 0
 
     if args.hb_check:
-        return _hb_report(_symbols_readonly())
+        return _hb_report(_symbols_readonly(), grace=args.grace)
 
     symbols = _resolve_symbols(args.symbols)
     keys = [k.strip().upper() for k in symbols.split(",") if k.strip()]
@@ -698,7 +866,11 @@ def main():
     _log(f"守护启动 symbols={symbols}（来源 {args.symbols}） trade={args.trade} "
          f"pid={os.getpid()} detached={bool(args.detached)} "
          f"假死阈值={HB_STALL_SEC/60:.0f}min 退避={list(BACKOFF)} 失败阈={FATAL_AFTER}")
-    fail = 0
+    # ★ A12 断言：阈值必须带出处，且出处可被 grep（2026-10-21 返工新增）
+    _log(f"假死阈值出处={HB_STALL_SRC}")
+    fail = 0            # 连续失败总次数（决定退避档位，语义与旧版一致）
+    fail_stall = 0      # 其中「连续因假死被杀」的次数（T6-3：FATAL 归因用）
+    fail_start = 0      # 其中「连续自行退出（启动失败/运行期崩溃）」的次数
     try:
         while True:
             n += 1
@@ -736,13 +908,38 @@ def main():
                     _log(f"核心稳定运行 {ran/60:.1f} 分钟（≥{HEALTHY_RESET_SEC//60}）"
                          f"→ 失败计数 {fail} 归零")
                 fail = 0
+                fail_stall = 0
+                fail_start = 0
             fail += 1
+            if stalled_kill:
+                fail_stall += 1
+                fail_start = 0
+            else:
+                fail_start += 1
+                fail_stall = 0
             delay = BACKOFF[min(fail - 1, len(BACKOFF) - 1)]
             if fail >= FATAL_AFTER:
-                _log(f"【FATAL】连续失败 {fail} 次，最后 rc={rc}，"
+                # ★ 2026-10-21 返工 T6-3 / 断言 A14：FATAL 必须**按原因拆分措辞**。
+                #   旧版一律写「核心疑似启动即崩（配置/令牌/席位/依赖）」，于是「反复假死」
+                #   会被误报成「启动即崩」⇒ 运维跑去查令牌，方向全错（D1 体检 §三 P2-C）。
+                #   实测新增一类：启动期网络失败 rc=1（auth.shinnytech.com DNS 解析失败，
+                #   2026-10-20 23:55 T6-6 真核心验收时抓到），它会白吃掉 5 次 FATAL 预算的一半。
+                if fail_stall >= FATAL_AFTER:
+                    kind = "连续假死"
+                    advice = ("心跳停滞被判死后重启仍反复假死 ⇒ **不是**配置/令牌问题，"
+                              "查核心线程是否被网络/磁盘/死循环长时间挂起"
+                              "（进程活着但心跳不写 = 止损正在裸奔）")
+                elif rc == 1 and ran < 60:
+                    kind = "连续启动失败"
+                    advice = ("退出码 rc=1 且发生在启动期 ⇒ **疑启动期网络失败**："
+                              "auth.shinnytech.com DNS 解析失败 / 连不上行情服务器 / 席位占满"
+                              "（2026-10-20 23:55 真核心实测即为 DNS 解析失败 rc=1）")
+                else:
+                    kind = "连续启动失败"
+                    advice = "核心疑似启动即崩（配置/令牌/席位/依赖）"
+                _log(f"【FATAL】{kind} {fail} 次，最后 rc={rc}，"
                      f"本次运行 {ran/60:.1f} 分钟，{datetime.now():%Y-%m-%d %H:%M:%S} —— "
-                     f"核心疑似启动即崩（配置/令牌/席位/依赖），"
-                     f"退避 {delay}s 后仍会重试，守护不退出")
+                     f"{advice}；退避 {delay}s 后仍会重试，守护不退出")
             _log(f"核心退出 rc={rc}，{delay}s 后重启（连续失败 {fail} 次"
                  f"{'，原因=假死' if stalled_kill else ''}）")
             time.sleep(delay)
