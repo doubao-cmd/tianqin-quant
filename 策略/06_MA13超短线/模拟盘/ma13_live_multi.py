@@ -36,6 +36,10 @@ from lib.ops import (OrderLedger, RiskGate, atomic_write_json, read_json,
                      leg_prefix, find_orphan)
 # ★ 2026-10-20 新增：撤单重报 / 撤单预算 / 反手同拍净仓口径（纯逻辑，可离线单测）
 from lib import live_resend as _rs
+# ★★ 2026-10-20 风控剩余节点（P0-2 / P1-1 / P1-3）：同样抽纯逻辑，主文件只接线
+from lib import daily_loss as _dl      # 单日亏损阀（P1-1，口径 D 已拍板）
+from lib import recon_halt as _rh      # 对账偏离 ⇒ 硬停机判定（P0-2）
+from lib import limit_board as _lb     # 涨跌停封板判定（P1-3）
 import config_account
 import config_symbols
 
@@ -182,6 +186,18 @@ FIX_WAIT_SEC = 30
 RESEND_WAIT_SEC = _rs.RESEND_WAIT_SEC          # 45s（须 > FIX_WAIT_SEC）
 MAX_RESEND_PER_ORDER = _rs.MAX_RESEND_PER_ORDER  # 1 次
 _RS_BUDGET = None
+
+# ---- ★★ P0-2 / P1-1 / P1-2 / P1-3（2026-10-20，见 交接\06模拟盘_风控增强_剩余任务书_20261020.md）----
+#   P0-2 对账偏离超阈 ⇒ 锁「只出不进」（复用 fuse 闩锁），排除 FIX_WAIT / 换月过渡；
+#   P1-1 当日亏损（昨收基准）≥1.5% ⇒ **只拒绝新开仓**，平仓/止损/撤单照常，状态落盘；
+#   P1-2 真实保证金占用率可见 + 逼近强平线预警（`NOTIONAL_CAP` 只是静态估算，不是占用率）；
+#   P1-3 封板方向不报单（只读交易所 upper_limit/lower_limit，不推理行情）。
+DAILY_LOSS_RATIO = _dl.DAILY_LOSS_RATIO       # 1.5%（D 拍板，执行员不得改数）
+MARGIN_WARN_RATIO = OPS_MAX_MARGIN_RATIO * 0.75   # 0.45：60% 拒开线的 3/4，逼近才预警
+                                                 # ★ 派生值（任务书未给数），D 可改；非策略参数
+MARGIN_WARN_REPEAT_SEC = 600                  # 同一腿预警最多 10 分钟一条（防刷屏）
+LIMIT_BOARD_CHECK = True                      # P1-3 开关（字段不可读时自动放行，不拦）
+DLOSS_UPDATE_SEC = 5                          # 亏损阀计数节流（权益每 tick 都变，落盘要省）
 
 
 def _rs_budget(record_dir):
@@ -508,6 +524,8 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
         try:
             with open(state_path, "w", encoding="utf-8") as f:
                 json.dump({"peak": fuse["peak"], "halted": fuse["halted"],
+                           # ★ 2026-10-20 P0-2：记「为什么锁的」，复盘才不用猜
+                           "reason": fuse.get("reason") or "",
                            "update": time.strftime("%Y-%m-%d %H:%M:%S")},
                           f, ensure_ascii=False)
         except Exception:
@@ -519,22 +537,56 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
             st = json.load(f)
         fuse["peak"] = max(INIT, float(st.get("peak") or INIT))
         fuse["halted"] = bool(st.get("halted"))
+        fuse["reason"] = str(st.get("reason") or "")
     except Exception:
         pass                          # 无文件/损坏 = 全新状态
     if fuse["halted"]:
-        _popup("MA13 模拟盘：回撤熔断未复位",
-               "上一次运行触发了回撤熔断，本次进程将以【只出不进】模式运行"
+        _why0 = fuse.get("reason") or "回撤熔断"
+        _popup("MA13 模拟盘：只出不进闩锁未复位",
+               "上一次运行触发了【只出不进】闩锁（回撤熔断 或 对账偏离硬停机），"
+               "本次进程将以【只出不进】模式运行"
                "（已有持仓照常出场，禁止一切新开仓）。\n\n"
-               f"历史峰值: {fuse['peak']:.0f}\n\n"
+               f"历史峰值: {fuse['peak']:.0f}\n"
+               f"锁定原因: {_why0}\n\n"
                "确认复位方法：\n"
                "  1. 关闭本程序窗口\n"
                "  2. 删除文件 策略\\06_MA13超短线\\模拟盘\\台账\\熔断状态.json\n"
                "  3. 重新双击 启动_P_EB_观察模式.bat")
         for s in specs:
-            s["rec"].event("CIRCUIT", "启动时检测到未复位的熔断闩锁 → 只出不进模式")
+            s["rec"].event("CIRCUIT", f"启动时检测到未复位的闩锁 → 只出不进模式 | 原因={_why0}")
+
+    # ---- ★★ P1-1 单日亏损阀（2026-10-20）：账户级，状态落盘，重启不清零 ----
+    #   基准 = 上一交易日收盘权益（EQUITY 末行）；阈值 = 基准 × 1.5%。
+    #   首次启动（无状态文件）时从台账反查上一交易日收盘权益，**不编造**。
+    dloss = _dl.DailyLossGuard(os.path.join(record_dir, _dl.STATE_NAME),
+                              ratio=DAILY_LOSS_RATIO)
+    if not dloss.st.get("base_equity"):
+        try:
+            _tape = os.path.join(record_dir, specs[0]["name"] + "_成交流水.csv")
+            _eq0, _ts0 = _dl.last_equity_before(_tape, _dl.day_start(_rs.trading_day()))
+        except Exception:
+            _eq0, _ts0 = None, None
+        if _eq0:
+            dloss.seed(_eq0, src="tape")
+            print(f"[单日亏损阀] 基准播种=上一交易日收盘权益 {_eq0:.0f}（{_ts0}）", flush=True)
+        else:
+            print("[单日亏损阀] ⚠️ 台账里没有上一交易日 EQUITY ⇒ 首个快照播种"
+                  "（当日基准=当时权益，等价于今天从 0 亏损算起）", flush=True)
+    if dloss.blocked:
+        _popup("MA13 模拟盘：单日亏损阀已触发",
+               f"当前交易日已触发单日亏损阀（阈值 {DAILY_LOSS_RATIO:.1%}）。\n\n"
+               f"{dloss.summary()}\n\n"
+               "本次进程【只出不进】：拒绝一切新开仓，已有持仓照常按止损/时间止损出场。\n"
+               "下一交易日自动复位，无需人工解锁。")
+        for s in specs:
+            s["rec"].event("DAILYSTOP", f"启动时读回已触发的单日亏损阀 → 只出不进 | "
+                                        f"{dloss.summary()}")
 
     api = _connect(user, pwd, specs, web_gui)
-    acc_box = {"acc": None}               # 当前会话的账户对象（TqKq 云端账户，随重连刷新）
+    # 当前会话的账户对象（TqKq 云端账户，随重连刷新）+ 账户级风控对象
+    #   dloss 挂在这里（而不是每个腿一份）：亏损阀管的是**整个账户**，
+    #   6 条腿各算一份会得到 6 个不同基准，且各自落盘互相覆盖。
+    acc_box = {"acc": None, "dloss": dloss, "_dl_ts": 0.0}
     acc_box["acc"] = api.get_account()
 
     # ★★ 换池保护：把「云端有仓但不在本次池内」的品种补订阅接管（只出不进）。
@@ -1160,7 +1212,28 @@ def _order(api, s, symbol, direction, offset, volume, ref_price=None):
     order = tqsdk 的 Order 对象（2026-10-19 新增）。原实现把它直接丢弃，
     于是废单只能靠 30 秒后"持仓没变"倒推成一句"未成交"，**原因不可见**；
     现在挂进 pending_fill，确认阶段读 status / last_msg / is_dead 落台账。
+
+    ★★ 2026-10-20 P1-3：下单前先看**交易所涨跌停字段**。封板方向报单必废
+    （涨停没人卖 ⇒ BUY 废；跌停没人买 ⇒ SELL 废），废单既占额度又制造
+    「以为平了其实没平」。故封板方向直接不报，返回 ok=False（调用方按"本拍不报、
+    下拍再试"处理，持仓与止损保持不变）。
+    ⚠️ 只对**当前主连**判：换月移交时的旧合约（held_sym）拿不到它的 quote，
+       不能用主连的涨跌停去判它（那会张冠李戴），故 `symbol != q.underlying_symbol` 时跳过。
     """
+    if LIMIT_BOARD_CHECK:
+        try:
+            _q = s.get("q") if isinstance(s, dict) else None
+            _qsym = str(getattr(_q, "underlying_symbol", "") or "") if _q is not None else ""
+            if _qsym and _qsym == str(symbol):
+                _blk, _bn = _lb.check(direction,
+                                      getattr(_q, "last_price", None),
+                                      getattr(_q, "upper_limit", None),
+                                      getattr(_q, "lower_limit", None),
+                                      tick=_tick_of(s.get("key")))
+                if _blk:
+                    return False, _bn, None
+        except Exception:
+            pass                      # 封板检查异常一律放行（不能让风控本身卡死交易）
     exch = str(symbol).split(".")[0].upper()
     if exch not in NO_MARKET_EXCH:
         _o = api.insert_order(symbol, direction, offset, volume)      # 原行为，零改动
@@ -1216,7 +1289,7 @@ def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_be
     return True, ("split" if len(plan) > 1 else plan[0][0]), sent
 
 
-def _sync_cloud_pos(api, s, allow_trade, sig=None):
+def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     """★ 云端持仓对账（切 TqKq 后的核心保护，见常量区SYNC_CLOUD 注释）+ ★★换月移交。
 
     以**云端为唯一真相源**，纠正进程内存里的 s["pos"]。只在不一致时动手：
@@ -1362,7 +1435,71 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None):
             s["recovered"] = False
         s["underlying"] = cur_sym
         _save_underlying(s.get("record_dir"), s["key"], cur_sym)
+        s["_recon_base"] = True            # ★ P0-2：本会话对账基线已建立
         return
+
+    # ---- ★★ P0-2 对账偏离硬停机（2026-10-20）----
+    #   原实现：账实不符 ⇒ 只写一条 FILLX / SYNC，然后继续交易 ⇒ 在错账上开仓。
+    #   现在：非首次对账 + 本进程无在途委托 + 不在换月过渡 ⇒ 锁「只出不进」，
+    #         弹窗 + 台账 HALT + 复用 fuse 闩锁（重启不复位，须人工核对后删文件）。
+    #   ⚠️ 排除项（任务书明令）：FIX_WAIT 窗口已在本函数开头 return；
+    #      在途委托（pending_fill 非空）与换月移交（rollover_pending）交给 _rh.plan 判 wait。
+    #   ⚠️ 锁之前**先把持仓恢复给本地管理**：否则 s["pos"]=0 而云端有仓 ⇒ 该仓无止损、
+    #      连出场都不会判（比不锁更危险）。「只出不进」的正确含义是能出、不能进。
+    _eq = None
+    try:
+        _eq = float(acc["balance"]) if acc is not None else None
+    except Exception:
+        _eq = None
+    _act, _why = _rh.plan(
+        s.get("pos", 0), cp,
+        sync_base=bool(s.get("_recon_base")),
+        pending_orders=len(s.get("pending_fill") or []),
+        rollover_active=bool(s.get("rollover_pending")),
+        equity=_eq,
+        price=(float(q.last_price) if q is not None and q.last_price == q.last_price else None),
+        mult=s.get("mult"))
+    if _act == "wait":
+        # 过渡态：既不锁，**也不接管**（旧代码靠 FIX_WAIT 单挡，30s 后仍会假接管；
+        # 现在有在途委托就明确不下结论，下拍再判）。
+        if not s.get("_recon_wait_logged"):
+            s["_recon_wait_logged"] = True
+            rec.event("RECONWAIT", "对账暂缓（在途委托/换月过渡中）：" + _why)
+        return
+    s.pop("_recon_wait_logged", None)
+    if _act == "halt":
+        if fuse is not None:
+            fuse["halted"] = True
+            fuse["reason"] = "对账偏离硬停机：" + _why
+            if fuse.get("save"):
+                fuse["save"]()             # 闩锁立即落盘：重启也不自动复位
+        rec.event("HALT", "⚠️ 对账偏离硬停机 → 只出不进，" + _why)
+        print(f"[{s['name']}][HALT] ⚠️ {_why}", flush=True)
+        if not s.get("_halt_logged"):
+            s["_halt_logged"] = True
+            _popup("MA13 模拟盘：⚠️ 对账偏离 → 只出不进",
+                   f"{s['name']}：{_why}\n\n"
+                   "已自动执行：停止一切新开仓（已有持仓照常按止损/时间止损出场）。\n"
+                   "程序不会自动恢复。请核对快期 App 的真实持仓后人工处理。\n\n"
+                   "确认复位方法：\n"
+                   "  1. 关闭本程序窗口\n"
+                   "  2. 删除文件 策略\\06_MA13超短线\\模拟盘\\台账\\熔断状态.json\n"
+                   "  3. 重新启动")
+        # 把云端持仓认回本地，让止损与出场判定继续生效（只出不进 ≠ 脱管）
+        _c = float(q.last_price or 0) if q is not None else 0.0
+        _a = s.get("last_atr") or 0.0
+        if not (_a == _a and _a > 0):
+            try:
+                _a = (sig or _SIG).atr_at(s["k"])
+            except Exception:
+                _a = 0.0
+        if cp != 0:
+            _attach_stop_on_boot(s, cp, _c, _a, sig=sig)
+        s["pos"] = cp
+        s["recovered"] = False
+        s["_recon_base"] = True
+        return
+
     if cp != 0:
         # 接管：云端有仓而本进程不知道 ⇒ 补挂止损（云端不存我们的止损线）
         c_now = float(q.last_price or 0)
@@ -1387,6 +1524,7 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None):
         _save_underlying(s.get("record_dir"), s["key"], cur_sym)
     s["pos"] = cp
     s["recovered"] = False
+    s["_recon_base"] = True                # ★ P0-2：本会话对账基线已建立（下一拍起偏离即判）
 
 
 def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
@@ -1415,11 +1553,47 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
             bal = float("nan")
         if bal == bal and bal > 0:            # 非 NaN 且为正才计入
             _fuse_eval(bal, fuse, rec, s["name"])
+            # ---- ★★ P1-2 真实保证金占用率（2026-10-20）----
+            #   `NOTIONAL_CAP` 是「名义÷权益」静态估算，**不是**交易所实际占用；
+            #   这里读 Account.margin/balance 算真实占用率（强平线≈100%，
+            #   60% 已是拒开线）。可见 + 逼近预警，不改任何仓位。
+            #   ⚠️ 自动降仓**未实现**：那会动未平持仓，与红线1（硬停机不得自动平仓）
+            #      冲突，须 D 单独授权并给出触发阶梯，见交接说明。
+            _mg = float("nan")
+            try:
+                _mg = float(acc["margin"])
+            except Exception:
+                pass
+            _mr = (_mg / bal) if (bal > 0 and _mg == _mg) else None
             # 权益快照（60秒一次，独立于熔断）：首日对账要靠它核对「台账盈亏 vs 账户权益」
             _now = time.time()
             if _now - s.get("eq_ts", 0) >= 60:
                 s["eq_ts"] = _now
-                s["rec"].event("EQUITY", f"权益={bal:.2f} 持仓={s['pos']}")
+                _extra = f" 占用率={_mr:.1%}" if _mr is not None else " 占用率=na"
+                s["rec"].event("EQUITY", f"权益={bal:.2f} 持仓={s['pos']}{_extra}")
+            if _mr is not None and _mr >= MARGIN_WARN_RATIO:
+                if _now - s.get("_mg_warn_ts", 0) >= MARGIN_WARN_REPEAT_SEC:
+                    s["_mg_warn_ts"] = _now
+                    _lvl = "已拒开仓" if _mr >= OPS_MAX_MARGIN_RATIO else "逼近拒开线"
+                    s["rec"].event("MARGINWARN",
+                                   f"保证金占用 {_mr:.1%}（{_lvl}，上限 "
+                                   f"{OPS_MAX_MARGIN_RATIO:.0%}） 保证金={_mg:.0f} "
+                                   f"权益={bal:.0f}")
+                    print(f"[{s['name']}][MARGINWARN] 保证金占用 {_mr:.1%} {_lvl}",
+                          flush=True)
+            # ---- ★★ P1-1 单日亏损阀（账户级，节流调用）----
+            #   只更新闩锁状态；**真正的拦截在下方开仓闸门**（`_open_ok`），
+            #   平仓/止损/撤单三条通道完全不经过这里 ⇒ 不可能被本阀挡住。
+            _dlg = acc_box.get("dloss")
+            if _dlg is not None and (_now - float(acc_box.get("_dl_ts") or 0.0)
+                                     >= DLOSS_UPDATE_SEC):
+                acc_box["_dl_ts"] = _now
+                if _dlg.update(bal) and not s.get("_dl_logged"):
+                    s["_dl_logged"] = True
+                    s["rec"].event("DAILYSTOP",
+                                   "⚠️ 单日亏损阀触发 → 只停加仓（不改止损/不提前平仓）| "
+                                   + _dlg.reason())
+                    print(f"[{s['name']}][DAILYSTOP] {_dlg.reason()}", flush=True)
     # 每个事件都刷新心跳缓存（价格实时；tgt 在信号节拍里更新）
     _lp = q.last_price
     sh["dt"] = q.datetime
@@ -1428,7 +1602,22 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     # ---- 云端持仓对账：必须在「无新bar 就return」之前 ----
     # 每次 wait_update 都问一次云端，不依赖新 bar（休市/ 重启后首个 bar 到来前
     # 也必须生效，否则新仓无人接管）。只在不一致时才动手，见函数内注释。
-    _sync_cloud_pos(api, s, allow_trade, sig=sig)
+    # ---- ★ P1-3 封板字段可读性自证（每腿仅一次）----
+    #   任务书要求「先确认实盘行情模式能否读 upper_limit/lower_limit」。
+    #   源码级依据：tqsdk 3.10.2 `objs.py:81` 定义该字段、`api.py:3203` 明写
+    #   「回测时 upper_limit/lower_limit 为 nan」⇒ 实盘行情可读。
+    #   但不能只靠文档：这里在真跑环境里打印一次实际读到的值（可读=True/False），
+    #   重启后看日志即可确认，不需要额外登录一次账号（单账号单会话，额外登录会踢掉本进程）。
+    if s.get("_lb_probe") is None:
+        _u_l, _d_l = getattr(q, "upper_limit", None), getattr(q, "lower_limit", None)
+        _rok = _lb.readable(_u_l, _d_l)
+        s["_lb_probe"] = bool(_rok)
+        _msg = (f"封板检查：upper={_u_l} lower={_d_l} ⇒ "
+                + ("可读，封板方向将不报单" if _rok else "不可读 → 不拦（放行，等字段就绪）"))
+        rec.event("LIMITCHK", _msg)
+        print(f"[{s['name']}][LIMITCHK] {_msg}", flush=True)
+
+    _sync_cloud_pos(api, s, allow_trade, sig=sig, fuse=fuse, acc=acc)
     # ★ 只读统计（不改交易）：读云端真实持仓均价与浮动盈亏 → 供台账算滑点/MFE/MAE
     _cloud_fill_stats(api, s)
 
@@ -1531,6 +1720,11 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     # ---- 开仓（对齐回测：趋势 + 回踩；熔断闩死期间禁止）----
     pos = s["pos"]
     _open_ok = True
+    # ★★ P1-1 单日亏损阀（2026-10-20）：触阈后**只拒绝新开仓**。
+    #   本判断只出现在"开仓"这条路上；平仓/止损/撤单三条通道在别处，不经过它。
+    _dlg2 = acc_box.get("dloss")
+    if _dlg2 is not None and _dlg2.blocked:
+        _open_ok = False
     # ★★ 换池保护：被接管进来的「已换出池子」的腿只许出场，不许再开新仓
     if s.get("_carried"):
         _open_ok = False
@@ -1541,6 +1735,11 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
             _open_ok = False                      # 截面模式：只开在允许方向
         if _gate is not None and not _gate.can_open(s["key"], _sid):
             _open_ok = False                      # 时段闸门：封禁的 session 不开新仓
+    if pos == 0 and dir_trend != 0 and _dlg2 is not None and _dlg2.blocked:
+        # 让复盘看得见「有信号、但被停加仓阀拦住」（不写 SIGNAL，避免被当成已开仓）
+        _dcn = "多" if dir_trend > 0 else "空"
+        rec.event("RISKBLOCK", f"停加仓阀拒开{_dcn}（当日不再新开仓）| {_dlg2.reason()}")
+        print(f"[{s['name']}][RISKBLOCK] 停加仓阀拒开{_dcn}：{_dlg2.reason()}", flush=True)
     if pos == 0 and dir_trend != 0 and not fuse["halted"] and _open_ok:
         try:
             _eq = float(acc["balance"]) if acc is not None else float("nan")
