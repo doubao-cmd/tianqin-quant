@@ -7,10 +7,24 @@ MA13 模拟盘 · 进程级守护（第二层保险）
 并把每次重启记入 台账/守护日志.txt。
 
 用法（ bat 已接入，一般不手动跑）：
-  python 模拟盘守护.py --symbols JM,M,JD,P,SR [--trade]
+  python ma13_watchdog_main.py --symbols auto --trade          # 前台（调试用）
+  python ma13_watchdog_main.py --symbols auto --trade --detach # ★正式用法：脱离控制台
+  python ma13_watchdog_main.py --hb-check                      # 一次性体检：各品种心跳多久没更新
+  python ma13_watchdog_main.py --sandbox <目录> ...            # 仅测试用：日志/锁/心跳全部重定向
 
-停止：Ctrl+C（守护和核心一起退出），或直接关窗口。
+★★ 2026-10-20 A2 改造（事故驱动，见交接任务书 A2）：
+   1) **独立存活**：--detach 用 pythonw + DETACHED_PROCESS 重新拉起自己，
+      启动它的那个 cmd 窗口随即退出。⇒ **关掉任何窗口都不会带走守护**。
+      核心用 CREATE_NEW_CONSOLE 单独开窗，关掉核心窗口只会让它重启，不会停止程序。
+   2) **假死检测**：核心卡死不退出（旧版完全发现不了）时，靠心跳文件 mtime 判死。
+      HB_STALL_SEC = 12 分钟（实测正常最大间隔 6.7min，见交接交付说明的标定证据）。
+   3) **退避熔断**：30→60→120→300s，连续 5 次失败写【FATAL】，稳定运行 10 分钟计数归零。
+
+停止（★ 重要，因为守护已脱离窗口，关窗口不会停）：
+   python ma13_watchdog_main.py --stop    或   见 台账/守护.lock 里的 PID 后
+   taskkill /PID <守护PID> /T /F          （/T 会连核心一起收，一步到位）
 日志位置：策略/06_MA13超短线/模拟盘/台账/守护日志.txt
+          （独立运行时控制台输出另存 台账/守护控制台.log）
 
 防双开（2026-10-07 加）：台账/守护.lock 记录本机 PIDPID。
      每日 08:55 自动启动场景下，锁是必需的——否则重复触发会拉起两个核心、
@@ -21,10 +35,36 @@ from datetime import datetime
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 CORE = os.path.join(_HERE, "ma13_live_multi.py")
-LOG = os.path.join(_HERE, "台账", "守护日志.txt")
-LOCK = os.path.join(_HERE, "台账", "守护.lock")
-RESTART_WAIT = 30      # 核心崩掉后等待秒数
+LEDGER = os.path.join(_HERE, "台账")
+LOG = os.path.join(LEDGER, "守护日志.txt")
+LOCK = os.path.join(LEDGER, "守护.lock")
+HB_DIR = LEDGER                       # 心跳文件所在目录（--sandbox 可重定向）
+RESTART_WAIT = 30      # 旧常量：保留为退避序列的第 1 档
 DEFAULT_LEGS = "JM,M,JD,P,SR"   # 兜底（2026-10-08 相关性选出）；auto 读不到时用
+
+# ---------------------------------------------------------------------------
+# ★ 2026-10-20 A2 新增常量（全部有实测依据，不是拍脑袋）
+# ---------------------------------------------------------------------------
+# 退避序列（D3）：连续失败第 1/2/3/4+ 次分别等这么久
+BACKOFF = (30, 60, 120, 300)
+FATAL_AFTER = 5               # 连续失败达此次数 → 写【FATAL】
+HEALTHY_RESET_SEC = 10 * 60   # 成功运行超过这么久 → 失败计数归零
+
+# 假死判定（D2）。标定依据（2026-10-20 实测 6 个在跑品种共 3,700+ 条心跳）：
+#   · 正常节奏 p50/p95 = 300s，**合法最大间隔 6.7min**（含 6.5/6.6/6.7 三次边缘）；
+#   · 所有 >6.7min 的间隙，逐条核对后**全部对应「进程不在」**（例：今晚事故
+#     10-20 20:13:08 → 20:35:25 的 22.3min，正是核心被杀到重启的空窗）；
+#   · 心跳线程**与行情无关**（`_hb_loop` 独立线程，只读 shared 标量），
+#     断网/断线/休市都照写 —— 实测 10-19 21:00~10-20 09:00 每小时稳定 12 行。
+#   ⇒ 12 分钟 = 2 个周期 + 余量（1.8× 实测最大值），既能抓住真死，又不会被
+#     休市/深夜/周末误杀。**没有「合法但长时间不写心跳」的时段**，故未加交易时段判断。
+HB_STALL_SEC = 12 * 60
+POLL_SEC = 60                 # 看门狗巡视频率（心跳 5min 一行，1min 够；检测延迟 ≤13min）
+
+# Windows 进程创建标志
+DETACHED_PROCESS = 0x00000008
+CREATE_NEW_PROCESS_GROUP = 0x00000200
+CREATE_NEW_CONSOLE = 0x00000010
 
 WORKBENCH = os.path.join(os.path.dirname(_HERE), "工作台", "workbench.json")
 WB_DIR = os.path.dirname(WORKBENCH)
@@ -41,7 +81,23 @@ RESELECT_DAYS = 6.0    # 距上次重选超过这个天数 → 允许重选（�
 #   ⚠️ 但「到期待周一」不能无限等：若一直等不到（节假日连休），日志要说明白。
 RESELECT_WEEKDAY = 0   # 0=周一（datetime.weekday() 口径）
 
-PY = sys.executable    # 用同一个解释器拉起核心
+def _console_python():
+    """拉起核心必须用 **控制台版** python.exe。
+
+    ★ 2026-10-20 A2 踩到的坑：--detach 用 pythonw.exe 重启自己，此时
+      sys.executable 指向 pythonw.exe。若照旧 `PY = sys.executable` 去拉核心，
+      核心就会在「无控制台」下跑 —— 它满屏的 print 全部丢弃，运维看不见任何东西。
+      ⇒ pythonw 启动时显式换回同目录的 python.exe。
+    """
+    exe = sys.executable or ""
+    if os.path.basename(exe).lower().startswith("pythonw"):
+        cand = os.path.join(os.path.dirname(exe), "python.exe")
+        if os.path.isfile(cand):
+            return cand
+    return exe
+
+
+PY = _console_python()    # 用同一个解释器（控制台版）拉起核心
 
 
 def _pid_alive(pid):
@@ -94,9 +150,32 @@ def _抢锁():
 
 
 
+def _ensure_streams():
+    """独立运行（pythonw / DETACHED）时 sys.stdout 为 None，把 print 引到文件。
+
+    否则 `print(..., flush=True)` 在 stdout 被关掉的环境里可能抛异常或静默丢弃，
+    而守护进程**绝不能因为打日志失败就停下**。
+    """
+    if sys.stdout is not None and sys.stderr is not None:
+        return
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        f = io.open(os.path.join(os.path.dirname(LOG), "守护控制台.log"),
+                    "a", encoding="utf-8", buffering=1)
+        if sys.stdout is None:
+            sys.stdout = f
+        if sys.stderr is None:
+            sys.stderr = f
+    except Exception:
+        pass
+
+
 def _log(msg):
     line = f"{datetime.now():%Y-%m-%d %H:%M:%S}  {msg}"
-    print(f"[守护进程] {msg}", flush=True)
+    try:
+        print(f"[守护进程] {msg}", flush=True)
+    except Exception:
+        pass                      # stdout 被关（无控制台）→ 只写文件，不影响守护
     try:
         os.makedirs(os.path.dirname(LOG), exist_ok=True)
         with io.open(LOG, "a", encoding="utf-8", newline="") as f:
@@ -338,6 +417,190 @@ def _resolve_symbols(raw: str) -> str:
     return ",".join(keys)
 
 
+# ===========================================================================
+# ★ 2026-10-20 A2 新增：心跳假死检测（D2）
+# ===========================================================================
+def _project_root():
+    """向上找含 config_symbols.py 的工程根（不写死层级——写死过就错）。"""
+    r = _HERE
+    while r != os.path.dirname(r) and not os.path.isfile(
+            os.path.join(r, "config_symbols.py")):
+        r = os.path.dirname(r)
+    return r
+
+
+def _symbols_readonly():
+    """只读 workbench.json 的 selected，**不触发周频重选**（供 --hb-check 用）。"""
+    try:
+        with open(WORKBENCH, "r", encoding="utf-8") as f:
+            cfg = json.load(f) or {}
+        keys = [str(k).strip().upper() for k in (cfg.get("selected") or []) if str(k).strip()]
+        if keys:
+            return keys
+    except Exception:
+        pass
+    return [k.strip().upper() for k in DEFAULT_LEGS.split(",") if k.strip()]
+
+
+def _hb_files(keys):
+    """key → 心跳文件路径。文件名用 config_symbols 里的**中文名**拼。
+
+    只认「当前在跑的品种」——台账里还有 棕榈油/焦煤/白糖/鸡蛋 等历史心跳文件，
+    它们早就停了，若一起纳入检查会天天误判假死。
+    """
+    root = _project_root()
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        import config_symbols as _cs
+    except Exception as e:
+        _log(f"[假死检测] ⚠️ 读不到 config_symbols（{type(e).__name__}: {e}）→ 本轮跳过心跳检查")
+        return []
+    out, unknown = [], []
+    for k in keys:
+        info = _cs.SYMBOLS.get(str(k).strip().upper())
+        if not info:
+            unknown.append(str(k))
+            continue
+        out.append((str(k).upper(), str(info[0]), os.path.join(HB_DIR, f"{info[0]}_运行心跳.csv")))
+    if unknown:
+        _log(f"[假死检测] ⚠️ 无中文名映射、无法监控心跳：{','.join(unknown)}（请在 config_symbols 补）")
+    return out
+
+
+def _hb_state(keys, core_started):
+    """返回 [(key, 中文名, 路径, mtime|None, 停滞秒数)]。
+
+    ★ 停滞起点取 `max(mtime, core_started)`：核心刚重启时旧心跳文件是几十小时前的，
+      若直接比 mtime，会把「刚起来 10 秒的新核心」当场判成假死并杀掉 → 无限重启风暴。
+      以启动时刻为中轴，等于给每次重启一个 HB_STALL_SEC 的宽限期。
+    """
+    now = time.time()
+    rows = []
+    for key, name, path in _hb_files(keys):
+        try:
+            mt = os.path.getmtime(path)
+        except OSError:
+            mt = None
+        base = max(mt, core_started) if mt else core_started
+        rows.append((key, name, path, mt, now - base))
+    return rows
+
+
+def _hb_stalled(keys, core_started):
+    """(是否假死, 最差停滞秒数, 最差文件路径)。"""
+    rows = _hb_state(keys, core_started)
+    if not rows:
+        return False, 0.0, ""
+    worst = max(rows, key=lambda r: r[4])
+    return (worst[4] > HB_STALL_SEC), worst[4], worst[2]
+
+
+def _hb_report(keys):
+    """--hb-check：一次性打印各品种心跳新鲜度（运维排障 / 应急预案第 1 步靠它）。"""
+    rows = _hb_state(keys, 0.0)
+    print(f"心跳目录：{HB_DIR}")
+    print(f"{'品种':<10}{'中文名':<10}{'最后写入':<21}{'停滞(分)':>10}  判定")
+    bad = 0
+    for key, name, path, mt, age in rows:
+        ts = datetime.fromtimestamp(mt).strftime("%Y-%m-%d %H:%M:%S") if mt else "文件不存在"
+        verdict = "★假死" if age > HB_STALL_SEC else "正常"
+        if age > HB_STALL_SEC:
+            bad += 1
+        print(f"{key:<10}{name:<10}{ts:<21}{age/60:>10.1f}  {verdict}")
+    print(f"阈值 {HB_STALL_SEC/60:.0f} 分钟；异常 {bad} 个 / 共 {len(rows)} 个")
+    return 1 if bad else 0
+
+
+# ===========================================================================
+# ★ 2026-10-20 A2 新增：进程控制（D1 独立存活 / D3 退避熔断）
+# ===========================================================================
+def _spawn_core(cmd, new_console=True):
+    """拉起核心。
+
+    ★ CREATE_NEW_CONSOLE：核心独占一个控制台窗口。
+      这样「关掉核心窗口」只会杀掉核心本身，不会顺着共享控制台把守护一起带走
+      —— 这正是今晚 20:16–20:35 那 19 分钟空窗的根因（守护与核心同窗口）。
+    """
+    flags = CREATE_NEW_CONSOLE if new_console else 0
+    return subprocess.Popen(cmd, cwd=_HERE, creationflags=flags)
+
+
+def _kill_core(proc):
+    """终止核心（假死时用）。先 kill，再兜底 taskkill /T。"""
+    pid = getattr(proc, "pid", None)
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    try:
+        proc.wait(timeout=15)
+        return True
+    except Exception:
+        pass
+    if pid:
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        except Exception:
+            pass
+    try:
+        proc.wait(timeout=10)
+        return True
+    except Exception:
+        return False
+
+
+def _spawn_detached(extra_argv):
+    """用 pythonw + DETACHED_PROCESS 重新拉起自己，返回 (Popen, exe)。
+
+    DETACHED_PROCESS = 子进程**不继承任何控制台**。副作用有二，都是我们要的：
+      · 关掉启动它的 cmd 窗口 → 守护毫发无伤（今晚事故的直接修复）；
+      · 没有任何窗口能「误关」它 —— 停止必须显式 `--stop` 或 taskkill，已写进应急预案。
+    CREATE_NEW_PROCESS_GROUP 让它可以独立接收信号，不被父进程的 Ctrl+C 波及。
+    """
+    exe = sys.executable or ""
+    pyw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+    if os.path.isfile(pyw):
+        exe = pyw
+    cmd = [exe, "-u", os.path.abspath(__file__)] + list(extra_argv)
+    p = subprocess.Popen(cmd, cwd=_HERE,
+                         creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
+                         stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL,
+                         close_fds=True)
+    return p, exe
+
+
+def _stop_existing():
+    """--stop：停掉正在跑的守护（/T 连核心一起收），并清锁。"""
+    pid = 0
+    try:
+        with io.open(LOCK, "r", encoding="utf-8") as f:
+            pid = int((f.readline() or "0").strip() or 0)
+    except Exception:
+        pid = 0
+    if pid and _pid_alive(pid):
+        try:
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=30)
+        except Exception as e:
+            print(f"taskkill 失败：{type(e).__name__}: {e}")
+            return 1
+        time.sleep(1)
+        _log(f"人工 --stop：已终止守护 PID {pid}（/T 含核心进程树）")
+        print(f"已停止守护 PID {pid}（含核心）")
+    else:
+        print(f"没有在跑的守护（守护.lock PID={pid or '无'}）")
+    try:
+        if os.path.exists(LOCK):
+            os.remove(LOCK)
+    except Exception:
+        pass
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     # ★ 2026-10-18：默认改 auto —— 品种列表的唯一真相源 = workbench.json selected。
@@ -345,9 +608,85 @@ def main():
     ap.add_argument("--symbols", default="auto",
                     help="品种key逗号分隔，或 auto=读工作台 workbench.json 的 selected")
     ap.add_argument("--trade", action="store_true")
+    ap.add_argument("--detach", action="store_true",
+                    help="脱离控制台运行（正式用法）：关窗口不影响守护")
+    ap.add_argument("--stop", action="store_true", help="停止正在跑的守护（含核心）")
+    ap.add_argument("--hb-check", action="store_true", help="一次性心跳体检后退出")
+    # 以下为内部/测试用，不写进 help 以免误用
+    ap.add_argument("--detached", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--sandbox", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--core", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--no-window", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--poll", type=float, default=0.0, help=argparse.SUPPRESS)
+    ap.add_argument("--backoff", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--hb-stall", type=float, default=0.0, help=argparse.SUPPRESS)
+    ap.add_argument("--healthy-reset", type=float, default=0.0, help=argparse.SUPPRESS)
     args = ap.parse_args()
 
+    global LOG, LOCK, HB_DIR, CORE, POLL_SEC, BACKOFF, HB_STALL_SEC, HEALTHY_RESET_SEC
+    if args.sandbox:                      # 测试：日志/锁/心跳全部落到沙箱目录
+        d = os.path.abspath(args.sandbox)
+        os.makedirs(d, exist_ok=True)
+        LOG, LOCK, HB_DIR = (os.path.join(d, "守护日志.txt"),
+                             os.path.join(d, "守护.lock"), d)
+    if args.core:
+        CORE = os.path.abspath(args.core)
+    if args.poll > 0:
+        POLL_SEC = float(args.poll)
+    if args.backoff:
+        BACKOFF = tuple(float(x) for x in args.backoff.split(",") if x.strip())
+    if args.hb_stall > 0:
+        HB_STALL_SEC = float(args.hb_stall)
+    if args.healthy_reset > 0:
+        HEALTHY_RESET_SEC = float(args.healthy_reset)
+
+    _ensure_streams()
+
+    if args.stop:
+        return _stop_existing()
+
+    if args.detach:
+        extra = ["--symbols", args.symbols, "--detached"]
+        if args.trade:
+            extra.append("--trade")
+        if args.sandbox:
+            extra += ["--sandbox", args.sandbox]
+        if args.core:
+            extra += ["--core", args.core]
+        if args.no_window:
+            extra.append("--no-window")
+        if args.poll > 0:
+            extra += ["--poll", str(args.poll)]
+        if args.backoff:
+            extra += ["--backoff", args.backoff]
+        if args.hb_stall > 0:
+            extra += ["--hb-stall", str(args.hb_stall)]
+        if args.healthy_reset > 0:
+            extra += ["--healthy-reset", str(args.healthy_reset)]
+        p, exe = _spawn_detached(extra)
+        # ★ venv 的 pythonw.exe 是转发器：Popen 拿到的 PID 是转发器，真正的守护是它拉起的子进程。
+        #   ⇒ 不要报 Popen 的 pid（会误导排障），改为等锁落盘后报真实 PID。
+        real = 0
+        for _ in range(60):
+            try:
+                with io.open(LOCK, "r", encoding="utf-8") as f:
+                    real = int((f.readline() or "0").strip() or 0)
+                if real:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.1)
+        print(f"[已脱离控制台] 守护作为独立进程启动（{os.path.basename(exe)}），真实 PID={real or '启动中'}")
+        print("  本窗口可以直接关闭，守护不受影响。")
+        print(f"  守护日志：{LOG}")
+        print(f"  真正停止：python {os.path.basename(__file__)} --stop")
+        return 0
+
+    if args.hb_check:
+        return _hb_report(_symbols_readonly())
+
     symbols = _resolve_symbols(args.symbols)
+    keys = [k.strip().upper() for k in symbols.split(",") if k.strip()]
     cmd = [PY, "-u", CORE, "--symbols", symbols]
     if args.trade:
         cmd.append("--trade")
@@ -355,21 +694,58 @@ def main():
     n = 0
     if not _抢锁():
         _log("已有守护实例在运行（锁未拿到），本次不重复启动。")
-        return
-    _log(f"守护启动 symbols={symbols}（来源 {args.symbols}） trade={args.trade} pid={os.getpid()}")
+        return 2
+    _log(f"守护启动 symbols={symbols}（来源 {args.symbols}） trade={args.trade} "
+         f"pid={os.getpid()} detached={bool(args.detached)} "
+         f"假死阈值={HB_STALL_SEC/60:.0f}min 退避={list(BACKOFF)} 失败阈={FATAL_AFTER}")
+    fail = 0
     try:
         while True:
             n += 1
             _log(f"第 {n} 次拉起核心：{' '.join(cmd[1:])}")
+            started = time.time()
+            stalled_kill = False
             try:
-                rc = subprocess.call(cmd)
-            except KeyboardInterrupt:
-                raise
+                proc = _spawn_core(cmd, new_console=not args.no_window)
             except Exception as e:
                 rc = -1
                 _log(f"拉起核心失败：{type(e).__name__}: {e}")
-            _log(f"核心退出 rc={rc}，{RESTART_WAIT}s 后重启")
-            time.sleep(RESTART_WAIT)
+            else:
+                rc = -1
+                while True:
+                    try:
+                        rc = proc.wait(timeout=POLL_SEC)
+                        break
+                    except subprocess.TimeoutExpired:
+                        stalled, age, path = _hb_stalled(keys, started)
+                        if stalled:
+                            # ★ 红线 5：任何自动干预必须留可 grep 的一行
+                            _log(f"假死：心跳停滞 {age/60:.0f} 分钟"
+                                 f"（{os.path.basename(path)}）→ 重启")
+                            ok = _kill_core(proc)
+                            if not ok:
+                                _log(f"假死处置失败：PID {getattr(proc,'pid',None)} 未能终止，继续等待其自行退出")
+                            stalled_kill = True
+                            rc = -9
+                            break
+
+            ran = time.time() - started
+            # ---- 成功运行足够久 ⇒ 计数归零（避免「偶发一次崩」被永久累计）----
+            if ran >= HEALTHY_RESET_SEC:
+                if fail:
+                    _log(f"核心稳定运行 {ran/60:.1f} 分钟（≥{HEALTHY_RESET_SEC//60}）"
+                         f"→ 失败计数 {fail} 归零")
+                fail = 0
+            fail += 1
+            delay = BACKOFF[min(fail - 1, len(BACKOFF) - 1)]
+            if fail >= FATAL_AFTER:
+                _log(f"【FATAL】连续失败 {fail} 次，最后 rc={rc}，"
+                     f"本次运行 {ran/60:.1f} 分钟，{datetime.now():%Y-%m-%d %H:%M:%S} —— "
+                     f"核心疑似启动即崩（配置/令牌/席位/依赖），"
+                     f"退避 {delay}s 后仍会重试，守护不退出")
+            _log(f"核心退出 rc={rc}，{delay}s 后重启（连续失败 {fail} 次"
+                 f"{'，原因=假死' if stalled_kill else ''}）")
+            time.sleep(delay)
     except KeyboardInterrupt:
         _log("守护收到 Ctrl+C，正常退出")
     finally:
@@ -382,7 +758,9 @@ def main():
                 _log("已释放守护锁")
         except Exception:
             pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
+
