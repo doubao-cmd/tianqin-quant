@@ -355,6 +355,10 @@ def _boot_guard(record_dir, specs, allow_trade=False):
             "STOP_CAP": STOP_CAP,
             "INTRABAR_STOP": INTRABAR_STOP,
             "KSEC": KSEC,
+            # ★ #19-C（2026-10-22）：陈旧 bar 守卫阈值系数。写进 [PARAM] 是为了
+            #   **重启后能自证新代码已加载**（与风控二期 12:23 的 `[PARAM]` 同机制）：
+            #   日志里出现 `"STALE_MULT": 2` ⇒ 守卫在线；不出现 ⇒ 跑的还是旧进程。
+            "STALE_MULT": STALE_MULT,
             # 风控二期（D2 2026-10-21 拍板）
             "LEG_MAX": _lg.MAX_LEGS,
             "OVN_TOTAL_RATIO": _ovn.TOTAL_RATIO,
@@ -595,6 +599,9 @@ def _init_spec_state(s, record_dir, sizer, heartbeat_sec):
     #   ★ 不关止损：盘中扫损在 :2265 附近逐 tick 执行，不看 bar，不受本开关影响。
     s.update({"pos": 0, "entry": 0.0, "stop": 0.0, "bars_in": 0,
               "last_id": -1, "skip_first": True, "recovered": False,
+              # ★ #19-C（2026-10-22）：bar 周期随品种跑在 state 里，供陈旧守卫取
+              #   （阈值 = 2 × ksec；`KSEC` 仍是唯一来源，这里只是把它挂到 s 上）。
+              "ksec": KSEC,
               "last_order_ts": 0.0,
               # ★ 工作台集成：session 边界追踪（供时段闸门，默认 None 不启用）
               "_last_sid": None, "_sess_open_px": 0.0,
@@ -2144,7 +2151,85 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     s["_recon_base"] = True                # ★ P0-2：本会话对账基线已建立（下一拍起偏离即判）
 
 
-def _bar_gate(s, bar_id):
+# ============================================================ #19-C 陈旧 bar 守卫
+#   ★★ 2026-10-22（D2 裁定：C 采用数据驱动，不做交易日历）
+#   问题：核心重启后 `last_id` 为 -1 ⇒ 最后一根**已收盘**的 bar 被当成新 bar 重放，
+#         按过期价报单。实测 2026-10-21 18:03:41：BU+8 / EG-7 用 14:59 的价成交。
+#   判据：`now − bar 结束时间 > 2 × bar 周期` ⇒ 该 bar **只记账，不产生任何报单**。
+#   ★ 为什么判**结束**时间：tqsdk `objs.py:231` 明写「K线**起点**时间」⇒ 结束 = 起点 + 周期。
+#     若拿起点当结束，5min 周期下每根正常 bar 一出现就已"陈旧 300s"，全被误拦。
+#   ★ 为什么不做交易日历：6 品种 × 日夜盘 × 节假日要另维护一份表，等于新增一个
+#     静默拦截器（与 #18 同类风险）；数据驱动一句话就能判。
+#   ★ 与 B 的关系：B = 「启动首根不处理」（`skip_first`），C = 「时间对不上就不报单」。
+#     两者防的是不同缺口（B 挡重放首根，C 挡任何来路的陈旧 bar），**并存不替代**。
+STALE_MULT = 2          # 陈旧阈值 = 2 × bar 周期（5min ⇒ 600s）。保护结构，非策略参数。
+
+
+def _bar_period_sec(s=None):
+    """bar 周期（秒）。**从参数取**（`KSEC` / `s["ksec"]`），不硬编码 600。"""
+    try:
+        _v = int((s or {}).get("ksec") or KSEC)
+    except Exception:
+        _v = KSEC
+    return _v if _v > 0 else KSEC
+
+
+def _bar_start_epoch(bar):
+    """bar 的**起点**时间（epoch 秒）。认不出返回 None。
+
+    tqsdk `datetime` 是 unix epoch **纳秒**、UTC 基准（D1 2026-10-21 已实证：
+    `05:30` = 北京 `13:30`）。⇒ 与 `time.time()` 同基准，相减**不需要任何时区换算**。
+    """
+    try:
+        return int(bar["datetime"]) / 1e9
+    except Exception:
+        return None
+
+
+def _stale_info(s, bar, now_ts=None):
+    """判这根 bar 是否已陈旧。陈旧返回 dict，否则 None。
+
+    ⚠️ 拿不到 bar 时间时返回 None（**放行**）：守卫的失败方向必须是"不挡交易"。
+    """
+    _bs = _bar_start_epoch(bar)
+    if _bs is None:
+        return None
+    _pend = _bar_period_sec(s)
+    _end = _bs + _pend
+    _limit = STALE_MULT * _pend
+    _now = float(now_ts) if now_ts is not None else time.time()
+    _diff = _now - _end
+    if _diff <= _limit:
+        return None
+    return {"bar_start": _bs, "bar_end": _end, "now": _now,
+            "diff": _diff, "limit": _limit, "period": _pend}
+
+
+def _emit_stale_bar(s, st):
+    """落 `STALEBAR` 事件 + 打印一行。**只记账，不报单**（调用方保证已 return False）。"""
+    _pos = int(s.get("pos", 0) or 0)
+    _act = "平" if _pos else "开"
+    _lp = 0.0
+    try:
+        _lp = float(s["q"].last_price or 0)
+    except Exception:
+        _lp = 0.0
+    _bt = _dt.datetime.fromtimestamp(st["bar_end"]).strftime("%Y-%m-%d %H:%M:%S")
+    _nt = _dt.datetime.fromtimestamp(st["now"]).strftime("%Y-%m-%d %H:%M:%S")
+    _note = (f"bar_end={_bt} now={_nt} 差={st['diff']:.0f}s > {st['limit']}s"
+             f"（{STALE_MULT}×{st['period']}s）| 动作={_act} | 持仓={_pos}手"
+             f" | 只记账不报单")
+    _rec = s.get("rec")
+    if _rec is not None:
+        try:
+            _rec.event("STALEBAR", _note, _act, _lp)
+        except Exception:
+            pass
+    print(f"[STALEBAR][{s.get('name', '?')}] bar_end={_bt} now={_nt} "
+          f"差={st['diff']:.0f}s > {st['limit']}s ⇒ 只记账", flush=True)
+
+
+def _bar_gate(s, bar_id, bar=None, now_ts=None):
     """这根 bar 该不该处理。返回 True=处理 / False=跳过（跳过时已更新 last_id）。
 
     ★ #19（2026-10-21 19:00，D1 直接改，用户授权「工程量小的决策员直接做」）：
@@ -2155,6 +2240,10 @@ def _bar_gate(s, bar_id):
       为什么必须抽：`last_id` 只存内存、重启后为 -1，原来 `skip_first` 只在**重连**分支
       （本文件 :953）置位、**重启**分支不置位 ⇒ 重启后会把最后一根**已收盘**的 bar 当新 bar 重放。
       实测 2026-10-21 18:03:41：BU+8 / EG-7 依据 14:59:59.8 的 bar，在收盘后 3 小时成交。
+
+    ★★ #19-C（2026-10-22，D2 裁定）：再加一道**陈旧 bar 守卫**——`bar` 传入时，
+      若 `now − bar 结束时间 > 2 × 周期` ⇒ 落 `STALEBAR` 事件、只记账、返回 False。
+      仍在此函数内、仍可单测；`bar=None` 时行为与 B 完全一致（A20 用例不需改动）。
     """
     try:
         bid = int(bar_id)
@@ -2166,6 +2255,13 @@ def _bar_gate(s, bar_id):
     if s.get("skip_first"):
         s["skip_first"] = False     # 启动/重连后的首根 bar：记 id 防重复，不处理
         return False
+    # ---- ★★ #19-C 陈旧 bar 守卫：开仓与出场**都不报单**（陈旧价算的止损同样不可信）----
+    #   位置在 last_id 记账**之后** ⇒ 陈旧 bar 被消费掉，不会下一拍再触发。
+    if bar is not None:
+        _st = _stale_info(s, bar, now_ts)
+        if _st is not None:
+            _emit_stale_bar(s, _st)
+            return False
     return True
 
 
@@ -2303,7 +2399,7 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                 s["pos"] = 0; s["bars_in"] = 0
 
     bar = k.iloc[-1]
-    if not _bar_gate(s, bar["id"]):
+    if not _bar_gate(s, bar["id"], bar):
         return
     c, h, l = float(bar["close"]), float(bar["high"]), float(bar["low"])
     if c <= 0:
