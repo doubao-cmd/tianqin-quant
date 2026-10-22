@@ -22,6 +22,10 @@ E4 · vol targeting OOS（预注册卡 2026-10-15；任务书 P1' 2026-10-20）
 """
 import csv, math, os
 import numpy as np
+import _roll_loader
+
+LOAD_SYM = {}        # key -> {date: sym}  审计用
+LOAD_SKIPPED = []    # [(key, date, reason, detail)]
 
 ROLL_CSV = "工具/_数据/展期_合约日线.csv"
 OUT_DIR = "工具/_vol_targeting"
@@ -35,20 +39,16 @@ OOS_START = "2022-01-01"
 
 
 def load(key):
-    """返回 {date: close}（口径B：真实主力原始 close，未扣换月成本，与 E3 一致）。"""
-    out = {}
-    with open(ROLL_CSV, encoding="utf-8-sig") as f:
-        r = csv.reader(f); hdr = next(r); idx = {c: i for i, c in enumerate(hdr)}
-        for row in r:
-            if row[idx["key"]] != key:
-                continue
-            out[row[idx["日期"]][:10]] = float(row[idx["close"]])
+    """返回 {date: (sym, close)}（口径B：真实主力原始 close，未扣换月成本）。
+    主力 = 同日 (key,date) 内 volume 最大（缺失退 oi），由共享装载器实现；选中合约代码落盘审计。"""
+    out, skipped = _roll_loader.load_roll(key)
+    LOAD_SKIPPED.extend(skipped)
     return out
 
 
 def split_is_oos(close_map):
     isd, osd = {}, {}
-    for d, c in close_map.items():
+    for d, (sym, c) in close_map.items():
         if d <= IS_END:
             isd[d] = c
         elif d >= OOS_START:
@@ -154,14 +154,50 @@ def run_window(R, dates, label):
     return dict(label=label, N=N, T=T,
                 sharpe=dict(a=ma, b=mb, c=mc, d=md, nc=nac, nd=ndc),
                 inc=inc, yret_a=yret_a, stable=stable, has_short=has_short,
-                pos=pos, neg_bad=neg_bad)
+                pos=pos, neg_bad=neg_bad, ra=ra, rc=rc)
+
+
+# ---- 装载审计 ----
+def _audit_load(date_sym_map):
+    os.makedirs(OUT_DIR, exist_ok=True)
+    with open(os.path.join(OUT_DIR, "E4_load_audit.csv"), "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f); w.writerow(["key", "date", "sym"])
+        for k in KEYS:
+            for d in sorted(date_sym_map[k]):
+                w.writerow([k, d, date_sym_map[k][d]])
+    with open(os.path.join(OUT_DIR, "E4_roll_summary.csv"), "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f); w.writerow(["key", "year", "roll_count", "roll_dates"])
+        for k in KEYS:
+            dm = date_sym_map[k]; dates = sorted(dm.keys()); per_year = {}; prev = None
+            for d in dates:
+                y = d[:4]
+                if prev is not None and dm[d] != dm[prev]:
+                    per_year.setdefault(y, []).append(d)
+                prev = d
+            for y in sorted(per_year):
+                w.writerow([k, y, len(per_year[y]), ",".join(per_year[y])])
+    with open(os.path.join(OUT_DIR, "_load_skipped.csv"), "w", encoding="utf-8", newline="") as f:
+        w = csv.writer(f); w.writerow(["key", "date", "reason", "detail"])
+        for row in LOAD_SKIPPED:
+            w.writerow(row)
 
 
 # ---- 主流程 ----
 maps_is, maps_os = {}, {}
 for k in KEYS:
-    isd, osd = split_is_oos(load(k))
+    raw = load(k)
+    LOAD_SYM[k] = {d: s for d, (s, c) in raw.items()}
+    isd, osd = split_is_oos(raw)
     maps_is[k] = isd; maps_os[k] = osd
+
+# ---- 装载审计落盘（先于断言，确保审计产物落地）----
+_audit_load(LOAD_SYM)
+print(f"[审计] 选中合约/换月清单/剔除日已落盘 -> {OUT_DIR}/E4_load_audit.csv, E4_roll_summary.csv, _load_skipped.csv")
+
+# ---- 断言 A5 / A6（派单 T2）----
+_roll_loader.assert_selection(LOAD_SYM, label="E4")
+_roll_loader.assert_roll_freq(LOAD_SYM)
+print("[A5/A6] 主力选择一致性 + 换月频率 断言通过")
 
 R_is, d_is = build_returns(maps_is, KEYS)
 R_os, d_os = build_returns(maps_os, KEYS)
@@ -211,13 +247,40 @@ else:
     verdict = "INCONCLUSIVE"
 print(f"\n★★ 三态结论: {verdict}")
 
-# 存档
+# V3 验收：修正后 OOS (a) 须在 -0.20 ~ -0.40，与 D1 独立重算(-0.246)差>0.1 须停手对账
+oos_a = res_os["sharpe"]["a"]
+if not (-0.40 <= oos_a <= -0.20):
+    print(f"⚠️ [V3] 修正后 OOS (a)={oos_a:.4f} 落在 [-0.40,-0.20] 之外，与 D1 独立重算(-0.246)分歧过大，应停手对账！")
+else:
+    print(f"[V3] 修正后 OOS (a)={oos_a:.4f} ∈ [-0.40,-0.20]，与 D1(-0.246) 一致 ✅")
+
+# 逐年明细落盘（E4_yearly_修正.csv）
+ya = yearly(res_os["ra"], d_os)
+yc = yearly(res_os["rc"], d_os)
+with open(os.path.join(OUT_DIR, "E4_yearly_修正.csv"), "w", encoding="utf-8", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["year", "a_sharpe", "c_sharpe", "c_minus_a", "basket_a_annret_pct"])
+    for y in sorted(ya):
+        w.writerow([y, f"{ya[y]['sharpe']:.3f}", f"{yc[y]['sharpe']:.3f}",
+                    f"{yc[y]['sharpe']-ya[y]['sharpe']:+.3f}", f"{res_os['yret_a'][y]*100:+.1f}"])
+print(f"[审计] 逐年明细已落盘 -> {OUT_DIR}/E4_yearly_修正.csv")
+
+# 存档（保留旧版并标 ⛔）
 os.makedirs(OUT_DIR, exist_ok=True)
-with open(os.path.join(OUT_DIR, "E4_OOS_2022_2026结果.md"), "w", encoding="utf-8") as f:
-    f.write("# E4 · vol targeting OOS 结果（2026-10-20，单次盲跑）\n\n")
-    f.write("数据：展期_合约日线.csv（口径B 真实主力原始close，未扣换月成本），7 品种 {JD,JM,M,P,RU,SR,V}（缺 MA/RB）。\n")
+result_path = os.path.join(OUT_DIR, "E4_OOS_2022_2026结果.md")
+if os.path.exists(result_path):
+    with open(result_path, encoding="utf-8") as _fh:
+        old_text = _fh.read()
+    with open(os.path.join(OUT_DIR, "E4_OOS_2022_2026结果_旧版⛔.md"), "w", encoding="utf-8") as _fh:
+        _fh.write(old_text)
+
+with open(result_path, "w", encoding="utf-8") as f:
+    f.write("# E4 · vol targeting OOS 结果（数据修正重算，2026-10-20）\n\n")
+    f.write("> ⚠️ **本版为数据修正重算**：原 `load()` 用 `out[date]=close` 覆盖同日多合约，实际取到「当日最远月合约」而非主力（RU 2023-05-10 取到 ru2401=13355，而非 volume 最大 ru2309=12125）。\n")
+    f.write("> OOS 已两轮可见（原 bug 版 + 本次修正版），**数字仅用于修正口径，不得用于调参**；vol targeting 已于 `01` §1 定 🚫，不得复活。\n\n")
+    f.write("数据：展期_合约日线.csv（口径B 真实主力原始close，volume最大选主力，未扣换月成本，保留换月跳空），7 品种 {JD,JM,M,P,RU,SR,V}（缺 MA/RB）。\n")
     f.write("冻结项：target=15%/√252，WIN=20，LEV_CAP=3，COST_RT=0.0003。无未来函数。\n")
-    f.write("污染裁定：OOS 源未被任何 vol targeting 脚本读取过（E3 跳过>2021-12-31；E1/E2 用主连截止2021），本脚本为第一次也是唯一一次 OOS 计算 → 干净。\n\n")
+    f.write("污染裁定：OOS 源未被任何 vol targeting 脚本读取过（E3 跳过>2021-12-31；E1/E2 用主连截止2021）。本次为数据修正重算，非新一次 OOS 验证。\n\n")
     f.write(f"| 窗口 | 对齐日 | T | 等权(a) | 风险平价(b) | vol目标(c) | 叠加(d) | vol目标净 | 叠加净 |\n")
     for r in (res_is, res_os):
         s = r["sharpe"]
@@ -228,6 +291,14 @@ with open(os.path.join(OUT_DIR, "E4_OOS_2022_2026结果.md"), "w", encoding="utf
     f.write(f"\n方向稳定判据: {'PASS' if res_os['stable'] else 'FAIL'}；含空头Period: {'YES' if res_os['has_short'] else 'NO'}\n")
     f.write(f"IS→OOS (c): {dc_is:.3f}→{dc_os:.3f} (Δ{dc_os-dc_is:+.3f})；(d): {dd_is:.3f}→{dd_os:.3f} (Δ{dd_os-dd_is:+.3f})\n")
     f.write(f"\n★★ 三态结论: {verdict}\n")
+    f.write("\n### 装载审计（A5/A6 断言已通过）\n")
+    f.write(f"- 品种集：{len(KEYS)} 品种 {{{'|'.join(KEYS)}}}（口径B，缺 MA/RB）\n")
+    f.write(f"- 价格口径：主力未复权、含换月跳空\n")
+    f.write(f"- 窗口：{d_os[0]}~{d_os[-1]}，T={res_os['T']}\n")
+    f.write(f"- 选中合约代码明细：E4_load_audit.csv（每日一行）\n")
+    f.write(f"- 换月清单/次数·年：E4_roll_summary.csv（每品种每年，须在 8~16 内）\n")
+    f.write(f"- 剔除日（vol/oi 皆缺）：{len(LOAD_SKIPPED)} 行，见 _load_skipped.csv\n")
     f.write("\n偏离声明：① 篮子=7 品种（非任务书9，csv 缺 MA/RB）；② 口径B（非 E1 的口径A 主连）。故 IS↔OOS 仅同口径同篮子相对对照，不可与 E1 绝对夏普直接比。\n")
-    f.write("按任务书红线：未补数据/未调窗口；不宣称 vol targeting 有效（归因未定，留待 R2）。\n")
+    f.write("按任务书红线：未补数据/未调窗口；**不宣称 vol targeting 有效**（`01` §1 已定 🚫）。\n")
+    f.write("\n> ⛔ 旧版（口径 bug）见 `E4_OOS_2022_2026结果_旧版⛔.md`，不可引用。\n")
 print("\n结果已存档 -> 工具/_vol_targeting/E4_OOS_2022_2026结果.md")

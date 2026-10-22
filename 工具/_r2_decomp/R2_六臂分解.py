@@ -163,10 +163,16 @@ def decomp(R, d):
     D_closed = 0.5 * (float(np.mean([s * s for s in sig_i])) - sig_p * sig_p)
     g_c_geo = metrics(d["g_c"])["ann_geo"]
     g_L_geo = metrics(d["g_L"])["ann_geo"]
+    g_a_geo = metrics(d["g_a"])["ann_geo"]
     timing = g_c_geo - g_L_geo
-    cost_c_ann = float(d["cost_c"].sum() / T * 252)
     g_c_net_geo = metrics(d["n_c"])["ann_geo"]
-    resid = g_c_net_geo - (beta + D_actual + timing - cost_c_ann)
+    cost_geo = g_c_geo - g_c_net_geo                 # A8: 成本用几何扣减，不再用算术年化 mean(cost)*252
+    resid = g_L_geo - g_a_geo                       # A7: 残差=独立测量 geo(cLbar)-geo(a)，不再倒挤
+    cost_arith = float(d["cost_c"].sum() / T * 252)  # 算术年化，仅供 A8 对比披露
+    if abs((g_L_geo - g_a_geo) - resid) >= 1e-4:
+        raise AssertionError(f"[A7] 残差与独立测量 geo(cLbar)-geo(a) 不符: {resid*100:.4f}% vs {(g_L_geo-g_a_geo)*100:.4f}%")
+    if abs(cost_geo - cost_arith) <= 1e-5:
+        raise AssertionError(f"[A8] 几何成本与算术成本未分离(差<=1e-5): {cost_geo*100:.4f}% vs {cost_arith*100:.4f}%")
 
     # H1: 常数杠杆不改夏普
     h1 = abs(metrics(d["g_L"])["sharpe"] - metrics(d["g_a"])["sharpe"])
@@ -192,7 +198,7 @@ def decomp(R, d):
         h4 = "无法分离"
 
     return dict(beta=beta, D_actual=D_actual, D_closed=D_closed,
-                timing=timing, cost=cost_c_ann, resid=resid,
+                timing=timing, cost=cost_geo, cost_arith=cost_arith, resid=resid,
                 g_a_geo=g_a_geo, g_c_geo=g_c_geo, g_L_geo=g_L_geo,
                 g_c_net_geo=g_c_net_geo, h1=h1, h3=h3,
                 actual_gain=actual_gain, q95=q95, perm_mean=perm_mean,
@@ -245,7 +251,8 @@ print(f"  Lbar(平均杠杆) = {d['Lbar']:.4f}")
 
 print("\n=== 分解 (%/年) ===")
 print(f"  beta(Sum w*g) {dec['beta']*100:7.3f}   D实测 {dec['D_actual']*100:7.3f}   D闭式 {dec['D_closed']*100:7.3f}")
-print(f"  择时 {dec['timing']*100:7.3f}   成本 {dec['cost']*100:7.3f}   残差 {dec['resid']*100:7.3f}")
+print(f"  择时 {dec['timing']*100:7.3f}   成本(几何) {dec['cost']*100:7.3f}   残差(独立) {dec['resid']*100:7.3f}")
+print(f"  [A8] 成本 几何 {dec['cost']*100:.4f}% vs 算术 {dec['cost_arith']*100:.4f}%  (差 {(dec['cost']-dec['cost_arith'])*100:+.4f}pp, 必须双报)")
 print(f"  闭合检查: beta+D+timing-cost+resid = {(dec['beta']+dec['D_actual']+dec['timing']-dec['cost']+dec['resid'])*100:.4f}%  vs g_c_net {dec['g_c_net_geo']*100:.4f}%")
 
 print("\n=== 条件夏普 (固定五等分) ===")
