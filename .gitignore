@@ -246,3 +246,6 @@ HTML效果参考手册.html
 策略/06_MA13超短线/模拟盘/台账/连亏分布_*.md
 # 换月/重启临时快照（*.json.tmp）：锁文件同级临时态
 *.json.tmp
+
+# ===== 2026-10-22 R1 成本尺：kline 中间数据（3MB，可由 fetch_kline.py 重拉）不入库 =====
+工具/_r1_cost/out/kline/
