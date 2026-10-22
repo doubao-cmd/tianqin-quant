@@ -50,7 +50,15 @@ def main():
         df.to_csv(CSV, index=False, encoding="utf-8-sig")
         log(f"落盘 {CSV}")
 
-    df["date"] = pd.to_datetime(df["date"])
+    # ⚠️ date 列落盘后是 20190102 形式的**整数**；pd.to_datetime 会把整数当成
+    # 「自 epoch 的纳秒」解析 ⇒ 全部静默塌成 1970-01-01（不报错）。
+    # 2026-10-22 D2 修：原写法只有这一处漏改（回测_截面基差.py:56-58 当时已正确处理，
+    # 注释也写了同一个坑，但兄弟文件没跟着改）⇒ 走缓存路径重跑时「再平衡期数=1」，
+    # gate 会误判成 ❌「数据可行性不通过」。两条路径（拉数 / 复用）必须行为一致。
+    if pd.api.types.is_numeric_dtype(df["date"]):
+        df["date"] = pd.to_datetime(df["date"].astype("int64").astype(str), format="%Y%m%d")
+    else:
+        df["date"] = pd.to_datetime(df["date"])
     df["basis"] = pd.to_numeric(df["dom_basis_rate"], errors="coerce")
 
     log(f"\n交易日 {df['date'].nunique()} 天  区间 {df['date'].min().date()} ~ {df['date'].max().date()}")
@@ -83,13 +91,20 @@ def main():
     log(f"\n有效品种数 ≥15 的期数占比 = {ok:.0%}（阈值：多数期 ≥15）")
 
     log("\n" + "-" * 78)
+    # 2026-10-22 D2 措辞修正：原写「可冻结参数进引擎」把**前置数据可行性检查**
+    # 冒充成了**最终裁决**。本 gate 只判"数据够不够跑"，不判"因子行不行"——
+    # 卡片 §五 四条判据才是裁决者。原措辞导致产物末行 ✅ 与卡片 ⛔ 直接对立
+    # （产物 2026-10-12 23:40 写「可冻结」，卡片 2026-10-13 判「无效」）。
     if ok >= 0.9 and len(m) >= 24:
-        log("✅ 截面频率预算通过：宽度够、期数够 ⇒ 可冻结参数进引擎")
+        log("✅ 数据可行性通过：宽度够、期数够 ⇒ **可进入 IS 回测**")
+        log("   ★ 本行只说明「数据够跑」，不等于因子有效；有效性由卡 §五 四条判据裁决。")
     else:
-        log("❌ 截面频率预算不通过 ⇒ 按卡规定收档，不调参")
+        log("❌ 数据可行性不通过 ⇒ 按卡规定收档，不调参")
     log("=" * 78)
 
-    with open(LOG, "w", encoding="utf-8") as f:
+    # newline="\n"：Windows 文本模式默认把 \n 写成 \r\n，会让产物每次重跑都产生
+    # 纯行尾 diff 噪声（项目规范 txt/csv = LF，见 .gitattributes）
+    with open(LOG, "w", encoding="utf-8", newline="\n") as f:
         f.write("\n".join(out) + "\n")
 
 
