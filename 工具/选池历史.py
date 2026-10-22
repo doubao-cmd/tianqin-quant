@@ -246,6 +246,10 @@ def cmd_show(args):
         pass
     print("=" * 96)
     print(f"  文件：{HISTORY}")
+    print("  ★ 语义：重选日 = 决策日（workbench.json 落盘日），不等于生效日 ——")
+    print("    真正换仓要等守护重启、核心按新 --symbols 起来才生效。")
+    print("    （换池逻辑在 ma13_watchdog_main.py 抢锁之前跑：08:55 兜底启动若发现守护在跑会 return 2，")
+    print("      这时池已写入 workbench.json 但正在跑的核心仍是旧池 —— 属已知路径，非 bug。）")
     return 0
 
 
