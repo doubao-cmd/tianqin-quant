@@ -263,7 +263,12 @@ def chk_22c(L, now):
         return _row("#22C", "隔夜快照", BAD, "文件不存在", "快照从未落盘 ⇒ 隔夜敞口不可见")
     hist = os.path.join(L, "隔夜敞口_历史.csv")
     last = _csv_last_row(hist)
-    tail = f"；历史末行 {str(list(last.values())[0])[:10]}" if last else ""
+    # ★ 2026-10-22 D2 拍板：必须同时报 `时间` 与 `交易日`。
+    #   只报时间 ⇒ 「昨天夜盘 20:00 拍的（正常）」和「今天该拍没拍（异常）」
+    #   在显示上无法区分 —— 那正是规则 H 要治的「不可观测」。
+    _ts_s = str(last.get("时间") or "").strip()[:19]
+    _td_s = str(last.get("交易日") or "").strip()
+    tail = (f"；末行 {_ts_s} 交易日={_td_s}" if (_ts_s or _td_s) else "") if last else ""
     try:
         from lib import trade_calendar as tc
     except Exception:
