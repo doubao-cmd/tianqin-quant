@@ -107,6 +107,32 @@ def is_downgrade_day(day):
 
 
 # ---------------------------------------------------------------- #22-C 快照
+def _snap_ts_valid_for_day(ts, day):
+    """这份快照的 ts 是否属于「交易日 day 当天」（用于判定它是不是提前消费的）。
+
+    ★★ 为什么需要（2026-10-22 实盘事故）：
+      `trading_day()` 在 `hour >= 20` 时就 +1 天（夜盘属次日）。而 `#22-C` 的调用方
+      原本只判 `hour >= 15`。于是**夜盘一启动（20:00）就写了一份「次日」的快照**，
+      把次日的额度提前消费掉。实测 `2026-10-21 20:00:37` 写了 `trade_day=20261022`
+      的份；到 `2026-10-22` 15:00 后，`trading_day()` 仍是 `20261022` ⇒ 幂等命中
+      ⇒ **10-22 的真收盘快照整天没写**，历史里留着的是「10-21 夜盘的持仓」却标成
+      10-22（FU/SA 方向与实际相反、缺 M、BU 手数不同）。
+
+    判据：`ts` 的**自然日**必须等于 `day`。
+    （只校验日期、不校验小时：真实调用方只在 15:00–20:00 窗口内写，小时本就 >= 15；
+      而"提前消费"事故的特征恰恰是**日期对不上**——10-21 20:00 写的 ts 落在 10-21，
+      却被标成 trade_day=20261022。多校验小时只会误伤早上跑的自检/补记。）
+
+    解析失败一律返回 False（= 需要重写）。方向是刻意的：快照是纯记录，多写一份只会
+    多几行日志；漏写会让 `#22-C` 的阈值回检数据源直接缺一天，无法补救。
+    """
+    try:
+        t = _time.strptime(str(ts).strip(), "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return False
+    return _time.strftime("%Y%m%d", t) == str(day)
+
+
 def snapshot(record_dir, day, legs, equity, margin=None, force=False):
     """落一份隔夜敞口快照（#22-C）。**永不抛**，返回 (ok, note)。
 
@@ -125,7 +151,8 @@ def snapshot(record_dir, day, legs, equity, margin=None, force=False):
             try:
                 with open(pj, "r", encoding="utf-8") as f:
                     old = json.load(f)
-                if str(old.get("trade_day")) == td:
+                if str(old.get("trade_day")) == td and \
+                        _snap_ts_valid_for_day(old.get("ts"), td):
                     return False, "本交易日已快照"
             except Exception:
                 pass
@@ -296,19 +323,33 @@ def selftest():
     print("  8 权益缺失放行 OK")
 
     # 9 快照落盘 + 幂等
+    #   ★ 2026-10-22 修：这里原本固定传 "20261021"，而 snapshot 内部的 ts 取**当前**
+    #   日期 ⇒ 新增的「ts 自然日必须等于 day」校验会判定不合法并重写，第二次就不是
+    #   幂等命中了。改用真实当天日期，让 ts 与 day 天然一致。
     d = tempfile.mkdtemp(prefix="ovn_")
-    ok, note = snapshot(d, "20261021", legs, eq, margin=300_000)
+    _today = _time.strftime("%Y%m%d")
+    ok, note = snapshot(d, _today, legs, eq, margin=300_000)
     assert ok, note
-    ok2, note2 = snapshot(d, "20261021", legs, eq, margin=300_000)
+    ok2, note2 = snapshot(d, _today, legs, eq, margin=300_000)
     assert ok2 is False and "已快照" in note2, (ok2, note2)
     with open(os.path.join(d, SNAP_JSON), encoding="utf-8") as f:
         doc = json.load(f)
-    assert doc["trade_day"] == "20261021" and len(doc["legs"]) == 2, doc
+    assert doc["trade_day"] == _today and len(doc["legs"]) == 2, doc
     assert abs(doc["total_ratio"] - 0.408) < 0.01, doc["total_ratio"]
     print("  9 快照落盘与幂等 OK")
 
+    # 9b ★ 提前消费必须重写：ts 落在前一自然日、却标成今天（2026-10-21 20:00:37 事故）
+    d0 = tempfile.mkdtemp(prefix="ovn_")
+    with open(os.path.join(d0, SNAP_JSON), "w", encoding="utf-8") as f:
+        json.dump({"ts": "2000-01-01 20:00:37", "trade_day": _today,
+                   "legs": [], "total_notional": 0.0}, f)
+    ok3, note3 = snapshot(d0, _today, legs, eq)
+    assert ok3 is True, f"ts 与 day 日期不符时必须重写，却返回 {ok3}/{note3}"
+    print("  9b 提前消费的快照被重写 OK")
+
     # 10 空仓也能快照（写一行"空仓"，供连续性统计）
-    ok, note = snapshot(d, "20261022", [], eq)
+    d2 = tempfile.mkdtemp(prefix="ovn_")
+    ok, note = snapshot(d2, _today, [], eq)
     assert ok, note
     print("  10 空仓快照 OK")
 

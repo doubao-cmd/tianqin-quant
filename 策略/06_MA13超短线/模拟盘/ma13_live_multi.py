@@ -31,6 +31,9 @@ if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
 from tqsdk import TqApi, TqSim, TqKq, TqAuth
+# ★ 2026-10-22：Quote.datetime 是**字符串**（非 datetime），必须显式转换才能算时间差。
+#   转成 aware datetime 后取 .timestamp()（epoch），与 time.time() 同基准，不涉及时区换算。
+from tqsdk.tafunc import time_to_datetime as _t2dt
 from lib.engine import _LiveRecorder
 from lib.ops import (OrderLedger, RiskGate, atomic_write_json, read_json,
                      leg_prefix, find_orphan)
@@ -442,7 +445,15 @@ def _periodic_risk(api, specs, shared, acc_box, record_dir, allow_trade,
 
         # ---------------- #22-C 每日收盘后一份隔夜敞口快照 ----------------
         try:
-            if _dt.datetime.now().hour >= 15 and _RSK_STATE.get("snap_day") != day:
+            # ★★ 2026-10-22 修：写入窗口从 `hour >= 15` 收紧到 `15 <= hour < 20`。
+            #   原因：`trading_day()` 在 hour>=20 时会 +1 天，而这里原本 hour>=15 就写。
+            #   实测 10-21 20:00:37 那次（进程重启后第一时间跑）写了 trade_day=20261022
+            #   的份，把 10-22 的额度提前消费了；10-22 15:00 后 trading_day 仍是
+            #   20261022 ⇒ 幂等命中 ⇒ **10-22 的真收盘快照整天没写**，历史里留着的是
+            #   「10-21 夜盘的持仓」标成 10-22（FU/SA 方向与实际相反、缺 M）。
+            #   语义应按「日盘收盘后的隔夜敞口」取，而收盘就是 15:00、夜盘 20:00 才起。
+            _h_now = _dt.datetime.now().hour
+            if 15 <= _h_now < 20 and _RSK_STATE.get("snap_day") != day:
                 # ★★ #18 P1-A 第 3 件（2026-10-21）：快照同样读 shared["pos"]。
                 #   不先回填就会把**鬼腿**算进隔夜敞口：实测 15:01:04 快照记
                 #   FU+EG+BU+SA = 1,243,200 / 1.2642×，而真实只有 FU+SA =
@@ -458,6 +469,15 @@ def _periodic_risk(api, specs, shared, acc_box, record_dir, allow_trade,
                     _aq.push(record_dir, _aq.LEVEL_INFO, "隔夜快照",
                              f"{day} 隔夜敞口快照已落盘：{note}",
                              dedup_key=f"ovn-snap:{day}")
+                elif str(note) == "本交易日已快照":
+                    # ★★ 2026-10-22 修：幂等命中同样置位 `snap_day`。
+                    #   原代码只在 ok=True 时置位，幂等命中（文件里已有今天这份）不置位
+                    #   ⇒ 每 60s 重试一次、每次打一行 ⇒ 实测今日 350 行日志里 198 行
+                    #   （57%）是这句「未落盘：本交易日已快照」，把真事故日志淹了。
+                    #   幂等命中在语义上就是「今天这件事已经办完」（通常是重启前写的），
+                    #   与 ok=True 等价 ⇒ 必须一起置位。真失败（写盘报错）仍保留每次提示。
+                    _RSK_STATE["snap_day"] = day
+                    print(f"[隔夜快照] {day} 已快照（重启前已落盘，跳过重写）", flush=True)
                 else:
                     print(f"[隔夜快照] 未落盘：{note}", flush=True)
         except Exception as e:                          # noqa: BLE001
@@ -2396,12 +2416,29 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     if INTRABAR_STOP and s.get("pos", 0) != 0 and s.get("stop", 0) > 0:
         _lp_s = q.last_price
         _fresh = False
+        _age = 1e9
         if _lp_s is not None and not math.isnan(_lp_s) and _lp_s > 0:
             try:
-                _age = abs((_dt.datetime.now() - q.datetime).total_seconds())
+                # ★★ 2026-10-22 修「5 天静默失效」：原写法 `_dt.datetime.now() - q.datetime`
+                #   是 datetime 减 **str**（tqsdk `Quote.datetime` 声明就是 str，
+                #   objs.py:19 格式 "2017-07-26 23:04:21.000001"）⇒ 每次必抛 TypeError
+                #   ⇒ 被下面的 except 吞掉 ⇒ `_age=1e9` ⇒ `_fresh` 恒 False
+                #   ⇒ 本分支自 2026-10-17 上线起**一次都没触发过**（台账 0 条「盘中触价扫损」）。
+                #   改为 epoch 口径：aware datetime 的 `.timestamp()` 与 `time.time()` 同基准，
+                #   不涉及本地时区，也不会有 naive/aware 混算问题。
+                #   ⚠️ 不可写成 `datetime.now() - time_to_datetime(...)`：
+                #      `time_to_datetime` 返回 tz-aware（tqsdk/datetime.py:58 `tz=_cst_tz`），
+                #      与 naive 的 now() 相减**同样抛 TypeError** —— 换个姿势踩同一个坑。
+                _age = abs(time.time() - _t2dt(q.datetime).timestamp())
             except Exception:
                 _age = 1e9
             _fresh = _age < 120
+        # ★ 规则 H：判据必须可观测。首次拿到「新鲜报价」时打一条，
+        #   用于证明机制真的在跑 —— 旧 bug 的特征正是「常量开了、注释写了、日志一条都没有」。
+        if _fresh and not s.get("_intrabar_ok"):
+            s["_intrabar_ok"] = True
+            print(f"[{s['name']}][INTRABAR] 盘中扫损已生效 age={_age:.1f}s "
+                  f"pos={s['pos']} stop={s['stop']:.1f} 阈值=<120s", flush=True)
         if _fresh:
             _hit = (_lp_s <= s["stop"]) if s["pos"] > 0 else (_lp_s >= s["stop"])
             if _hit:
@@ -2423,6 +2460,15 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                 print(f"[{s['name']}][STOP] 盘中扫损 {_dir} {_hands}手 @≈{_lp_s:.1f} "
                       f"(stop={s['stop']:.1f})", flush=True)
                 s["pos"] = 0; s["bars_in"] = 0
+                # ★★ 2026-10-22：平仓独占这一拍 —— 禁止「同一 tick 平完立刻反手」。
+                #   本分支修好后实测会出现：止损以实时价 3001.9 认输，同一拍又按
+                #   当根 bar 的指标开回多单（成交基准还是 bar 收盘价 3021.9），
+                #   等于「逆着自己刚认输的方向再赌」，且成交价与市价严重脱节。
+                #   bar 级出场没这个问题（收盘判定 + 下一根开盘成交，中间有 5min 缓冲），
+                #   所以只在 tick 分支加。
+                sh.update({"dt": q.datetime, "price": float(_lp_s), "pos": 0, "tgt": 0})
+                _sync_shared_pos(shared, s)
+                return
 
     bar = k.iloc[-1]
     if not _bar_gate(s, bar["id"], bar):

@@ -334,20 +334,32 @@ def t10_重启不清零_仍然拒开():
 def t8b_触阈_持仓stop不变_拒开():
     """T3#3 离线等价：①新开被拒且台账有 DAILYSTOP/RISKBLOCK 行
     ②已有持仓的 stop **绝不被风控改动** ③平仓/止损/撤单仍走原通道
-    （dloss 只门控「新开仓入口」，不接触 stop、不拦平仓/撤单）。"""
+    （dloss 只门控「新开仓入口」，不接触 stop、不拦平仓/撤单）。
+
+    ⚠️ 2026-10-22 改：原版把①建立在「同一拍先止损平仓（pos 8→0）再撞拒开闸门」上，
+       那条路径依赖**盘中扫损当场 return**（D2 当日修复）就被切断了。现按职责拆开：
+       ① 用空仓+信号直接测「拒开」，② 单独测「持仓 stop 不被改动」，③ 测「破 stop 仍能平」。
+       拆开后每段只验证一件事，不再依赖两个分支的执行顺序。
+    """
     g = _guard(cur=985_000.0)                     # 恰好 −1.5% ⇒ 触发
-    s, rec, api = _mkstate(pos=8, cloud=8)
-    s["stop"] = 3010.0                            # 已有持仓的止损位
+
+    # ① 空仓 + 有开仓信号 ⇒ 新开被拒（且落 DAILYSTOP / RISKBLOCK 台账）
+    s, rec, api = _mkstate(pos=0, cloud=0)
     acc_box = {"acc": _Acc(985_000.0), "dloss": g, "_dl_ts": 0.0}
     m._process(api, s, True, {s["key"]: {}}, acc_box, _fuse())
-    # ① 新开仓（BUY/OPEN）被拒；平仓/撤单不受限
     opens = [x for x in api.inserts if x[1] == "BUY" and x[2] == "OPEN"]
     _ok(not opens, f"触阈后仍新开仓：{opens}")
     _ok("RISKBLOCK" in rec.kinds(), f"缺拒开台账：{rec.kinds()}")
     _ok(any("停加仓阀" in t for t in rec.texts("RISKBLOCK")), rec.texts("RISKBLOCK"))
     _ok(any("当日亏损" in t for t in rec.texts("DAILYSTOP")), rec.texts("DAILYSTOP"))
-    # ② 已有持仓 stop 不被风控改动
-    _ok(s["stop"] == 3010.0, f"风控改动了已有止损={s['stop']}（禁区）")
+
+    # ② 已有持仓、现价未破 stop ⇒ 本拍不交易，且风控绝不改 stop
+    s1, _, api1 = _mkstate(pos=8, cloud=8)
+    s1["stop"] = 2990.0                           # 现价 3001.95 > 2990 ⇒ 未破
+    acc_box1 = {"acc": _Acc(985_000.0), "dloss": g, "_dl_ts": 0.0}
+    m._process(api1, s1, True, {s1["key"]: {}}, acc_box1, _fuse())
+    _ok(s1["stop"] == 2990.0, f"风控改动了已有止损={s1['stop']}（禁区）")
+
     # ③ 平仓/止损走原通道：价格触 stop ⇒ 仍报 SELL/CLOSE（同 t9 已证，此处复验）
     s2, rec2, api2 = _mkstate(pos=8, cloud=8)
     s2["stop"] = 3010.0                           # 现价 3001.95 ≤ stop ⇒ 盘中扫损
@@ -688,6 +700,44 @@ def t22_快照不含鬼腿():
     print("  PASS  t22_快照不含鬼腿")
 
 
+# ============================================== 盘中扫损接线（D2 2026-10-22）
+def t23_盘中扫损_只由tick触发_陈旧价不触发():
+    """★ 回归用例：`INTRABAR_STOP` 自 2026-10-17 上线起**一次都没触发过**。
+
+    根因：`_age = datetime.now() - q.datetime`，而 tqsdk `Quote.datetime` 是 **str**
+    （objs.py:19 形如 "2017-07-26 23:04:21.000001"）⇒ 每次抛 TypeError ⇒ 被 except
+    吞掉 ⇒ `_age=1e9` ⇒ `_fresh` 恒 False ⇒ 每 tick 跳过。
+
+    ⚠️ 本用例刻意让 **bar 的 low 远离止损、只有实时价触及**：
+       bar 级出场必然不触发 ⇒ 出现 CLOSE 单只可能来自盘中扫损分支。
+       旧的 t9 设 stop=3010 而 low≈3001.5，**bar 级也会触发**，
+       所以 t9 通过并不能证明 tick 分支活着（这正是该 bug 藏了 5 天的原因）。
+    """
+    # ① 新鲜报价 + 实时价破止损 ⇒ 必须报平仓单（且走的是 tick 分支）
+    s, rec, api = _mkstate(pos=8, cloud=8)
+    s["stop"] = 3010.0
+    s["q"] = _Quote(px=3001.95)                 # 实时价已破止损，报价新鲜
+    s["k"] = _kline(base=3020.0)                # low≈3021.45 > 3010 ⇒ bar 级不会触发
+    box = {"acc": _Acc(1_000_000.0), "dloss": _guard(cur=1_000_000.0), "_dl_ts": 0.0}
+    m._process(api, s, True, {s["key"]: {}}, box, _fuse())
+    closes = [x for x in api.inserts if x[2] in ("CLOSE", "CLOSETODAY")]
+    _ok(bool(closes), f"实时价已破止损却没报平仓单 ⇒ 盘中扫损仍未生效：{api.inserts}")
+    _ok(s["pos"] == 0, f"平仓后本地持仓必须归零：pos={s['pos']}")
+    _ok(s.get("_intrabar_ok") is True,
+        "缺 `_intrabar_ok` 标记 ⇒ 这单来自 bar 级分支，tick 分支仍是死的")
+
+    # ② 陈旧报价（收盘 15:00，age>120s）⇒ 绝不许平，否则会拿收盘价误平真实仓
+    s2, _, api2 = _mkstate(pos=8, cloud=8)
+    s2["stop"] = 3010.0
+    s2["q"] = _Quote(px=3001.95, dt="2026-10-22 15:00:00.000000")
+    s2["k"] = _kline(base=3020.0)
+    box2 = {"acc": _Acc(1_000_000.0), "dloss": _guard(cur=1_000_000.0), "_dl_ts": 0.0}
+    m._process(api2, s2, True, {s2["key"]: {}}, box2, _fuse())
+    closes2 = [x for x in api2.inserts if x[2] in ("CLOSE", "CLOSETODAY")]
+    _ok(not closes2, f"陈旧报价（age>120s）不得触发平仓，实际报单：{closes2}")
+    print("  PASS  t23_盘中扫损_只由tick触发_陈旧价不触发")
+
+
 # ------------------------------------------------------------------ main
 def main():
     tests = [t1_账实不符_锁只出不进, t2_反向偏离也锁, t3_首次对账不锁_仍接管,
@@ -701,7 +751,9 @@ def main():
              t18_腿数闸门_达K拒开_持仓不变, t19_隔夜上限_超限拒开_平仓放行,
              # #18 P1-A 鬼腿双计（D1 2026-10-21 审计）
              t21_鬼腿双计_真相源回填, t22_快照不含鬼腿,
-             t20_告警队列_分级与去重]
+             t20_告警队列_分级与去重,
+             # 盘中扫损接线（D2 2026-10-22：修「写了 5 天从未触发」）
+             t23_盘中扫损_只由tick触发_陈旧价不触发]
     bad = 0
     print("=" * 72)
     print("P0-2 / P1-1 / P1-3 / #15 / #16 接线级单测")
