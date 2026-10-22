@@ -1,0 +1,40 @@
+{
+  "symbol": "KQ.m@DCE.p",
+  "symbol_cn": "棕榈油",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 1,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0
+  },
+  "start": "2026-01-01",
+  "end": "2026-02-15",
+  "bars": 5366,
+  "annual_bars": 17495.6,
+  "trades": 114,
+  "wins": 31,
+  "win_rate": 0.2719,
+  "sharpe": -2.3677,
+  "sharpe_11500": -1.9196,
+  "final_equity": 181720.0,
+  "total_return": -0.0914,
+  "max_drawdown": 0.1562,
+  "bar_avg_drawdown": 0.0273,
+  "blown": false,
+  "commission": 2290.0,
+  "cost_assumption": "滑点1跳+佣金2.5元/手/边; 本金200000; 手数=锁死200000(对齐模拟盘RISK_EQUITY)×1%÷ATR风险夹[1,8]+名义敞口≤权益×2倍; 止损=止损线成交(跳空用开盘); 乘数10; 一跳1.0; 标定2026-10-10"
+}
