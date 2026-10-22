@@ -90,6 +90,9 @@ class _Order:
         self.last_msg = ""
         self.is_dead = False
         self.limit_price = float("nan")
+        # ★ tqsdk Order.trade_price = 成交均价（objs.py）。仓位归零后云端持仓均价
+        #   读不到，但订单自己这个字段仍在 ⇒ 平仓侧滑点的唯一可靠来源。
+        self.trade_price = float("nan")
 
 
 class _Api:
@@ -739,6 +742,66 @@ def t23_盘中扫损_只由tick触发_陈旧价不触发():
 
 
 # ------------------------------------------------------------------ main
+def t24_平仓归零也进滑点表_订单成交均价兜底():
+    """★ 回归用例（R1 §九 未闭合项「止损侧成本结构性缺失」）。
+
+    根因：`avg` 取自云端持仓均价 `position_price_long / _short`，而这两个字段
+    **只在还有仓时才存在**。平仓到零仓（止损 / 时间止损 / 趋势出场）⇒ net=0
+    ⇒ px_l / px_s 都是 nan ⇒ `avg = None` ⇒ 走 else 分支「云端均价未就绪」
+    ⇒ **既不写 `*_滑点.csv`、也不记 FILL_CONFIRMED**。
+    实测：2026-10-22 21:01:27 燃料油多平 8 手（盘中扫损）在滑点表里零行 ——
+    于是此前所有 `*_滑点.csv` 只有开仓侧，**最贵的市价平仓侧全缺**。
+
+    修法：用订单自身的 `trade_price`（成交均价）兜底。本用例模拟
+    「空头止损平仓、云端已归零、决策价 3250.8、真实成交均价 3259.0」。
+    ⚠️ 与 t23 互补：t23 管「会不会触发」，本用例管「触发后有没有留下成本读数」。
+    """
+    s, rec, api = _mkstate(pos=0, cloud=0)          # 云端已归零 ⇒ 持仓均价读不到
+    s["name"] = "豆粕"
+    o = _Order("o_stop")
+    o.status = "FINISHED"
+    o.trade_price = 3259.0                          # 真实成交均价
+    s["pending_fill"] = [{
+        "ts": time.time() - m.FIX_WAIT_SEC - 1,
+        "side": "平", "dir": "空", "hands": 8,
+        "ref_price": 3250.8,                        # 决策价 = 触发那一刻 last_price
+        "key": "K_STOP", "expect_net": 0, "order": o,
+        "offset": "CLOSE", "symbol": "DCE.m2701",
+        "bar_time": "2026-10-22 21:01:00", "sig_close": 3250.8,
+    }]
+    m._cloud_fill_stats(api, s)
+
+    rows = m._slip.read(s["record_dir"], "豆粕")
+    _ok(bool(rows), "平仓到零仓后滑点表必须有一行（修前 avg=None ⇒ 结构性漏记全部平仓）")
+    r = rows[-1]
+    _ok(abs(float(r["成交均价"]) - 3259.0) < 1e-6,
+        f"成交均价应取订单 trade_price=3259.0，实际 {r['成交均价']}")
+    _ok(abs(float(r["信号根收盘"]) - 3250.8) < 1e-6,
+        f"基准应为决策价 3250.8，实际 {r['信号根收盘']}")
+    # 空平 = 买入：成交价比基准高 ⇒ 不利 ⇒ 滑点为正
+    _ok(abs(float(r["滑点点数"]) - 8.2) < 0.01,
+        f"空头止损买入价更高应记 +8.2 跳（不利），实际 {r['滑点跳数']}")
+    _ok(s["pending_fill"] == [], "确认成交后 pending_fill 必须清空")
+
+    # ★ 规则 I「否决能力测试」：反例必须 FAIL —— 订单也没有 trade_price 时
+    #   （= 修前的处境）不许凭空造出一行假滑点。缺这段，上面的断言就只是盖章。
+    s2, _, api2 = _mkstate(pos=0, cloud=0)
+    s2["name"] = "豆粕"
+    o2 = _Order("o_nan")                       # trade_price 保持 nan
+    s2["pending_fill"] = [{
+        "ts": time.time() - m.FIX_WAIT_SEC - 1,
+        "side": "平", "dir": "空", "hands": 8, "ref_price": 3250.8,
+        "key": "K_NAN", "expect_net": 0, "order": o2, "offset": "CLOSE",
+        "symbol": "DCE.m2701", "bar_time": "2026-10-22 21:02:00",
+        "sig_close": 3250.8,
+    }]
+    m._cloud_fill_stats(api2, s2)
+    _ok(not m._slip.read(s2["record_dir"], "豆粕"),
+        "反例失败：均价完全缺失时不该写滑点行（否则等于编数据）")
+    print("  PASS  t24_平仓归零也进滑点表_订单成交均价兜底")
+
+
+# ------------------------------------------------------------------ main
 def main():
     tests = [t1_账实不符_锁只出不进, t2_反向偏离也锁, t3_首次对账不锁_仍接管,
              t4_在途委托不锁, t5_换月过渡不锁, t6_FIXWAIT窗口内不锁,
@@ -753,7 +816,9 @@ def main():
              t21_鬼腿双计_真相源回填, t22_快照不含鬼腿,
              t20_告警队列_分级与去重,
              # 盘中扫损接线（D2 2026-10-22：修「写了 5 天从未触发」）
-             t23_盘中扫损_只由tick触发_陈旧价不触发]
+             t23_盘中扫损_只由tick触发_陈旧价不触发,
+             # 平仓侧滑点兜底（D2 2026-10-22：修「止损侧成本结构性缺失」）
+             t24_平仓归零也进滑点表_订单成交均价兜底]
     bad = 0
     print("=" * 72)
     print("P0-2 / P1-1 / P1-3 / #15 / #16 接线级单测")

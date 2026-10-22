@@ -77,7 +77,7 @@ PARAMS = {
            "comm_fixed": 3, "comm_rate": 0, "margin_rate": 12},  # 现价单边 3.000 元
     "OI": {"name": "菜籽油", "ex": "CZCE", "mult": 10, "tick": 1,
            "comm_fixed": 2, "comm_rate": 0, "margin_rate": 7},  # 现价单边 2.000 元
-    "P":  {"name": "棕榈油", "ex": "DCE", "mult": 10, "tick": 1,
+    "P":  {"name": "棕榈油", "ex": "DCE", "mult": 10, "tick": 2,
            "comm_fixed": 2.5, "comm_rate": 0, "margin_rate": 8},  # 现价单边 2.500 元
     "PB": {"name": "铅", "ex": "SHFE", "mult": 5, "tick": 5,
            "comm_fixed": 0, "comm_rate": 4e-05, "margin_rate": 11},  # 现价单边 3.228 元
