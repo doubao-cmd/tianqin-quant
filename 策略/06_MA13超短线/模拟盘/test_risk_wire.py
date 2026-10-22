@@ -37,6 +37,7 @@ for _p in (_HERE, _ROOT, os.path.join(_ROOT, "策略", "06_MA13超短线", "工�
 try:
     import ma13_live_multi as m
     from lib import daily_loss as dl
+    from lib import plan_stop as ps
 except Exception as e:                                   # noqa: BLE001
     print(f"SKIP: 无法导入 ma13_live_multi（{type(e).__name__}: {e}）")
     raise SystemExit(0)
@@ -329,6 +330,34 @@ def t10_重启不清零_仍然拒开():
     print("  PASS  t10_重启不清零_仍然拒开")
 
 
+# ================================================================== T3#3 人为触发验收（离线等价）
+def t8b_触阈_持仓stop不变_拒开():
+    """T3#3 离线等价：①新开被拒且台账有 DAILYSTOP/RISKBLOCK 行
+    ②已有持仓的 stop **绝不被风控改动** ③平仓/止损/撤单仍走原通道
+    （dloss 只门控「新开仓入口」，不接触 stop、不拦平仓/撤单）。"""
+    g = _guard(cur=985_000.0)                     # 恰好 −1.5% ⇒ 触发
+    s, rec, api = _mkstate(pos=8, cloud=8)
+    s["stop"] = 3010.0                            # 已有持仓的止损位
+    acc_box = {"acc": _Acc(985_000.0), "dloss": g, "_dl_ts": 0.0}
+    m._process(api, s, True, {s["key"]: {}}, acc_box, _fuse())
+    # ① 新开仓（BUY/OPEN）被拒；平仓/撤单不受限
+    opens = [x for x in api.inserts if x[1] == "BUY" and x[2] == "OPEN"]
+    _ok(not opens, f"触阈后仍新开仓：{opens}")
+    _ok("RISKBLOCK" in rec.kinds(), f"缺拒开台账：{rec.kinds()}")
+    _ok(any("停加仓阀" in t for t in rec.texts("RISKBLOCK")), rec.texts("RISKBLOCK"))
+    _ok(any("当日亏损" in t for t in rec.texts("DAILYSTOP")), rec.texts("DAILYSTOP"))
+    # ② 已有持仓 stop 不被风控改动
+    _ok(s["stop"] == 3010.0, f"风控改动了已有止损={s['stop']}（禁区）")
+    # ③ 平仓/止损走原通道：价格触 stop ⇒ 仍报 SELL/CLOSE（同 t9 已证，此处复验）
+    s2, rec2, api2 = _mkstate(pos=8, cloud=8)
+    s2["stop"] = 3010.0                           # 现价 3001.95 ≤ stop ⇒ 盘中扫损
+    acc_box2 = {"acc": _Acc(985_000.0), "dloss": g, "_dl_ts": 0.0}
+    m._process(api2, s2, True, {s2["key"]: {}}, acc_box2, _fuse())
+    closes = [x for x in api2.inserts if x[2] in ("CLOSE", "CLOSETODAY")]
+    _ok(closes, f"触阈后止损/平仓被挡 ⇒ 会把自己锁死：{api2.inserts}")
+    print("  PASS  t8b_触阈_持仓stop不变_拒开(离线验收)")
+
+
 # ================================================================== R5 P1-3
 def t11_涨停不报BUY():
     """涨停（last==upper）⇒ BUY（开多/平空）不报单。"""
@@ -360,16 +389,322 @@ def t13_字段不可读不拦():
     print("  PASS  t13_字段不可读不拦")
 
 
+# ================================================================== #15 RECOVER 止损重锚
+def t14_接管原样恢复计划止损():
+    """#15 核心：开仓落盘的计划止损，接管时必须**原样恢复**，不重算。
+
+    构造多头：开仓 3260 / 计划止损 3200（风险 60）；重启时现价已跌到 3250。
+    原算法重算 = 3250 − 1.15×ATR(52) ≈ 3190.2 —— **比计划宽 9.8 点**（放大风险）。
+    修复后 stop 必须严格 == 3200，且 `bars_in` 要按开仓 bar 恢复（原实现一律归零）。
+    """
+    rd = tempfile.mkdtemp(prefix="pst14_")
+    s, rec, api = _mkstate(pos=8, cloud=8, record_dir=rd)
+    k = _kline(n=40)
+    # ★ E1（2026-10-21）：kline datetime 必须按 tqsdk 语义构造（UTC），
+    #   否则 `_bars_since_bar` 修正时区后会把它整体 +8h ⇒ bars_in 算成 40。
+    k["datetime"] = pd.date_range("2026-10-21 01:00:00", periods=40, freq="5min")   # UTC
+    s["k"] = k
+    s["q"] = _Quote(px=3250.0)
+    # quote.datetime 是**北京时间**：UTC + 8h
+    _bt = str(k["datetime"].iloc[-3] + pd.Timedelta(hours=8))   # 开仓那根：倒数第 3 根
+    _ok(ps.save(rd, "M", "DCE.m2701", 3200.0, 3260.0, 1, 8, _bt) is True, "计划止损落盘失败")
+
+    m._attach_stop_on_boot(s, 8, 3250.0, 52.0)
+
+    _ok(abs(s["stop"] - 3200.0) < 1e-9,
+        f"接管把计划止损改成了 {s['stop']}（重算放宽 ⇒ #15 未修）")
+    _ok(abs(s["entry"] - 3260.0) < 1e-9, f"entry 被重置为当前价 {s['entry']}（应为开仓价 3260）")
+    _ok(s["bars_in"] == 2, f"bars_in 未恢复={s['bars_in']}（倒数第3根之后走了2根；原实现一律归零）")
+    _ok("RECOVER" in rec.kinds(), rec.kinds())
+    _ok(any("原样恢复" in t for t in rec.texts("RECOVER")), rec.texts("RECOVER"))
+    print("  PASS  t14_接管原样恢复计划止损")
+
+
+def t15_无记录才重算并固化():
+    """无记录（老持仓/换月）⇒ 才重算兜底；算出来的线必须**当场固化**，下次重启不再重算。"""
+    rd = tempfile.mkdtemp(prefix="pst15_")
+    s, rec, api = _mkstate(pos=8, cloud=8, record_dir=rd)
+    s["q"] = _Quote(px=3250.0)
+    m._attach_stop_on_boot(s, 8, 3250.0, 52.0)
+    _ok(s["stop"] > 0, s["stop"])
+    _ok(any("无该合约的计划止损记录" in t for t in rec.texts("RECOVER")), rec.texts("RECOVER"))
+    _first = s["stop"]
+    _ok(ps.load(rd, "M", "DCE.m2701", 1) is not None, "兜底值未固化 ⇒ 下次重启会再次重算")
+
+    # 第二次重启：价格又跌 10 点 —— 止损必须仍是第一次兜底的那条（走路径 A）
+    s2, rec2, _ = _mkstate(pos=8, cloud=8, record_dir=rd)
+    s2["q"] = _Quote(px=3240.0)
+    m._attach_stop_on_boot(s2, 8, 3240.0, 52.0)
+    _ok(abs(s2["stop"] - _first) < 1e-9,
+        f"兜底值未固化：第二次接管变成 {s2['stop']}（应仍为 {_first}）")
+    _ok(any("原样恢复" in t for t in rec2.texts("RECOVER")), rec2.texts("RECOVER"))
+    print("  PASS  t15_无记录才重算并固化")
+
+
+def t16_空仓清理记录():
+    """空仓（已建立对账基线）⇒ 记录必须清掉；未建基线时**绝不能清**。"""
+    rd = tempfile.mkdtemp(prefix="pst16_")
+    s, rec, api = _mkstate(pos=0, cloud=0, record_dir=rd)
+    _ok(ps.save(rd, "M", "DCE.m2701", 3200.0, 3260.0, 1, 8, None) is True, "预置失败")
+
+    # ★ 启动初期（k 未就绪 / 首拍对账还没跑）pos 恒为 0 —— 此时清文件会误删预置记录
+    m._sync_plan_stop(s)
+    _ok(ps.load(rd, "M") is not None,
+        "对账基线未建立就清了记录 ⇒ 重启时会把上一笔的计划止损误删，接管退化成重算")
+
+    s["_recon_base"] = True                       # 对账基线已建立（真正核对过云端持仓）
+    m._sync_plan_stop(s)
+    _ok(ps.load(rd, "M") is None, "空仓后旧计划止损未清 ⇒ 下次会套用上一笔的线")
+
+    # 有仓但无记录 ⇒ 补写（外部接管/兜底重算的线也要固化）
+    s2, _, _ = _mkstate(pos=-8, cloud=-8, record_dir=rd)
+    s2["stop"] = 3400.0
+    s2["entry"] = 3460.0
+    m._sync_plan_stop(s2)
+    r = ps.load(rd, "M", "DCE.m2701", -1)
+    _ok(r is not None and abs(r["stop"] - 3400.0) < 1e-9,
+        f"有仓无记录时未补写：{r}")
+    print("  PASS  t16_空仓清理_有仓补写")
+
+
+# ================================================================== #16 单日亏损阀演练
+def t17_演练阀只拒开仓_止损不变():
+    """#16 `--drill-dailyloss` 接入 _process 后的三要素（权益**完全正常**，只有演练闩锁）。"""
+    g = dl.DailyLossGuard(None)
+    g.update(1_000_000.0, now=_dt.datetime(2026, 10, 21, 9, 0))
+    _ok(not g.blocked, "未演练前不该 blocked")
+    g.force_blocked()
+    _ok(g.blocked, "演练闩锁未生效")
+    _ok("[DRILL]" in g.reason(), g.reason())
+
+    # ① 空仓 + 有信号 ⇒ 拒绝新开仓，台账 RISKBLOCK 必须带 [DRILL]（可辨识，不冒充真实触发）
+    s, rec, api = _mkstate(pos=0, cloud=0)
+    acc_box = {"acc": _Acc(1_000_000.0), "dloss": g, "_dl_ts": 0.0}
+    m._process(api, s, True, {s["key"]: {}}, acc_box, _fuse())
+    opens = [x for x in api.inserts if x[1] == "BUY" and x[2] == "OPEN"]
+    _ok(not opens, f"演练态仍开新仓：{opens}")
+    _ok(any("[DRILL]" in t for t in rec.texts("RISKBLOCK")),
+        f"拒开台账缺 [DRILL] 标记：{rec.texts('RISKBLOCK')}")
+
+    # ② 有持仓且未触止损 ⇒ 持仓保留、stop 一个字不改、不产生任何平仓单
+    s2, rec2, api2 = _mkstate(pos=8, cloud=8)
+    s2["stop"] = 2900.0                          # 远低于现价 3001.95，不会触发止损
+    acc_box2 = {"acc": _Acc(1_000_000.0), "dloss": g, "_dl_ts": 0.0}
+    m._process(api2, s2, True, {s2["key"]: {}}, acc_box2, _fuse())
+    _ok(s2["pos"] == 8, f"演练不该动持仓：pos={s2['pos']}")
+    _ok(s2["stop"] == 2900.0, f"演练改动了已有 stop={s2['stop']}（禁区）")
+    _ok(not [x for x in api2.inserts if x[2] in ("CLOSE", "CLOSETODAY")],
+        f"演练不该平仓：{api2.inserts}")
+    g.clear_drill()
+    print("  PASS  t17_演练阀只拒开仓_止损不变")
+
+
+# ================================================================== 风控二期
+# ★ 账户桩直接用文件上方既有的 `_Acc`（默认 100 万/10 万），不要在这里重定义 ——
+#   重复定义会把旧的无默认参数版本覆盖掉，导致 t7~t10 全部 TypeError（踩过）。
+
+
+def _gate():
+    from lib.ops import RiskGate
+    # max_same_side_ratio 设很大 ⇒ 让本组测试只暴露想测的那一层，不被同向敞口挡住
+    return RiskGate(max_hands=8, max_margin_ratio=0.60,
+                    max_same_side_ratio=99.0)
+
+
+def t18_腿数闸门_达K拒开_持仓不变():
+    """#18（D2 18.1/18.2/18.3）：6 个品种有仓 ⇒ 第 7 个拒开；已有仓状态一字不动。
+
+    口径按**品种聚合**（换池双份算 1 腿）、**只挡开仓**。
+    """
+    s, rec, api = _mkstate(pos=0, cloud=0)
+    s["risk"] = _gate()
+    s["key"] = "RB"          # 开仓者自身不在 shared 里（真实场景：空仓品种才走到开仓路径）
+    # 6 个品种各 1 手，名义很小（1000×10×1=1万/腿）⇒ 不会先撞 #22-A 隔夜上限
+    shared = {k: {"pos": 1, "price": 1000.0, "tgt": 1, "dt": ""}
+              for k in ("M", "SA", "MA", "FU", "BU", "EG")}
+    ok, why = m._risk_check(s, _Acc(), 2, shared=shared, side_sign=1, price=1000.0)
+    _ok(ok is False and "腿数" in why, f"6 腿已满仍放行：{ok} {why}")
+    print(f"    {why}")
+
+    # 只有 5 腿 ⇒ 放行
+    shared2 = {k: {"pos": 1, "price": 1000.0, "tgt": 1, "dt": ""}
+               for k in ("M", "SA", "MA", "FU", "BU")}
+    ok2, why2 = m._risk_check(s, _Acc(), 2, shared=shared2, side_sign=1, price=1000.0)
+    _ok(ok2 is True, f"5 腿应放行：{ok2} {why2}")
+
+    # ★ 已有仓状态不变（拒开不得改动任何持仓字段）
+    s2, _, _ = _mkstate(pos=8, cloud=8)
+    s2["risk"] = _gate()
+    s2["stop"], s2["entry"], s2["bars_in"] = 2900.0, 3000.0, 7
+    m._risk_check(s2, _Acc(), 2, shared=shared, side_sign=1, price=1000.0)
+    _ok((s2["stop"], s2["entry"], s2["bars_in"]) == (2900.0, 3000.0, 7),
+        "拒开改动了持仓状态（禁区）")
+    print("  PASS  t18_腿数闸门_达K拒开_持仓不变")
+
+
+def t19_隔夜上限_超限拒开_平仓放行():
+    """#22-A（D2 §8-②）：单品种隔夜名义 >SYM_RATIO×权益 ⇒ 拒开；平仓永不经过本闸门。
+
+    ★ 2026-10-21 13:29 阈值由 1.0/0.30 上调为 2.0/0.45（D2 拍板）。
+      本用例改为**按常量推算手数**，避免再次硬编码（原 8 手/32 万在新阈值下不再超限）。
+    """
+    from lib import overnight as _ovn
+    s, rec, api = _mkstate(pos=0, cloud=0)
+    s["risk"] = _gate()
+    EQ = float(_Acc().balance)
+    PX, MULT = 4000.0, 10.0
+
+    # ① 单品种超 SYM_RATIO× ⇒ 拒
+    _h = int(EQ * _ovn.SYM_RATIO / (PX * MULT)) + 2
+    ok, why = m._risk_check(s, _Acc(), _h, shared={}, side_sign=1, price=PX,
+                            day="20261021")
+    _ok(ok is False and "隔夜" in why, f"单品种隔夜超限仍放行：{ok} {why}（手数={_h}）")
+    print(f"    {why}")
+
+    # ② 长假前降级：单笔永远超不过「降级总上限」，必须靠组合超 ⇒ 构造一条 SA 腿
+    #    （SA 乘数 20，单品种须 ≤ SYM_RATIO×，且两腿合计要 > HOLIDAY_TOTAL_RATIO×）
+    _cap = EQ * _ovn.HOLIDAY_TOTAL_RATIO
+    _sa_h = max(1, int(_cap * 0.5 / (1000.0 * 20)))
+    _new_h = max(1, int(_cap * 0.6 / (PX * MULT)))
+    _sh = {"SA": {"pos": _sa_h, "price": 1000.0}}
+    ok_n, why_n = m._risk_check(s, _Acc(), _new_h, shared=_sh, side_sign=1,
+                                price=PX, day="20261021")
+    ok_h, why_h = m._risk_check(s, _Acc(), _new_h, shared=_sh, side_sign=1,
+                                price=PX, day="20260930")
+    _ok(ok_n is True, f"普通日同规模应放行：{ok_n} {why_n}")
+    _ok(ok_h is False and "降级" in why_h,
+        f"长假前未降级：{ok_h} {why_h}（SA {_sa_h} 手 + 新单 {_new_h} 手）")
+    print(f"    {why_h}")
+
+    # ③ 正常规模放行
+    ok3, why3 = m._risk_check(s, _Acc(), 1, shared={}, side_sign=1, price=3000.0,
+                              day="20261021")
+    _ok(ok3 is True, f"正常规模被误挡：{ok3} {why3}")
+    print("  PASS  t19_隔夜上限_超限拒开_平仓放行")
+
+
+def t20_告警队列_分级与去重():
+    """#17-A：弹窗同时落队列；等级可枚举；同事件同交易日只落一次；不弹真窗。"""
+    rd = tempfile.mkdtemp(prefix="alert_wire_")
+    old_dir, m._ALERT_DIR = m._ALERT_DIR, rd
+
+    class _NoThread:                     # 拦掉真弹窗（否则测试会弹出 MessageBox）
+        def __init__(self, *a, **k):
+            pass
+
+        def start(self):
+            pass
+
+    old_th = m.threading.Thread
+    m.threading.Thread = _NoThread
+    try:
+        # 四类最高级事件必须被识别（D2 §2-17.2）
+        for kw in ("回撤熔断", "对账偏离", "单日亏损阀", "只出不进"):
+            _ok(m._alert_level_of(f"MA13 模拟盘：{kw}触发") == "CRITICAL", kw)
+        _ok(m._alert_level_of("保证金预警") == "WARN", "普通事件应按 WARN")
+
+        m._popup("MA13 模拟盘：⚠️ 回撤熔断触发", "自峰值回撤 20%", source="回撤熔断")
+        m._popup("MA13 模拟盘：⚠️ 回撤熔断触发", "自峰值回撤 20%", source="回撤熔断")  # 重复
+        rows = m._aq.recent(rd, limit=50)
+        _ok(len(rows) == 1, f"同事件应只落一次，实际 {len(rows)} 条：{rows}")
+        _ok(rows[0]["level"] == "CRITICAL" and rows[0]["source"] == "回撤熔断", rows[0])
+        _ok(rows[0]["dedup_key"].startswith("CRITICAL:"), rows[0]["dedup_key"])
+    finally:
+        m.threading.Thread = old_th
+        m._ALERT_DIR = old_dir
+    print("  PASS  t20_告警队列_分级与去重")
+
+
+# ============================================================ #18 P1-A 鬼腿双计
+def t21_鬼腿双计_真相源回填():
+    """A18（D1 审计 2026-10-21 #18）：缓存滞后不得导致「旧仓 + 新仓」双计。
+
+    真实数字（当天 BU 被误拒 3 次的那一笔）：
+      shared["BU"]["pos"] = 7  ← 上一根 bar 的缓存（实际已止损平仓）
+      s["pos"]            = 0  ← 真相源
+      新单 8 手 × 4993 × 10 = 399,440
+      错误：349,510(旧) + 399,440(新) = **748,950** > 443,264 ⇒ 误拒
+      正确：399,440 < 443,264 ⇒ 放行
+    """
+    from lib import overnight as _ovn
+    EQ = 985_031.0                # 由日志 0.45×权益=443264 反推
+    PX, MULT = 4993.0, 10.0
+    H_OLD, H_NEW = 7, 8
+    conf = {"BU": ("石油沥青", "SHFE.bu2611", MULT, 1)}
+    new_n = H_NEW * PX * MULT
+
+    # ① 未回填 ⇒ 复现双计（必须被拒，且数字逐位对上）
+    shared = {"BU": {"pos": H_OLD, "price": PX}}
+    legs = _ovn.build_legs(shared, conf)
+    ok, why = _ovn.check_limit(legs, EQ, key="BU", new_notional=new_n, day="2026-10-21")
+    _ok(ok is False, f"未复现双计（应被误拒）：{ok} {why}")
+    _ok("748950" in why.replace(",", ""), f"金额与实测 748950 不符：{why}")
+
+    # ② 回填真相源后 ⇒ 放行
+    s = {"key": "BU", "pos": 0}
+    _ok(m._sync_shared_pos(shared, s) is True, "_sync_shared_pos 返回 False")
+    _ok(shared["BU"]["pos"] == 0, f"回填未生效：{shared['BU']['pos']}")
+    legs2 = _ovn.build_legs(shared, conf)
+    ok2, why2 = _ovn.check_limit(legs2, EQ, key="BU", new_notional=new_n, day="2026-10-21")
+    _ok(ok2 is True, f"回填后仍被拒（真实 399440 应放行）：{why2}")
+    print(f"    未回填被拒：{why}")
+    print("  PASS  t21_鬼腿双计_真相源回填")
+
+
+def t22_快照不含鬼腿():
+    """A19：隔夜敞口快照必须用真相源，否则鬼腿会进历史（实测高估 2.32 倍）。
+
+    15:01:04 那份快照：FU+EG+BU+SA = 1,243,200 / 1.2642×
+    真实（EG/BU 已于 14:44:59 平仓）：FU+SA = 537,040 / 0.546×
+    """
+    from lib import overnight as _ovn
+    import config_symbols as cs
+
+    eq = 983_989.0
+    shared = {
+        "FU": {"pos": -8, "price": 4815.0},
+        "SA": {"pos": -8, "price": 949.0},
+        "EG": {"pos": 7, "price": 5088.0},      # 鬼腿
+        "BU": {"pos": 7, "price": 5000.0},      # 鬼腿
+    }
+    # 真相源：EG/BU 已平
+    specs = [{"key": "FU", "pos": -8}, {"key": "SA", "pos": -8},
+             {"key": "EG", "pos": 0}, {"key": "BU", "pos": 0}]
+
+    # 未回填 ⇒ 会算进鬼腿（复现污染）
+    legs_bad = _ovn.build_legs(shared, cs.SYMBOLS)
+    bad = sum(L["notional"] for L in legs_bad)
+    _ok(bad > 1_200_000, f"未复现污染：{bad:.0f}")
+
+    # 回填后 ⇒ 只剩两腿真实
+    for sp in specs:
+        m._sync_shared_pos(shared, sp)
+    legs_ok = _ovn.build_legs(shared, cs.SYMBOLS)
+    total = sum(L["notional"] for L in legs_ok)
+    real = 8 * 4815.0 * 10 + 8 * 949.0 * 20          # 385,200 + 151,840
+    _ok(len(legs_ok) == 2, f"回填后腿数应为 2，实际 {len(legs_ok)}")
+    _ok(abs(total - real) < 1e-6, f"总名义 {total:.0f} != 真实 {real:.0f}")
+    print(f"    污染 {bad:,.0f} → 回填后 {total:,.0f}（真实 {real:,.0f}，占权益 {total / eq:.3f}×）")
+    print("  PASS  t22_快照不含鬼腿")
+
+
 # ------------------------------------------------------------------ main
 def main():
     tests = [t1_账实不符_锁只出不进, t2_反向偏离也锁, t3_首次对账不锁_仍接管,
              t4_在途委托不锁, t5_换月过渡不锁, t6_FIXWAIT窗口内不锁,
-             t7_未触阈正常开仓, t8_触阈只拒开仓, t9_触阈仍可平仓_止损照常,
-             t10_重启不清零_仍然拒开,
-             t11_涨停不报BUY, t12_涨停照常平多, t13_字段不可读不拦]
+             t7_未触阈正常开仓, t8_触阈只拒开仓, t8b_触阈_持仓stop不变_拒开,
+             t9_触阈仍可平仓_止损照常, t10_重启不清零_仍然拒开,
+             t11_涨停不报BUY, t12_涨停照常平多, t13_字段不可读不拦,
+             t14_接管原样恢复计划止损, t15_无记录才重算并固化, t16_空仓清理记录,
+             t17_演练阀只拒开仓_止损不变,
+             # 风控二期（D2 2026-10-21 拍板 #17/#18/#22）
+             t18_腿数闸门_达K拒开_持仓不变, t19_隔夜上限_超限拒开_平仓放行,
+             # #18 P1-A 鬼腿双计（D1 2026-10-21 审计）
+             t21_鬼腿双计_真相源回填, t22_快照不含鬼腿,
+             t20_告警队列_分级与去重]
     bad = 0
     print("=" * 72)
-    print("P0-2 / P1-1 / P1-3 接线级单测")
+    print("P0-2 / P1-1 / P1-3 / #15 / #16 接线级单测")
     print("=" * 72)
     for t in tests:
         try:

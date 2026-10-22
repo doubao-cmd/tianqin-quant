@@ -200,6 +200,38 @@ def _log(msg):
             f.write(line + "\r\n")
     except Exception:
         pass                      # 日志失败绝不能影响守护本身
+    # ★★ #17-A（2026-10-21，D2 §2-17.2 明确要求）：守护**重启核心这件事本身没有弹窗**，
+    #   以前只写在 `守护日志.txt` 里 ⇒ 无人值守时完全不可见。这里按关键词把
+    #   「重启/假死/FATAL/退出」这类事件同步进 `告警队列.jsonl`（最高级），
+    #   不动任何控制流、失败只吞掉（守护本身是止损裸奔的最后一道防线，绝不能被日志拖垮）。
+    try:
+        _m = str(msg)
+        if any(k in _m for k in ("重启", "假死", "FATAL", "退出 rc", "拉不起")):
+            _push_alert(_m)
+    except Exception:
+        pass
+
+
+def _push_alert(msg):
+    """把守护侧事件写进核心台账的告警队列（跨进程共用同一文件，append-only 安全）。"""
+    try:
+        _d = os.path.join(_HERE, "台账")
+        if not os.path.isdir(_d):
+            return
+        # 守护可能跑在只有 stdlib 的环境里 ⇒ 不 import 项目 lib，直接写最小 JSONL
+        import json as _j
+        _td = datetime.now().strftime("%Y%m%d")
+        _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # ★ 这里**刻意不去重**：每一次重启/假死都是独立事件，都该留痕。
+        #   dedup_key 带秒级时间戳 ⇒ 不会被核心的去重缓存吃掉（key 天然唯一）。
+        _dk = f"CRITICAL:守护|{_ts}"
+        _rec = {"ts": _ts, "trade_day": _td, "level": "CRITICAL",
+                "source": "守护进程", "text": str(msg)[:2000], "dedup_key": _dk}
+        with io.open(os.path.join(_d, "告警队列.jsonl"), "a",
+                     encoding="utf-8", newline="") as f:
+            f.write(_j.dumps(_rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 
 def _cache_age_days():

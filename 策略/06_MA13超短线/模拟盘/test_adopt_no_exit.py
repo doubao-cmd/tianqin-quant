@@ -44,13 +44,64 @@ except Exception as e:
 import numpy as np
 
 
-# ---------------------------------------------------------------- 静态断言
+# ---------------------------------------------------------------- 行为断言
 def test_recover_sets_skip_flag():
-    """接管函数必须置 `_skip_exit_once`，否则当根就会被扫。"""
-    src = open(os.path.join(_HERE, "ma13_live_multi.py"), encoding="utf-8").read()
-    assert 's["_skip_exit_once"] = True' in src, \
-        "接管处没有置 _skip_exit_once ⇒ 接管当根会立刻判出场（事故会重演）"
-    print("  PASS  test_recover_sets_skip_flag")
+    """接管**默认**跳过当根；但「现价已穿越止损」时例外（E4，2026-10-21）。
+
+    ★ 从源码字符串断言改为行为断言：原断言 `'s["_skip_exit_once"] = True' in src`
+      在 E4 把赋值改成 `= not _pen` 后直接失效，而且它本来就测不到真实行为。
+
+    三种路径都必须锁住：
+      ① 路径 B（无记录、重算 stop 在现价另一侧）⇒ 跳过（JD 事故的防线）
+      ② 路径 A（有记录、现价未穿计划止损）      ⇒ 跳过
+      ③ 路径 A（有记录、**现价已穿计划止损**）   ⇒ **不跳过**（13:32 FU 实测：
+         跳过多等一根，成交 4804 而非 ~4815，多亏 11.64 点 ≈ 815 元）
+    """
+    import tempfile
+
+    import pandas as pd
+
+    from lib import plan_stop as _ps
+
+    rd = tempfile.mkdtemp(prefix="adopt_")
+
+    def _mk():
+        n = 40
+        k = pd.DataFrame({"low": np.full(n, 3240.0), "high": np.full(n, 3245.0)})
+
+        class _Q:
+            last_price = 3250.0
+            underlying_symbol = "DCE.m2701"
+            datetime = "2026-10-21 09:10:00"
+
+        class _Rec:
+            def event(self, *a, **kw):
+                pass
+
+        return {"q": _Q(), "k": k, "record_dir": rd, "key": "M", "name": "豆粕",
+                "rec": _Rec(), "stop": 0.0, "entry": 0.0, "bars_in": 0}
+
+    # ① 路径 B：无记录 ⇒ 重算 stop 必在现价下方 ⇒ 必须跳过
+    s = _mk()
+    m._attach_stop_on_boot(s, 8, 3250.0, 52.0)
+    assert s.get("_skip_exit_once") is True, "路径B 接管当根未跳过 ⇒ JD 假平仓事故会重演"
+    assert s["stop"] < 3250.0, f"路径B 重算 stop 应低于现价，实际 {s['stop']}"
+
+    # ② 路径 A：有记录且现价未穿损 ⇒ 跳过，且止损原样恢复
+    _ps.save(rd, "M", "DCE.m2701", 3200.0, 3230.0, 1, 8, "2026-10-21 09:10:00")
+    s = _mk()
+    m._attach_stop_on_boot(s, 8, 3250.0, 52.0)
+    assert abs(s["stop"] - 3200.0) < 1e-9, f"未原样恢复：{s['stop']}"
+    assert s["_skip_exit_once"] is True, "现价未穿损却未跳过 ⇒ 会拿历史 bar 反证（JD 事故）"
+
+    # ③ 路径 A：现价已穿计划止损（3250 ≤ 3260）⇒ 必须允许当根出场
+    _ps.save(rd, "M", "DCE.m2701", 3260.0, 3230.0, 1, 8, "2026-10-21 09:10:00")
+    s = _mk()
+    m._attach_stop_on_boot(s, 8, 3250.0, 52.0)
+    assert abs(s["stop"] - 3260.0) < 1e-9, f"未原样恢复：{s['stop']}"
+    assert s["_skip_exit_once"] is False, \
+        "现价已穿计划止损却仍跳过当根 ⇒ 多等一根 bar（13:32 FU 因此多亏 815 元）"
+    print("  PASS  test_recover_sets_skip_flag（路径B跳过 / A未穿跳过 / A穿损不跳过）")
 
 
 def test_skip_consumed_before_exit_hit():

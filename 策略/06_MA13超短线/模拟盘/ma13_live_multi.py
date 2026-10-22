@@ -21,7 +21,7 @@ MA13 超短线 · 多品种单进程实时模拟盘（P/EB 双候选版）
 禁未来函数：只用已收盘 bar；新 bar 出现（=前一根收盘）瞬间判定，立即执行。
 默认 ALLOW_TRADE=False 观察模式：只算信号、打印、写台账，不报单。
 """
-import sys, os, time, math, json, threading, io, datetime as _dt
+import sys, os, time, math, json, threading, io, hashlib, datetime as _dt
 import numpy as np
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -40,6 +40,15 @@ from lib import live_resend as _rs
 from lib import daily_loss as _dl      # 单日亏损阀（P1-1，口径 D 已拍板）
 from lib import recon_halt as _rh      # 对账偏离 ⇒ 硬停机判定（P0-2）
 from lib import limit_board as _lb     # 涨跌停封板判定（P1-3）
+# ★★ 2026-10-21 #15：计划止损持久化 —— 重启/接管时原样恢复止损线，不再重算放宽
+from lib import plan_stop as _ps
+# ★★ 2026-10-21 风控二期（D2 已拍板 #17/#18/#20/#22/#23/#24）—— 全部纯逻辑、可离线单测
+from lib import alert_queue as _aq     # #17-A 告警队列（文件底座，外送二期否决）
+from lib import leg_gate as _lg        # #18   组合腿数闸门（K=6，按品种聚合）
+from lib import slippage as _slip      # #20   滑点实测（信号根收盘为基准，只记录）
+from lib import overnight as _ovn      # #22-A/C 隔夜上限 + 快照
+from lib import trade_calendar as _tc  # #24   交易日历（#22-B 前置）
+from lib import holiday_close as _hc   # #22-B 长假强平（唯一授权平仓例外）
 import config_account
 import config_symbols
 
@@ -239,9 +248,39 @@ def _default_symbols():
 DEFAULT_SYMBOLS = _default_symbols()
 
 
-def _popup(title, msg):
+_ALERT_DIR = None        # #17-A：台账目录，由 run_live_multi 设置；None ⇒ 只弹窗不落队列
+
+
+def _alert_level_of(title):
+    """#17-A 分级（D2 §2-17.2）：熔断/对账停机/日亏阀/只出不进 = 最高级，其余常规。
+
+    判定依据是**标题关键词**而不是调用点 —— 这样新增弹窗不需要同时登记等级，
+    漏登记最坏结果是降级为 WARN（仍会落盘、仍可查），不会静默丢告警。
+    """
+    s = str(title)
+    for kw in ("熔断", "亏损阀", "对账", "只出不进", "停机", "强平"):
+        if kw in s:
+            return _aq.LEVEL_CRITICAL
+    return _aq.LEVEL_WARN
+
+
+def _popup(title, msg, source=None, level=None, dedup_key=None):
     """Windows 原生弹窗提醒（独立线程，绝不阻塞交易主循环）。
-    无窗口环境/非 Windows 下静默降级为只在控制台响铃。"""
+    无窗口环境/非 Windows 下静默降级为只在控制台响铃。
+
+    ★★ #17-A（2026-10-21）：弹窗 + 告警队列**双写**。
+       弹窗是"人在电脑前"才有效的通道，队列是"事后可查"的底座。
+       写队列失败绝不影响弹窗，也不影响交易（`_aq.push` 本身永不抛）。
+       dedup_key 缺省取 **title**（稳定）—— 不能用 msg，因为很多 msg 带时间戳，
+       每次不同会让"同一事件只落一次"的去重完全失效。
+    """
+    try:
+        if _ALERT_DIR:
+            _aq.push(_ALERT_DIR, level or _alert_level_of(title),
+                     source or str(title), msg,
+                     dedup_key=dedup_key or str(title))
+    except Exception:
+        pass                          # 告警落盘失败不能挡住下面真正的弹窗
     print("\a" + f"[弹窗] {title}: {msg}", flush=True)
 
     def _go():
@@ -277,6 +316,229 @@ def _connect(user, pwd, specs, web_gui):
             pass
         raise
     return api
+
+
+# ============================================================
+# ★★ 风控二期启动自证（2026-10-21，D2 #23 + #18 + #24）
+# ============================================================
+def _boot_guard(record_dir, specs, allow_trade=False):
+    """启动时把「到底哪套风控参数在跑」写死在日志里（#23）。
+
+    为什么：A10 踩过 —— 代码改了、线上没生效（`base_day` 长期 null），
+    事后只能靠翻代码猜。参数散落在本文件顶部十余个常量里，启动时没有任何一行
+    能一眼核对。本函数把关键参数打成**一行可解析 JSON**（前缀 `[PARAM]`），
+    并落一份告警队列记录；**参数变了才落新记录**（dedup_key 带内容哈希），
+    所以"重启后参数没变"不会刷屏，"参数悄悄变了"一定留痕。
+
+    顺带做两件事（同一条启动路径）：
+      · #18 打印腿数闸门是否真的生效（池 ≤ K ⇒ 今日零触发，D2 18.1 要求明示）
+      · #24 交易日历覆盖期检查（超出 ⇒ 最高级告警，绝不静默）
+
+    ★ 全程 try/except：这段在交易主循环之前，抛异常等于进程起不来。
+    """
+    try:
+        pool = [s["key"] for s in specs]
+        snap = {
+            "池": pool,
+            "allow_trade": bool(allow_trade),
+            # 既有风控（一期）
+            "DAILY_LOSS_RATIO": DAILY_LOSS_RATIO,
+            "DD_FUSE": DD_FUSE,
+            "OPS_MAX_MARGIN_RATIO": OPS_MAX_MARGIN_RATIO,
+            "MARGIN_WARN_RATIO": MARGIN_WARN_RATIO,
+            "NOTIONAL_CAP": NOTIONAL_CAP,
+            "LIMIT_BOARD_CHECK": LIMIT_BOARD_CHECK,
+            # 策略口径
+            "MAX_HOLD": MAX_HOLD,
+            "RETRACE_TOL": RETRACE_TOL,
+            "STOP_BUFFER": STOP_BUFFER,
+            "STOP_CAP": STOP_CAP,
+            "INTRABAR_STOP": INTRABAR_STOP,
+            "KSEC": KSEC,
+            # 风控二期（D2 2026-10-21 拍板）
+            "LEG_MAX": _lg.MAX_LEGS,
+            "OVN_TOTAL_RATIO": _ovn.TOTAL_RATIO,
+            "OVN_SYM_RATIO": _ovn.SYM_RATIO,
+            "OVN_HOLIDAY_RATIO": _ovn.HOLIDAY_TOTAL_RATIO,
+            "HOLIDAY_CLOSE_MIN_GAP": _hc.MIN_GAP,
+        }
+        line = "[PARAM] " + json.dumps(snap, ensure_ascii=False, sort_keys=True)
+        print(line, flush=True)
+        try:
+            _h = hashlib.md5(line.encode("utf-8")).hexdigest()[:12]
+            _aq.push(record_dir, _aq.LEVEL_INFO, "参数自证", line,
+                     dedup_key=f"param:{_h}")
+        except Exception:
+            pass
+    except Exception as e:                              # noqa: BLE001
+        print(f"[PARAM] 参数快照失败（不影响交易）：{type(e).__name__}: {e}", flush=True)
+
+    # #18 腿数闸门：池 ≤ K 时今日零触发，必须明示，别让人以为它在保护什么
+    try:
+        _w = _lg.warn_if_inert([s["key"] for s in specs])
+        if _w:
+            print(_w, flush=True)
+    except Exception:
+        pass
+
+    # #24 交易日历覆盖期（D2 §8-④：缺失必须最高级告警交人工）
+    try:
+        _cw = _tc.coverage_warning()
+        if _cw:
+            print(f"[日历] ⚠️ {_cw}", flush=True)
+            _aq.push(record_dir, _aq.LEVEL_CRITICAL, "交易日历", _cw,
+                     dedup_key="calendar-missing")
+        else:
+            _td = _rs.trading_day()
+            _pre, _gap, _hol, _nxt = _tc.is_pre_long_holiday(_td, _hc.MIN_GAP)
+            if _pre:
+                _msg = (f"今日 {_td} 是{_hol}长假前最后交易日（间隔 {_gap} 天，"
+                        f"下一交易日 {_nxt}）⇒ 收盘最后 5min 将强平全部持仓"
+                        f"（#22-B，用户 2026-10-21 授权）")
+                print(f"[日历] {_msg}", flush=True)
+                _aq.push(record_dir, _aq.LEVEL_CRITICAL, "长假强平", _msg,
+                         dedup_key=f"pre-holiday:{_td}")
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------- 周期任务
+# ★★ #22-C 隔夜快照 + #22-B 长假强平（2026-10-21）
+#   两者都是"每天该做一次"的事，但**触发条件完全不同**：
+#     · 快照：任何交易日 15:00 后写一次（纯记录，零风险）
+#     · 强平：仅长假前最后交易日、且已过最后一条 5min K 线收盘（唯一授权平仓例外）
+#   节流到 60s 一次，避免 wait_update 每 30s 醒来就重算一遍日历。
+_RSK_STATE = {"last": 0.0, "snap_day": None}
+_RSK_THROTTLE = 60.0
+
+
+def _bar_times(k, limit=8):
+    """取最近 limit 根 K 线的时间（datetime 列表）。失败返回 []。"""
+    try:
+        import pandas as _pd
+        s = _pd.to_datetime(k["datetime"])
+        return [x.to_pydatetime() for x in s.tail(int(limit))]
+    except Exception:
+        return []
+
+
+def _periodic_risk(api, specs, shared, acc_box, record_dir, allow_trade,
+                   drill_holiday=False):
+    """主循环里的周期风控任务。**任何异常都不允许打断交易主循环**。"""
+    now_wall = time.time()
+    if now_wall - float(_RSK_STATE["last"]) < _RSK_THROTTLE:
+        return
+    _RSK_STATE["last"] = now_wall
+
+    day = str(_rs.trading_day())
+    try:
+        acc = (acc_box or {}).get("acc")
+        eq = getattr(acc, "balance", None) if acc is not None else None
+        mg = getattr(acc, "margin", None) if acc is not None else None
+
+        # ---------------- #22-C 每日收盘后一份隔夜敞口快照 ----------------
+        try:
+            if _dt.datetime.now().hour >= 15 and _RSK_STATE.get("snap_day") != day:
+                # ★★ #18 P1-A 第 3 件（2026-10-21）：快照同样读 shared["pos"]。
+                #   不先回填就会把**鬼腿**算进隔夜敞口：实测 15:01:04 快照记
+                #   FU+EG+BU+SA = 1,243,200 / 1.2642×，而真实只有 FU+SA =
+                #   537,040 / 0.546×（EG/BU 早在 14:44:59 已平）⇒ **高估 2.32 倍**。
+                #   而 D2 的 #22-C 计划正是拿这份历史回检阈值 ⇒ 数据源必须先干净。
+                for _sp in (specs or []):
+                    _sync_shared_pos(shared, _sp)
+                legs = _ovn.build_legs(shared, config_symbols.SYMBOLS)
+                ok, note = _ovn.snapshot(record_dir, day, legs, eq, margin=mg)
+                if ok:
+                    _RSK_STATE["snap_day"] = day
+                    print(f"[隔夜快照] {day} 已落盘：{note}", flush=True)
+                    _aq.push(record_dir, _aq.LEVEL_INFO, "隔夜快照",
+                             f"{day} 隔夜敞口快照已落盘：{note}",
+                             dedup_key=f"ovn-snap:{day}")
+                else:
+                    print(f"[隔夜快照] 未落盘：{note}", flush=True)
+        except Exception as e:                          # noqa: BLE001
+            print(f"[隔夜快照] 异常（不影响交易）：{type(e).__name__}: {e}", flush=True)
+
+        # ---------------- #22-B 长假收盘强平（唯一授权平仓例外）----------------
+        try:
+            pos_list = [{"key": s.get("key"), "hands": int(s.get("pos") or 0)}
+                        for s in specs if int(s.get("pos") or 0) != 0]
+            bars_dt = []
+            for s in specs:
+                bars_dt = _bar_times(s.get("k"))
+                if bars_dt:
+                    break
+            r = _hc.decide(day, _dt.datetime.now(), bars_dt, pos_list,
+                           ksec=KSEC, record_dir=record_dir, drill=drill_holiday)
+
+            # ⑤ 日历缺失/判定异常 ⇒ 最高级告警，不强行平
+            if r.get("warn"):
+                _popup("MA13 模拟盘：长假强平判定受阻",
+                       r["warn"], source="长假强平",
+                       level=_aq.LEVEL_CRITICAL, dedup_key="holiday-close-warn")
+
+            if r.get("act"):
+                _legs_txt = "、".join(f"{L['key']}{L['dir']}{L['hands']}手"
+                                      for L in r["legs"])
+                head = (f"{r['holiday']} 长假前最后交易日（间隔 {r['gap']} 天，"
+                        f"下一交易日 {r['next_day']:%Y-%m-%d}）")
+                if drill_holiday:
+                    print(f"[长假强平][演练] {head} ⇒ 将平：{_legs_txt}"
+                          f"（演练不发单、不记已执行）", flush=True)
+                    _aq.push(record_dir, _aq.LEVEL_WARN, "长假强平演练",
+                             f"{head} 将平：{_legs_txt}（演练）",
+                             dedup_key=f"holiday-drill:{day}")
+                elif not allow_trade:
+                    print(f"[长假强平] {head} 但当前为观察模式（--trade 未开）⇒ 不发单。"
+                          f"将平：{_legs_txt}", flush=True)
+                    _aq.push(record_dir, _aq.LEVEL_WARN, "长假强平",
+                             f"{head} 观察模式不发单，将平：{_legs_txt}",
+                             dedup_key=f"holiday-observe:{day}")
+                else:
+                    _sent_ok, _sent_fail = [], []
+                    for s in specs:
+                        _p = int(s.get("pos") or 0)
+                        if _p == 0:
+                            continue
+                        try:
+                            _dir_cn = "多" if _p > 0 else "空"
+                            _side = "SELL" if _p > 0 else "BUY"
+                            _q = s["q"]
+                            _lp = float(_q.last_price or 0)
+                            _okc, _notec, _ = _send_close(
+                                api, s, _q.underlying_symbol, _side, _dir_cn,
+                                abs(_p), _lp, _q.datetime, _p,
+                                sig_close=_lp)     # 强平无"信号根"，用当时价作基准
+                            if _okc:
+                                _sent_ok.append(f"{s['name']}{_dir_cn}{abs(_p)}手")
+                            else:
+                                _sent_fail.append(f"{s['name']}：{_notec}")
+                        except Exception as e:      # noqa: BLE001
+                            _sent_fail.append(f"{s.get('name')}：{type(e).__name__}: {e}")
+                    msg = (f"⚠️ {head} ⇒ 长假强平已发单。已发："
+                           f"{'、'.join(_sent_ok) or '无'}"
+                           f"{'；失败：' + '、'.join(_sent_fail) if _sent_fail else ''}")
+                    print(f"[长假强平] {msg}", flush=True)
+                    try:
+                        s0 = specs[0]
+                        s0["rec"].event("HOLIDAYCLOSE", msg)
+                    except Exception:
+                        pass
+                    _popup("MA13 模拟盘：长假收盘强平",
+                           f"{msg}\n\n这是用户 2026-10-21 明确授权的唯一自动平仓场景"
+                           f"（≥5 天长假）。其余场景仍禁止自动平仓。",
+                           source="长假强平", level=_aq.LEVEL_CRITICAL,
+                           dedup_key=f"holiday-close:{day}")
+                    # ★ 幂等标记：同一长假只触发一次。**只在真的发了单之后**才标记，
+                    #   观察模式/演练不标记（下次开 --trade 仍要能触发）。
+                    _hc.mark_done(record_dir, day, {
+                        "gap": r["gap"], "holiday": r["holiday"],
+                        "legs": r["legs"], "ok": _sent_ok, "fail": _sent_fail,
+                    })
+        except Exception as e:                          # noqa: BLE001
+            print(f"[长假强平] 判定异常（不影响交易）：{type(e).__name__}: {e}", flush=True)
+    except Exception as e:                              # noqa: BLE001
+        print(f"[周期风控] 异常（不影响交易）：{type(e).__name__}: {e}", flush=True)
 
 
 # ----------------------------------------------------------------------------
@@ -325,8 +587,14 @@ def _init_spec_state(s, record_dir, sizer, heartbeat_sec):
     """
     # ★ recovered：标记「这个持仓是从云端接管来的，不是本进程开的」。
     #   接管时必须补挂止损（云端不存我们的止损线），且退出时要打醒目事件。
+    # ★★ #19（2026-10-21 18:55，D1 直接改，用户授权「工程量小的决策员直接做」）：
+    #   `skip_first` 初始化 **False → True**：进程启动后的首根 bar **只记账不处理**。
+    #   原因：`last_id` 仅存内存、重启后为 -1 ⇒ 最后一根**已收盘**的 bar 会被当成新 bar 重放。
+    #   实测 2026-10-21 18:03:41：BU+8 / EG-7 依据 14:59:59.8 的 bar，在**收盘后 3 小时**成交。
+    #   重连路径（本文件 :953）本来就置 True 防重复，只有**进程重启路径**漏了 —— 这里补齐，两条路径对齐。
+    #   ★ 不关止损：盘中扫损在 :2265 附近逐 tick 执行，不看 bar，不受本开关影响。
     s.update({"pos": 0, "entry": 0.0, "stop": 0.0, "bars_in": 0,
-              "last_id": -1, "skip_first": False, "recovered": False,
+              "last_id": -1, "skip_first": True, "recovered": False,
               "last_order_ts": 0.0,
               # ★ 工作台集成：session 边界追踪（供时段闸门，默认 None 不启用）
               "_last_sid": None, "_sess_open_px": 0.0,
@@ -430,7 +698,7 @@ def _adopt_carried_legs(api, specs, shared, record_dir, sizer, heartbeat_sec):
 
 def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
                    record_dir=None, heartbeat_sec=300, drill_fuse=False,
-                   ctx=None):
+                   ctx=None, drill_dloss=False, drill_holidayclose=False):
     # ★★ 核心单实例锁（2026-10-18 下沉到这里）：任何入口（__main__ / run_workbench
     #   / 守护）都必经本函数 ⇒ 锁放在这里才真正覆盖所有启动路径，绝不双开下单。
     if _抢核心锁() is None:
@@ -455,6 +723,13 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
     if record_dir is None:
         record_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "台账")
     os.makedirs(record_dir, exist_ok=True)
+
+    # ★★ #17-A：把台账目录交给 _popup，之后所有弹窗同时落「告警队列.jsonl」。
+    #   放在这里而不是函数参数 —— _popup 有 6 处调用，逐个传参易漏。
+    global _ALERT_DIR
+    _ALERT_DIR = record_dir
+    # ★★ #23/#18/#24 启动自证（参数快照 / 腿数闸门是否生效 / 日历覆盖期）
+    _boot_guard(record_dir, specs, allow_trade)
 
     # ---- 每品种独立状态（与具体会话无关，重连后沿用） ----
     for s in specs:
@@ -486,8 +761,7 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
     except Exception as _e:
         print(f"[A11] 版本记录异常（不影响交易）：{type(_e).__name__}: {_e}", flush=True)
 
-    # ---- 心跳独立线程：休市/无行情时照写，防台账断层误报 ----
-    # 铁律：线程内绝不触碰 tqsdk 对象（q/k/api），只读 shared 里的纯标量缓存。
+    # ---- 心跳独立线程：休市/无行情时照写，防台账断层误报 ----    # 铁律：线程内绝不触碰 tqsdk 对象（q/k/api），只读 shared 里的纯标量缓存。
     # tqsdk 对象跨线程使用会返回全零帧（项目既有教训）。
     shared = {s["key"]: {"dt": "", "price": 0.0, "pos": 0, "tgt": 0} for s in specs}
     import threading
@@ -572,12 +846,36 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
         else:
             print("[单日亏损阀] ⚠️ 台账里没有上一交易日 EQUITY ⇒ 首个快照播种"
                   "（当日基准=当时权益，等价于今天从 0 亏损算起）", flush=True)
+
+    # ---- ★★ #16（2026-10-21）：单日亏损阀演练（--drill-dailyloss）----
+    #   用途：在**没有真实亏损**的情况下，验证「触阈后只拒新开仓 / 止损不动 / 平仓放行」。
+    #   与 --drill-fuse 的差别：熔断演练刻意落盘（复位要人工删文件）；本演练**纯内存**，
+    #   不写 `单日亏损状态.json` —— 它验的是「阀生效后的行为」，不是「跨日复位」，
+    #   没必要污染真实风控状态，重启即恢复。
+    if drill_dloss:
+        dloss.force_blocked()
+        print("\n" + "=" * 68, flush=True)
+        print("  单日亏损阀演练（--drill-dailyloss）：已强制置为「当日已触阀」", flush=True)
+        print("  预期三要素：", flush=True)
+        print("    ① 一切新开仓被拒 → 台账 RISKBLOCK「停加仓阀拒开…[DRILL]」", flush=True)
+        print("    ② 已有持仓的 stop **不变**（风控不碰止损线）", flush=True)
+        print("    ③ 平仓 / 止损 / 撤单**照常**执行（只挡开仓入口）", flush=True)
+        print("  不写 单日亏损状态.json ⇒ 重启即恢复，无需手工复位。", flush=True)
+        print(f"  当前阀状态：{dloss.summary()}", flush=True)
+        print("=" * 68 + "\n", flush=True)
+        for s in specs:
+            s["rec"].event("DAILYSTOP",
+                           f"[DRILL] 演练：强制置为已触阀 → 只出不进 | {dloss.summary()}")
+
     if dloss.blocked:
-        _popup("MA13 模拟盘：单日亏损阀已触发",
-               f"当前交易日已触发单日亏损阀（阈值 {DAILY_LOSS_RATIO:.1%}）。\n\n"
+        _dtag = "（演练）" if getattr(dloss, "_drill", False) else ""
+        _popup(f"MA13 模拟盘：单日亏损阀已触发{_dtag}",
+               f"当前交易日已触发单日亏损阀（阈值 {DAILY_LOSS_RATIO:.1%}）{_dtag}。\n\n"
                f"{dloss.summary()}\n\n"
                "本次进程【只出不进】：拒绝一切新开仓，已有持仓照常按止损/时间止损出场。\n"
-               "下一交易日自动复位，无需人工解锁。")
+               + ("演练模式：重启进程即恢复，无需手工复位。"
+                  if getattr(dloss, "_drill", False) else
+                  "下一交易日自动复位，无需人工解锁。"))
         for s in specs:
             s["rec"].event("DAILYSTOP", f"启动时读回已触发的单日亏损阀 → 只出不进 | "
                                         f"{dloss.summary()}")
@@ -633,6 +931,13 @@ def run_live_multi(symbol_keys=None, allow_trade=False, web_gui=False,
                     api.wait_update(deadline=time.time() + 30)
                     for s in specs:
                         _process(api, s, allow_trade, shared, acc_box, fuse, ctx, sig)
+                        # ★★ #15（2026-10-21）：持仓变化时同步「计划止损」落盘
+                        #   （空仓清理 / 缺记录补写；不改 s["stop"]、不影响出场）
+                        _sync_plan_stop(s)
+                    # ★★ 风控二期周期任务（2026-10-21，60s 节流、内部全程吞异常）：
+                    #   #22-C 每日收盘后隔夜快照 / #22-B 长假收盘强平（唯一授权平仓例外）
+                    _periodic_risk(api, specs, shared, acc_box, record_dir,
+                                   allow_trade, drill_holiday=drill_holidayclose)
             except KeyboardInterrupt:
                 raise                     # 人工 Ctrl+C：正常退出，不重连
             except Exception as e:        # 断线/被踢/网络异常：记账后重连
@@ -746,6 +1051,26 @@ def _ops_sent(s, symbol, dir_cn, offset_cn, hands, ref_price, bar_time, key_suff
         return None
 
 
+def _sync_shared_pos(shared, s):
+    """★ #18 P1-A（2026-10-21）：把**真相源** `s["pos"]` 写回 `shared[s["key"]]["pos"]`。
+
+    凡是**在风控判定前读 shared 持仓**的地方，都必须先调一次：
+      · 开仓闸门 `_risk_check`（否则同拍「平仓→反手」会双计）
+      · 隔夜敞口快照 `_ovn.build_legs`（否则鬼腿会算进敞口，实测高估 2.32 倍）
+
+    背景：`sh["pos"]` 只在 `_process` 末尾更新一次，同一拍内读到的是**上一根 bar 的
+    持仓**。10-19 心跳 P0 已栽过一次同样的坑（当时只改了心跳一处、没固化），
+    这次复发 ⇒ 详见 `01_判死与已试清单.md` §3 第 10 条「缓存字段冒充真相源」。
+
+    绝不抛：这是同步元数据，不能影响交易主循环。
+    """
+    try:
+        shared[s["key"]]["pos"] = int(s.get("pos") or 0)
+        return True
+    except Exception:
+        return False
+
+
 def _same_side_notional(shared, side_sign):
     """账户级**同向**名义敞口（元）。side_sign=+1 多 / -1 空。
 
@@ -766,8 +1091,17 @@ def _same_side_notional(shared, side_sign):
     return total
 
 
-def _risk_check(s, acc, hand, shared=None, side_sign=1, price=None):
-    """开仓前风控闸门（**只挡开仓，绝不挡平仓**）。异常一律放行。"""
+def _risk_check(s, acc, hand, shared=None, side_sign=1, price=None, day=None):
+    """开仓前风控闸门（**只挡开仓，绝不挡平仓**）。异常一律放行。
+
+    ★★ 2026-10-21 风控二期接线（D2 已拍板，顺序有意义：先组合层、后单账户层）
+      ① #18 腿数闸门：`shared` 里 pos≠0 的**品种数** ≥ K(6) ⇒ 拒开。
+         口径按品种聚合（18.3），换池双份算 1 腿；`exclude=` 自身不算新增腿。
+      ② #22-A 隔夜上限：总名义 ≤1.0×权益 / 单品种 ≤0.3×权益 / 长假前降到 0.5×。
+         只在**开新腿**时算新增名义；同品种加仓不重复计（那不改隔夜来源数）。
+      ③ 既有 `RiskGate`：手数 / 保证金占用率 / 同向名义敞口。
+    三层任一不过即拒，**平仓永不经过本函数**。
+    """
     try:
         g = s.get("risk")
         if g is None:
@@ -781,10 +1115,70 @@ def _risk_check(s, acc, hand, shared=None, side_sign=1, price=None):
                 on = abs(float(hand)) * float(price) * float(s["mult"])
         except Exception:
             on = None
-        return g.check_open(hand, balance=bal, margin=mg,
-                            same_side_notional=ssn, order_notional=on)
+
+        # ① 组合腿数（#18）
+        if shared is not None:
+            _lok, _lwhy = _lg.check_open(shared, key=s.get("key"))
+            if not _lok:
+                return False, _lwhy
+
+        # ② 隔夜敞口（#22-A）—— 只在有权益、有名义时判；缺数据放行不误杀
+        try:
+            _legs = _ovn.build_legs(shared, config_symbols.SYMBOLS)
+            _ok2, _why2 = _ovn.check_limit(_legs, bal, key=s.get("key"),
+                                           new_notional=(on or 0.0), day=day)
+            if not _ok2:
+                return False, _why2
+        except Exception:
+            pass
+
+        # ③ 既有单账户闸门
+        _ok3, _why3 = g.check_open(hand, balance=bal, margin=mg,
+                                   same_side_notional=ssn, order_notional=on)
+        # ④ #21 可用资金预检 —— **只观察、不拒单**（D2 21.2）
+        if _ok3:
+            _avail_precheck(s, acc, hand, side_sign)
+        return _ok3, _why3
     except Exception:
         return True, ""
+
+
+def _avail_precheck(s, acc, hand, side_sign):
+    """#21：开仓前用 `available` 与 Quote.margin_long/short 预检"钱够不够"。
+
+    **只打日志 + 落告警，绝不改变是否开仓**（D2 21.2 拍板"只预检+日志、不拒单"，
+    理由是误杀正常开仓的代价 > 废单+重报；先观察误杀率再决定是否真的拦）。
+
+    字段语义（tqsdk `objs.py` 源码取证，2026-10-21）：
+      · `Account.available` = 「账户权益 − 冻结保证金 − 保证金 − 冻结权利金 − 冻结手续费」
+        ⇒ **这才是"可用资金"**，`balance` 是动态权益，两者不是一回事。
+      · `Quote.margin_long` / `margin_short` = 每手多头/空头保证金（交易所口径）。
+      · ★ 所有字段默认 `float("nan")`（不是 None）⇒ 必须显式判 nan，
+        否则 `nan <= 0` 恒 False，会让"未就绪"被当成"充足"。
+    """
+    try:
+        _av = getattr(acc, "available", None)
+        if _av is None or not (_av == _av):
+            return                                   # 未就绪 ⇒ 不预检（不算误杀）
+        _q = s.get("q")
+        if _q is None:
+            return
+        _field = "margin_long" if side_sign > 0 else "margin_short"
+        _m = getattr(_q, _field, None)
+        if _m is None or not (_m == _m) or float(_m) <= 0:
+            return                                   # 每手保证金未就绪
+        _need = abs(float(hand)) * float(_m)
+        if float(_av) >= _need:
+            return
+        _name = s.get("name") or s.get("key")
+        _msg = (f"可用资金 {float(_av):.0f} < 拟开仓所需保证金 {_need:.0f}"
+                f"（{hand}手 × 每手 {float(_m):.0f}）⇒ 本单可能被柜台拒单。"
+                f"**预检只记录、不拦截**（#21）。")
+        print(f"[{_name}][AVAILPRE] {_msg}", flush=True)
+        _aq.push(s.get("record_dir") or _ALERT_DIR, _aq.LEVEL_WARN, _name,
+                 _msg, dedup_key=f"availpre:{s.get('key')}")
+    except Exception:
+        pass                                          # 预检异常绝不介入开仓决策
 
 
 def _find_orphan(api, s, cur_sym, exclude=None):
@@ -842,50 +1236,238 @@ def _cloud_pos(api, s, sym=None):
 #   原 _stop_price 已删除，避免两份 MA13 逻辑漂移。
 
 
+def _bars_since_bar(k, bar_time):
+    """自 `bar_time` 那根之后又走完了多少根 K 线。取不到返回 None。
+
+    用于接管时恢复 `bars_in`（时间止损 MAX_HOLD 的计时器）。
+    原先一律归零 ⇒ 每次重启时间止损都重新计时，"持仓过久"永远触发不了。
+    计数口径：`bar_time` 之后出现的每一根都算走过一根（最后一行是正在形成的
+    那根，但它也代表前一根已收盘 ⇒ 不减 1）。
+
+    ★★ 2026-10-21 13:50 修 8 小时时区错配（E1）：
+      tqsdk 的 kline `datetime` 是 **UTC 纳秒整数**，`pd.to_datetime()` 出来是 UTC naive；
+      而传进来的 `bar_time`（= `quote.datetime` 字符串）是**北京时间**。
+      两者直接比较差 8 小时 ⇒ 持仓不足 8 小时时 `kd > bt` 恒为 False ⇒ bars_in 永远 0。
+      实证（13:32 核心日志）：`bar_time=11:29:59.980000 | K末行=05:30:00 | kd>bt 计数=0`
+      —— 05:30 UTC 正是北京 13:30，而 bars_in 被算成 0。
+      修法：**统一抬到北京时间**。`kd` 一律 +8h；`bt` 只在「纳秒整数」分支 +8h
+      （字符串分支本就是北京，再加就变成多 8h）。
+    """
+    if bar_time is None:
+        return None
+    try:
+        import pandas as _pd
+        _s = str(bar_time).strip()
+        _TZ = _pd.Timedelta(hours=8)          # tqsdk kline datetime 以 UTC 为基准
+        # tqsdk 的 quote.datetime 正常是 "YYYY-MM-DD HH:MM:SS.ffffff" 字符串；
+        # 但 K线 datetime 是**纳秒整数**。两种都认，认不出就返回 None。
+        if _s.isdigit() and len(_s) >= 16:
+            bt = _pd.Timestamp(int(_s)) + _TZ          # 纳秒(UTC) ⇒ 北京
+        else:
+            bt = _pd.Timestamp(_s[:26])                # 字符串已是北京，不再加
+        kd = _pd.to_datetime(k["datetime"]) + _TZ      # UTC ⇒ 北京（与 bt 同基准）
+        _cnt = max(0, int((kd > bt).sum()))
+        # ★ 2026-10-21 D1 取证（#15 体检 P2-6）：**不改计数逻辑**，只把输入暴露出来。
+        #   争议点：tqsdk 的 get_kline_serial 返回的 DataFrame 是否含「正在形成」的 bar。
+        #   若含，则 kd>bt 会把未收盘那根算进去 ⇒ bars_in 多 1 ⇒ MAX_HOLD 提前 1 根触发。
+        #   若 K末行与 bar_time 落在同一时段（差 ≤ 8h 已修正），说明两列同基准、计数可信。
+        try:
+            print(f"[bars_in取证] bar_time={bt} | K末行={kd.iloc[-1]} | K根数={len(kd)} | "
+                  f"kd>bt 计数={_cnt}（末行若为未收盘bar则多算1根）", flush=True)
+        except Exception:
+            pass
+        return _cnt
+    except Exception:
+        return None
+
+
 def _attach_stop_on_boot(s, pos, c, a, sig=None):
-    """启动/重连后补挂止损（对齐 engine.run_live_boll 的 attach_stop_on_start）。
+    """启动/重连后补挂止损。
 
-    云端**不存我们的止损线**（那是本策略自算的），所以恢复出的持仓必须重算一条。
-    ⚠️ 算法必须与开仓处**逐字一致** ⇒ 统一走 signal.stop_price()，禁止在这里另写一份。
-       swing 取近 SLOPE_N 根的极值，且**排除正在形成的当前 bar**（与 entry 的
-       low[max(0,i-SLOPE_N):i] 同口径；取不到就用现价兜底）。
+    ★★ 2026-10-21 改（#15「RECOVER 止损重锚」）：**优先恢复开仓时落盘的计划止损**。
+       原实现无条件用「当前收盘 ∓ 1.15×ATR」重算，行情反向时会把止损**放宽**
+       （实测豆粕 3276→3271.1、纯碱→951.9），并把 `bars_in` 归零让时间止损
+       重新计时。现在分两条路：
+         A. 有记录（合约 + 方向都对）⇒ **原样恢复，一个字都不重算**
+         B. 无记录（老持仓 / 换月 / 文件被删）⇒ 才按现价重算兜底，并立即固化，
+            下次重启起走 A
 
-    这不是新增过滤条件，纯粹是「止损线丢了必须补回来」，否则持仓会裸奔。
-    sig 缺省时回落到模块级 _SIG（MA13），保证旧调用零影响。
+    ⚠️ 路径 B 的重算算法必须与开仓处**逐字一致** ⇒ 统一走 signal.stop_price()，
+       禁止在这里另写一份。
+    ⚠️ **不采用「计划和重算取更紧的那个」**：重算在盈利时会收紧（等价于偷偷加了
+       移动止损，规则 2 禁止的叠加条件）、在亏损时会放宽（放大风险），两个方向
+       都不对，唯一语义正确的解是原样恢复。
     """
     if pos == 0 or a != a or a <= 0:
         return
     sig = sig or _SIG
-    c = float(s["q"].last_price or c)
-    # 近SLOPE_N 根的极值，**排除当前正在形成的最后一根**（与 entry 口径一致）
-    try:
-        k = s["k"]
-        nk = len(k)
-        lo = float(np.min(np.array(k["low"][max(0, nk - 1 - SLOPE_N): nk - 1], dtype=float)))
-        hi = float(np.max(np.array(k["high"][max(0, nk - 1 - SLOPE_N): nk - 1], dtype=float)))
-        if lo != lo or lo <= 0:
-            lo = c
-        if hi != hi or hi <= 0:
-            hi = c
-    except Exception:
-        lo = hi = c
-    stop = sig.stop_price(1 if pos > 0 else -1, c, a,
-                          lo if pos > 0 else hi)
-    s["stop"] = stop
-    s["entry"] = c
-    s["bars_in"] = 0
-    s["recovered"] = True
-    # ★★ 接管当根禁止判出场（理由见 _process 里的同名字段注释）：
-    #   止损是用前 5 根 swing 现算的，不能拿「已经走完的当根 high/low」反证它被击穿。
-    s["_skip_exit_once"] = True
-    print(f"[{s['name']}][恢复] 检测到云端已有持仓 {pos} 手 → "
-          f"以云端为准接管，止损补挂至≈{stop:.1f}(ATR={a:.2f})", flush=True)
-    s["rec"].event("RECOVER",
-                   f"⚠️ 云端存在持仓 {pos} 手，本进程原以为空仓 → 已接管并补挂止损"
-                   f"≈{stop:.1f}（ATR={a:.2f}，算法与开仓一致）。若这是意外持仓请人工核对。")
+    _q = s.get("q")
+    _lp = getattr(_q, "last_price", None) if _q is not None else None
+    c = float(_lp or c)
+    d = 1 if pos > 0 else -1
+    _sym = getattr(_q, "underlying_symbol", None) if _q is not None else None
+    _rd = s.get("record_dir")
+
+    plan = _ps.load(_rd, s.get("key"), _sym, d)
+
+    if plan is not None:
+        # ---------------- 路径 A：原样恢复（正常路径）----------------
+        stop = float(plan["stop"])
+        s["stop"] = stop
+        s["entry"] = float(plan.get("entry") or c)
+        _bi = _bars_since_bar(s.get("k"), plan.get("bar_time"))
+        if _bi is None and plan.get("bar_time"):
+            print(f"[{s['name']}]⚠️ 无法从 bar_time={plan.get('bar_time')} 恢复 bars_in"
+                  f"（按 0 计，时间止损将重新计时）", flush=True)
+        s["bars_in"] = int(_bi) if _bi is not None else 0
+        s["recovered"] = True
+        _pen = ""
+        if d > 0 and c <= stop:
+            _pen = "⚠️ 现价已跌破计划止损（本应已出场）"
+        elif d < 0 and c >= stop:
+            _pen = "⚠️ 现价已涨破计划止损（本应已出场）"
+        # ★★ E4（2026-10-21 14:06）：**现价已穿越止损 ⇒ 不允许跳过当根出场**。
+        #   原实现无条件 skip，实测代价：13:32 接管 FU 时现价已跌破 4815.64，
+        #   但跳过当根、等 13:35 那根收盘才平，成交 4804 ⇒ 多亏 11.64 点 ≈ 815 元。
+        #   判定用 `last_price`（当前事实），不是 bar 的 low/high（可能是已走完的历史），
+        #   所以这里不跳过**不会**复现"JD 假平仓"那个坑（那个坑是拿历史 bar 反证）。
+        s["_skip_exit_once"] = not _pen
+        # ★★ E5（2026-10-21）：`entry` 是策略记账价，**不是**真实开仓价（兜底重算会把它
+        #   写成当时现价：实测 BU 记 4998、FILL 真实 5003）。有 `open_price` 才敢说"开仓"。
+        _op = plan.get("open_price")
+        try:
+            _px_txt = f"开仓 {float(_op):.1f}" if _op else \
+                      f"记录entry {s['entry']:.1f}(非真实开仓价)"
+        except Exception:
+            _px_txt = f"记录entry {s['entry']:.1f}(非真实开仓价)"
+        print(f"[{s['name']}][恢复] 云端持仓 {pos} 手 → 恢复**计划止损** {stop:.1f}"
+              f"（{_px_txt}，已走 {s['bars_in']} 根，未重算）{_pen}", flush=True)
+        s["rec"].event(
+            "RECOVER",
+            f"⚠️ 云端存在持仓 {pos} 手 → 已接管，止损**原样恢复**为开仓时的计划值 "
+            f"{stop:.1f}（{_px_txt}，已走 {s['bars_in']} 根；未重算）。"
+            + (f" | {_pen}" if _pen else ""))
+    else:
+        # ---------------- 路径 B：无记录才重算（兜底）----------------
+        try:
+            k = s["k"]
+            nk = len(k)
+            lo = float(np.min(np.array(k["low"][max(0, nk - 1 - SLOPE_N): nk - 1], dtype=float)))
+            hi = float(np.max(np.array(k["high"][max(0, nk - 1 - SLOPE_N): nk - 1], dtype=float)))
+            if lo != lo or lo <= 0:
+                lo = c
+            if hi != hi or hi <= 0:
+                hi = c
+        except Exception:
+            lo = hi = c
+        stop = sig.stop_price(d, c, a, lo if d > 0 else hi)
+        s["stop"] = stop
+        s["entry"] = c
+        s["bars_in"] = 0
+        s["recovered"] = True
+        # ★★ E4（2026-10-21 14:06）：同样按「现价是否已越过 stop」决定跳过与否。
+        #   ⚠️ 诚实说明：路径 B 的 stop 是用**现价 c** 算的（stop_price(d, c, a, swing)），
+        #   多头的 stop = max(c-2a, lo-0.5a) 恒 < c、空头恒 > c ⇒ 本判定在数学上**恒为假**，
+        #   即：路径 B 永远仍然跳过当根。保留它是为了防将来 stop_price 换口径（如引入
+        #   交易所限价/固定止损）时这里不变成空洞。真正有效的那条在路径 A（用最后一笔
+        #   计划止损比对现价，13:32 FU 就是被它救的）。
+        _pen_b = ""
+        if d > 0 and c <= stop:
+            _pen_b = "⚠️ 现价已跌破重算止损"
+        elif d < 0 and c >= stop:
+            _pen_b = "⚠️ 现价已涨破重算止损"
+        s["_skip_exit_once"] = not _pen_b
+        print(f"[{s['name']}][恢复] ⚠️ 无计划止损记录（换月/老持仓/文件丢失）→ "
+              f"按现价重算兜底 {stop:.1f}(ATR={a:.2f})；已固化，下次重启起沿用本条"
+              f" | ★bars_in 归零 ⇒ 时间止损(MAX_HOLD=15)重新计时，本笔持仓可能被延长{_pen_b}",
+              flush=True)
+        s["rec"].event(
+            "RECOVER",
+            f"⚠️ 云端存在持仓 {pos} 手，本地无该合约的计划止损记录 → 按现价重算兜底 "
+            f"≈{stop:.1f}（ATR={a:.2f}）。若为换月请人工核对；"
+            f"该值已固化，之后重启不再重算。")
+        # 立即固化 ⇒ 下一次重启走路径 A，不再重算（这是"只放宽一次"的自愈封口）
+        _ok = _ps.save(_rd, s.get("key"), _sym, stop, c, d, abs(pos),
+                       getattr(_q, "datetime", None) if _q is not None else None, src="SYNC")
+        # ★ 2026-10-21 D1（#15 体检 P2-5）：原先返回值被丢弃 ⇒ 落盘失败静默，
+        #   下次重启仍走路径 B 重算（止损可能再放宽一次）。这里只告警，不改交易。
+        if not _ok:
+            print(f"[{s['name']}]⚠️ PLANSTOP_FAIL 计划止损**固化失败**（路径B）"
+                  f" key={s.get('key')} stop={stop:.1f} ⇒ 下次重启仍会重算", flush=True)
+            try:
+                s["rec"].event(
+                    "PLANSTOP_FAIL",
+                    f"⚠️ 计划止损落盘失败（路径B）key={s.get('key')} stop≈{stop:.1f}；"
+                    f"下次重启将再次按现价重算（止损可能被放宽）")
+            except Exception:
+                pass
+
     # ★★ 换月移交：接管时同步「持仓在哪个合约」，并落盘（重启后据此判换月）
-    s["underlying"] = s["q"].underlying_symbol
-    _save_underlying(s.get("record_dir"), s["key"], s["underlying"])
+    s["underlying"] = _sym
+    _save_underlying(_rd, s["key"], s["underlying"])
+
+
+def _sync_plan_stop(s):
+    """#15：让「计划止损_<key>.json」永远与当前持仓一致（每个节拍调一次）。
+
+    三条规则：
+      · 空仓 ⇒ 清掉本合约记录（否则下次重启会把上一笔的旧止损套到新仓上）
+      · 有仓但无记录 ⇒ 补写（把兜底重算 / 外部接管的线固化，下次不再重算）
+      · 有仓且有记录 ⇒ **不动**（记录才是真相；现价变动不该改写止损线）
+
+    ⚠️ 只读写文件，**不改 `s["stop"]`、不参与任何交易判定** ⇒ 不触碰出场逻辑。
+    ⚠️ 每 tick 都会被调用，用 `_ps_mark` 做脏检查，持仓状态没变就不碰磁盘。
+    """
+    try:
+        _rd = s.get("record_dir")
+        _key = s.get("key")
+        if not _rd or not _key:
+            return
+        _q = s.get("q")
+        _sym = getattr(_q, "underlying_symbol", None) if _q is not None else None
+        pos = int(s.get("pos") or 0)
+        _mark = (1 if pos > 0 else -1 if pos < 0 else 0, _sym)
+        if s.get("_ps_mark") == _mark:
+            return                       # 持仓状态未变 → 不重复读写
+
+        if pos == 0:
+            # ★ 只有**对账基线已建立**才敢删记录：启动初期 k 线还没就绪 / 首次对账
+            #   还没跑，`pos` 一律是 0 —— 此时清文件会把「上一笔持仓的计划止损」误删，
+            #   随后接管只能走重算兜底（等于 #15 没修）。
+            # ⚠️ 这里**不写 `_ps_mark`**：否则基线建立后会被脏检查挡住，永远清不掉。
+            if not s.get("_recon_base"):
+                return
+            _ps.clear(_rd, _key, _sym)
+            s["_ps_mark"] = _mark
+            return
+
+        s["_ps_mark"] = _mark
+
+        stop = float(s.get("stop") or 0)
+        if not (stop == stop) or stop <= 0:
+            return
+        if _ps.load(_rd, _key, _sym, 1 if pos > 0 else -1) is not None:
+            return                       # 已有记录：绝不改写
+        _ok = _ps.save(_rd, _key, _sym, stop, float(s.get("entry") or 0),
+                       1 if pos > 0 else -1, abs(pos),
+                       getattr(_q, "datetime", None) if _q is not None else None,
+                       src="SYNC")
+        # ★ 2026-10-21 D1（#15 体检 P2-5）：每 tick 都会走到这里，故失败只告警前 3 次，防刷屏。
+        if not _ok:
+            _n = int(s.get("_ps_fail_n") or 0) + 1
+            s["_ps_fail_n"] = _n
+            if _n <= 3:
+                print(f"[{s.get('name')}]⚠️ PLANSTOP_FAIL 计划止损补写失败"
+                      f"（第 {_n} 次）key={_key} stop={stop:.1f} ⇒ 下次重启仍会重算", flush=True)
+                try:
+                    s["rec"].event(
+                        "PLANSTOP_FAIL",
+                        f"⚠️ 计划止损补写失败（第 {_n} 次）key={_key} stop≈{stop:.1f}；"
+                        f"下次重启将再次按现价重算（止损可能被放宽）")
+                except Exception:
+                    pass
+    except Exception:
+        pass                             # 记账类动作，永不打断交易
 
 
 # ★ 当前 ATR 改由 signals.Ma13Signal.atr_at 提供（单一真相源，见 signals.py）。
@@ -1076,12 +1658,41 @@ def _cloud_fill_stats(api, s):
                     mult = float(_t[2])
                 except Exception:
                     mult = 0.0
+                # ⚠️ 已知口径偏差（2026-10-21 执行员标注，**未改动既有统计**）：
+                #   这里的符号只按「持仓方向」取，而"不利"应由**买卖方向**决定 ——
+                #   对「多平」（卖出）和「空开」（卖出），成交价比决策价低才是更不利，
+                #   本式却会算成负值（显示为有利）。#20 的新模块 `lib/slippage.py`
+                #   用的是正确口径（is_buy 决定符号），历史 FILLX 行的符号不可与新表混用。
+                #   是否统一改台账口径需 D 拍板（会改变历史对比），执行员不擅自改。
                 slip_yuan = (avg - ref) * (1 if p["dir"] == "多" else -1) * \
                             (mult or 1) * p["hands"]
                 rec.event("FILLX",
                           f"{p['dir']}{p['side']} {p['hands']}手 "
                           f"决策价={ref:.2f} 云端成交均价={avg:.2f} "
                           f"滑点≈{slip_yuan:+.2f}元")
+                # ★★ #20（2026-10-21）：结构化落盘「信号根收盘 → 真实成交均价」。
+                #   只由**真实成交**路径调用（本分支已确认持仓变化且均价可读），
+                #   未成交/部分成交归 P0-1，这里不重复记账（D2 §6-20.4）。
+                try:
+                    _flags = ["重报"] if p.get("rs") else []
+                    _slip.record(
+                        s.get("record_dir"), s.get("name"), p.get("key"),
+                        p.get("symbol") or q.underlying_symbol, p.get("dir"),
+                        p.get("side"), p.get("hands"),
+                        sig_close=p.get("sig_close") or ref,
+                        fill_avg=avg, tick=float(s.get("tick") or 0),
+                        mult=mult, flags=",".join(_flags))
+                except Exception:
+                    pass
+                # ★★ E5（2026-10-21）：把**真实成交均价**回填进计划止损 json 的 `open_price`。
+                #   只对「开」回填（平仓不动）；失败静默 —— 这是元数据，绝不能影响交易。
+                if str(p.get("side")) == "开":
+                    try:
+                        _ps.set_open_price(
+                            s.get("record_dir"), s.get("key"), avg,
+                            symbol=p.get("symbol") or q.underlying_symbol)
+                    except Exception:
+                        pass
             else:
                 rec.event("FILLX", f"{p['dir']}{p['side']} {p['hands']}手 "
                                    f"决策价={ref:.2f} 云端均价未就绪（未读到）")
@@ -1256,11 +1867,15 @@ def _order(api, s, symbol, direction, offset, volume, ref_price=None):
     return True, f"limit={limit}", _o
 
 
-def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_before):
+def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_before,
+                sig_close=None):
     """发平仓单：上期所/能源按今昨仓自动拆成 1~2 张，其余交易所仍是 1 张 CLOSE。
 
     记账口径与改动前一致：每张单各写 FILL（=下单意图）/ ORDER_SENT / pending_fill。
     真实成交仍由 FILLX 核对云端持仓后确认，**FILL 不是成交凭证**。
+
+    `sig_close`（#20，2026-10-21）：触发本次平仓**信号那根 K 线的收盘价**，
+    仅用于滑点测算基准（D2 20.1）；缺省 None 时回落到 ref_price（不理想但不阻断）。
     """
     plan = _close_plan(api, symbol, side, hands)
     if not plan:
@@ -1282,6 +1897,8 @@ def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_be
         s.setdefault("pending_fill", []).append(
             {"ts": s["last_order_ts"], "side": "平", "dir": dir_cn,
              "hands": int(vol), "ref_price": float(ref_price), "key": _k,
+             # ★ #20：滑点基准 = 信号根收盘价（缺省回落到 ref_price，不阻断平仓）
+             "sig_close": (float(sig_close) if sig_close else float(ref_price)),
              "expect_net": expect, "order": o, "offset": off,
              # ★ 2026-10-20 撤单重报需要：合约（撤/重报都要按合约+交易所）与 bar_time（重报单的幂等键）
              "symbol": symbol, "bar_time": bar_time})
@@ -1527,6 +2144,31 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     s["_recon_base"] = True                # ★ P0-2：本会话对账基线已建立（下一拍起偏离即判）
 
 
+def _bar_gate(s, bar_id):
+    """这根 bar 该不该处理。返回 True=处理 / False=跳过（跳过时已更新 last_id）。
+
+    ★ #19（2026-10-21 19:00，D1 直接改，用户授权「工程量小的决策员直接做」）：
+      把这段从 `_process` 里**原样抽出**，唯一目的是**可单测**（规则 F：疏漏必须固化为断言）。
+      **逻辑一字未改**：
+        · 同一根 bar（id 相同）或未成形 bar（id<0）⇒ 跳过；
+        · `skip_first` 为真 ⇒ 首根只认账不处理，随后清标记。
+      为什么必须抽：`last_id` 只存内存、重启后为 -1，原来 `skip_first` 只在**重连**分支
+      （本文件 :953）置位、**重启**分支不置位 ⇒ 重启后会把最后一根**已收盘**的 bar 当新 bar 重放。
+      实测 2026-10-21 18:03:41：BU+8 / EG-7 依据 14:59:59.8 的 bar，在收盘后 3 小时成交。
+    """
+    try:
+        bid = int(bar_id)
+    except Exception:
+        return False
+    if bid == s.get("last_id") or bid < 0:
+        return False                # 本品种没有新 bar（或 bar 尚未成形）
+    s["last_id"] = bid
+    if s.get("skip_first"):
+        s["skip_first"] = False     # 启动/重连后的首根 bar：记 id 防重复，不处理
+        return False
+    return True
+
+
 def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     """单品种的一个处理节拍：新 bar 出现（=前一根收盘）才算信号。"""
     sig = sig or _SIG   # 默认 MA13 占位；ctx 提供其他因子时以 ctx 为准
@@ -1661,11 +2303,7 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                 s["pos"] = 0; s["bars_in"] = 0
 
     bar = k.iloc[-1]
-    if bar["id"] == s["last_id"] or bar["id"] < 0:
-        return                      # 本品种没有新 bar
-    s["last_id"] = bar["id"]
-    if s.get("skip_first"):
-        s["skip_first"] = False     # 重连后首根 bar：记 id 防重复，不处理
+    if not _bar_gate(s, bar["id"]):
         return
     c, h, l = float(bar["close"]), float(bar["high"]), float(bar["low"])
     if c <= 0:
@@ -1706,7 +2344,9 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
                 # 统一走 _send_close：上期所/能源按今昨仓拆单（2026-10-19）
                 _ok_o, _note_o, _sent = _send_close(
                     api, s, q.underlying_symbol, _side, _dir, abs(pos),
-                    float(_lp), q.datetime, pos)
+                    float(_lp), q.datetime, pos,
+                    # ★ #20：收盘出场有明确的"信号根" ⇒ 用它的收盘价作滑点基准
+                    sig_close=c)
                 if not _ok_o:
                     rec.event("ORDERERR", f"收盘出场平仓未报出：{_note_o}")
                     return                # 持仓与止损保持不变，下一根再判
@@ -1751,14 +2391,34 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
         rec.signal(dir_cn, hand, c, q.datetime, c, a,
                    f"MA13回踩顺势 stop≈{stop_new:.1f}" + ("" if allow_trade else " 【观察模式不报单】"))
         if allow_trade and hand > 0:
+            # ★★ #18 P1-A（2026-10-21 18:20，D1 审计）：**真相源回填**。
+            #   `sh["pos"]` 只在 `_process` 末尾（约 2413 行）才写成 s["pos"]，
+            #   而同一拍里「止损平仓 → 反手开仓」时 s["pos"] 已变 0、sh 还是旧持仓 ⇒
+            #   check_limit 里 sym_before(旧 7 手) + new_notional(新 8 手) **双计**：
+            #     实测 BU 748950 > 0.45×权益 443264 ⇒ 误拒（真实 399440 应放行）。
+            #   今天 BU×3 + EG×3 = 6/6 全是这条造成的假拦截。
+            #   规则：凡在开仓判定前读 shared 的地方，先把本品种写成真相源。
+            _sync_shared_pos(shared, s)
             # ★ 运维闸门（2026-10-17）：只挡**开仓**，平仓永不被挡。异常一律放行。
             _ok, _why = _risk_check(
                 s, acc, hand, shared=shared,
                 side_sign=(1 if dir_trend > 0 else -1),
-                price=(float(_lp) if _lp and not math.isnan(_lp) else None))
+                price=(float(_lp) if _lp and not math.isnan(_lp) else None),
+                day=str(_rs.trading_day()))       # #22-A：长假前降级判定要用交易日
             if not _ok:
                 rec.event("RISKBLOCK", f"风控拒开 {dir_cn} {hand}手 | {_why}")
                 print(f"[{s['name']}][RISKBLOCK] {_why}", flush=True)
+                # ★★ #18 P1-A 第 2 件（必须与上面回填一起做，否则只修双计、没修锁死）：
+                #   本条 return 会跳过 `_process` 末尾的 sh.update ⇒ sh["pos"] 永远停在
+                #   上一根 bar 的值。一旦「止损平仓 → 反手被拒」，该品种的鬼腿就再也
+                #   清不掉，从此**永久被判超限**（今天 BU/EG 14:44 之后就是这样锁死的）。
+                #   所以拒开前必须把真相源写回 shared。
+                try:
+                    _p = int(s.get("pos") or 0)
+                    sh.update({"dt": q.datetime, "price": c, "pos": _p,
+                               "tgt": (1 if _p > 0 else -1 if _p < 0 else 0)})
+                except Exception:
+                    pass
                 return
             _side_o = "BUY" if dir_trend > 0 else "SELL"
             _ok_o, _note_o, _ord_o = _order(api, s, q.underlying_symbol, _side_o, "OPEN", hand,
@@ -1777,6 +2437,10 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
             s.setdefault("pending_fill", []).append(
                 {"ts": s["last_order_ts"], "side": "开", "dir": dir_cn,
                  "hands": hand, "ref_price": float(_lp), "key": _k,
+                 # ★ #20（2026-10-21）：**信号根收盘价**单独带下去。
+                 #   `ref_price` 是下单瞬间的 last_price（报价，不是基准），
+                 #   D2 20.1 定滑点基准 = 信号那根已收盘 K 线的收盘价 ⇒ 必须显式传 `c`。
+                 "sig_close": float(c),
                  # ★ 开仓目标净仓 = 方向 × 手数（开仓前必为空仓，s["pos"]==0 才走到这里）
                  "expect_net": (hand if dir_trend > 0 else -hand),
                  # 订单对象：确认阶段读 status/last_msg 落「废单原因」（2026-10-19）
@@ -1792,6 +2456,26 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
             s["_skip_exit_once"] = False      # ★ 清掉可能残留的接管跳过标记
             s["underlying"] = q.underlying_symbol
             _save_underlying(s.get("record_dir"), s["key"], s["underlying"])
+            # ★★ #15（2026-10-21）：开仓即把**这条止损线本身**落盘。
+            #   重启/接管时原样读回 —— 不再用「现价 ∓ 1.15×ATR」重算（那会放宽止损）。
+            _ok = _ps.save(s.get("record_dir"), s.get("key"), q.underlying_symbol,
+                           stop_new, c, 1 if dir_trend > 0 else -1, hand, q.datetime)
+            # ★ 2026-10-21 D1（#15 体检 P2-5）：这是最关键的一次落盘 —— 失败即意味着
+            #   本笔仓在下次重启时会走"重算兜底"（止损可能被放宽）。原先返回值被丢弃，
+            #   失败无任何痕迹。这里只告警 + 记台账，不改交易行为。
+            if not _ok:
+                print(f"[{s['name']}]⚠️ PLANSTOP_FAIL **开仓落盘失败** key={s.get('key')} "
+                      f"sym={q.underlying_symbol} stop={stop_new:.1f} hand={hand} "
+                      f"⇒ 下次重启将按现价重算（止损可能被放宽）", flush=True)
+                try:
+                    s["rec"].event(
+                        "PLANSTOP_FAIL",
+                        f"⚠️ 开仓计划止损落盘失败 key={s.get('key')} "
+                        f"sym={q.underlying_symbol} stop≈{stop_new:.1f} hand={hand}；"
+                        f"下次重启将按现价重算（止损可能被放宽）")
+                except Exception:
+                    pass
+            s["_ps_mark"] = (1 if dir_trend > 0 else -1, q.underlying_symbol)
     elif pos != 0:
         s["bars_in"] += 1
 
@@ -1810,7 +2494,71 @@ if __name__ == "__main__":
     ap.add_argument("--gui", action="store_true", help="开 web_gui 图形界面")
     ap.add_argument("--drill-fuse", action="store_true",
                     help="熔断演练：启动后强制触发一次回撤熔断（会闩死，需人工复位）")
+    ap.add_argument("--drill-dailyloss", action="store_true",
+                    help="单日亏损阀演练：强制置为「当日已触阀」（纯内存、不落盘、重启即恢复），"
+                         "用于验证只拒新开仓/止损不动/平仓放行")
+    ap.add_argument("--drill-holidayclose", action="store_true",
+                    help="#22-B 长假强平演练：只打印「将平哪些品种手数」，不发任何单、"
+                         "不写已执行标记（D2 §8-③ 安全约束①）")
     args = ap.parse_args()
+
+    # ★★ A9（2026-10-20 派单 T3）：核心 stdout/stderr 落 台账/核心输出_YYYYMMDD.log（按日切）。
+    #   看门狗用 DETACHED_PROCESS + stdout=DEVNULL 拉起 ⇒ 原生输出被丢弃；
+    #   此处**在 Python 层**把 sys.stdout/stderr 重定向到带日期的日志文件，
+    #   直接覆盖继承来的 DEVNULL（fd 无关，只换对象）。新增、try/except 包裹，
+    #   任何异常都退回原 stdout，绝不影响交易。下次（非交易时段）重启生效。
+    def _install_core_log():
+        try:
+            _logdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "台账")
+            os.makedirs(_logdir, exist_ok=True)
+
+            class _DayLog:
+                def __init__(self):
+                    self._date = None
+                    self._f = None
+                    self._tee = sys.__stdout__          # 原始 stdout（DEVNULL，仅保底）
+                    self._open()
+                def _open(self):
+                    d = _dt.date.today().strftime("%Y%m%d")
+                    if d == self._date and self._f is not None:
+                        return
+                    if self._f is not None:
+                        try:
+                            self._f.close()
+                        except Exception:
+                            pass
+                    self._date = d
+                    self._f = open(os.path.join(_logdir, f"核心输出_{d}.log"),
+                                   "a", encoding="utf-8", buffering=1)
+                def write(self, s):
+                    self._open()
+                    try:
+                        self._f.write(s)
+                    except Exception:
+                        pass
+                    try:
+                        self._tee.write(s)
+                    except Exception:
+                        pass
+                def flush(self):
+                    try:
+                        self._f.flush()
+                    except Exception:
+                        pass
+                    try:
+                        self._tee.flush()
+                    except Exception:
+                        pass
+            _dl = _DayLog()
+            sys.stdout = _dl
+            sys.stderr = _dl
+            print(f"[核心日志] stdout/stderr 已重定向到 台账/核心输出_{_dt.date.today().strftime('%Y%m%d')}.log")
+        except Exception as _e:
+            try:
+                print(f"[核心日志] 重定向失败（不影响交易）：{type(_e).__name__}: {_e}", flush=True)
+            except Exception:
+                pass
+    _install_core_log()
 
     # ★★ 核心层单实例闸门（2026-10-09）★★
     #   抢不到锁 = 已有另一个核心在跑 ⇒ 直接退出，绝不第二个下单。
@@ -1828,6 +2576,7 @@ if __name__ == "__main__":
     try:
         run_live_multi(symbol_keys=[x.strip().upper() for x in args.symbols.split(",") if x.strip()],
                        allow_trade=args.trade, web_gui=args.gui,
-                       drill_fuse=args.drill_fuse)
+                       drill_fuse=args.drill_fuse, drill_dloss=args.drill_dailyloss,
+                       drill_holidayclose=args.drill_holidayclose)
     finally:
         _释放核心锁()

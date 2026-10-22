@@ -163,8 +163,29 @@ class DailyLossGuard:
     # ---------- 语义 ----------
     @property
     def blocked(self):
-        """True ⇒ 本交易日拒绝一切新开仓。"""
-        return bool(self.st.get("triggered"))
+        """True ⇒ 本交易日拒绝一切新开仓。
+
+        正常路径看落盘的 `triggered`；`_drill` 是 `--drill-dailyloss` 演练用的
+        **纯内存**闩锁，不写状态文件、重启即消失 —— 演练不需要回滚任何文件。
+        """
+        return bool(self.st.get("triggered")) or bool(getattr(self, "_drill", False))
+
+    def force_blocked(self, note="[DRILL] 演练：强制置为已触阀（真实亏损未达阈值）"):
+        """★ 2026-10-21 #16：演练专用 —— 只在**内存**里把阀置为已触发。
+
+        刻意**不落盘**（不调用 `_save()`、不改 `self.st`）：
+          · 重启即恢复，演练结束不用手工复位任何文件；
+          · 不会把 `triggered=true` 写进 `单日亏损状态.json` 污染真实风控状态。
+        用途：在没有真实亏损的情况下验证「触阈后只拒新开仓、止损不动、平仓放行」。
+        """
+        self._drill = True
+        self._drill_note = str(note)
+        return True
+
+    def clear_drill(self):
+        """撤掉演练闩锁（供离线测试复位，线上从不调用）。"""
+        self._drill = False
+        self._drill_note = None
 
     def seed(self, equity, trade_day=None, src="tape"):
         """首次启动（无状态文件）时用「上一交易日收盘权益」播种。
@@ -180,7 +201,15 @@ class DailyLossGuard:
         if not (eq == eq and eq > 0):
             return False
         td = str(trade_day or _rs.trading_day())
-        self.st.update({"trade_day": td, "base_day": None, "base_equity": eq,
+        # ★ A10（2026-10-21 执行员）：base_day 必须落盘，否则跨日/重启无法自证
+        #   「基准权益来自哪一天」。原实现无条件写 None，导致线上状态长期 base_day=null。
+        #   · src="tape"：权益取自上一交易日收盘 ⇒ base_day = 上一交易日
+        #   · 其他（无历史播种）：基准 = 当日首个快照 ⇒ base_day = 当日
+        if src == "tape":
+            base_day = _rs.trading_day(day_start(td) - _dt.timedelta(minutes=1))
+        else:
+            base_day = td
+        self.st.update({"trade_day": td, "base_day": base_day, "base_equity": eq,
                         "threshold": eq * self.ratio, "base_src": src})
         self._save()
         return True
@@ -251,16 +280,52 @@ class DailyLossGuard:
                 f"(来自{g.get('base_day') or '上一交易日'}/{g.get('base_src') or '?'}) "
                 f"当前={f(g.get('cur_equity'))} 差额={f(g.get('loss'))} "
                 f"阈值={f(g.get('threshold'))}({self.ratio:.2%}) "
-                f"{'已停加仓' if g.get('triggered') else '正常'}"
+                f"{'已停加仓' if self.blocked else '正常'}"
+                + (" [DRILL]" if getattr(self, "_drill", False) else "")
                 + (f" @{g.get('triggered_at')}" if g.get("triggered_at") else ""))
 
     def reason(self):
-        """触发原因文本（写台账用）。"""
+        """触发原因文本（写台账用）。演练时带 `[DRILL]` 前缀，与真实触发可区分。"""
         g = self.st
-        return (f"当日亏损 {float(g.get('loss') or 0):.0f} ≥ 阈值 "
-                f"{float(g.get('threshold') or 0):.0f}"
-                f"（基准 {float(g.get('base_equity') or 0):.0f} × {self.ratio:.1%}，"
-                f"基准={g.get('base_day') or '?'} 收盘权益）")
+        _t = (f"当日亏损 {float(g.get('loss') or 0):.0f} ≥ 阈值 "
+              f"{float(g.get('threshold') or 0):.0f}"
+              f"（基准 {float(g.get('base_equity') or 0):.0f} × {self.ratio:.1%}，"
+              f"基准={g.get('base_day') or '?'} 收盘权益）")
+        if getattr(self, "_drill", False):
+            return f"{getattr(self, '_drill_note', '[DRILL] 演练')} | {_t}"
+        return _t
+
+    # ---------- A10 自证（2026-10-20 派单 T3）----------
+    def self_check(self, tape_csv=None):
+        """A10：单日亏损基准可自证。返回 (ok: bool, msg: str)。
+
+        判据（派单 T3 §A10）：
+          · `base_day` 非空 且 == 上一交易日（当前 `trade_day` 的前一个交易日）；
+          · 若给定 `tape_csv`，则 `base_equity` 须能由该日 EQUITY 末行复现（容差 0.01）。
+        只读、不写、不抛 —— 调用方（live 进程）只应记日志，不得据此改变交易行为。
+        """
+        g = self.st
+        td = g.get("trade_day")
+        bd = g.get("base_day")
+        if not td:
+            return False, "trade_day 为空（状态未初始化）"
+        if not bd:
+            return False, "base_day 为空（尚未跨日/未播种）"
+        # 上一交易日 = trading_day(day_start(td) - 1min)
+        prev = _rs.trading_day(day_start(str(td)) - _dt.timedelta(minutes=1))
+        # 无历史播种（base_src=seed）时基准是当日首个快照 ⇒ 期望 base_day=当日，
+        # 不是上一交易日（否则会把合法的退化状态误判为不自证）。
+        exp = str(td) if str(g.get("base_src")) == "seed" else str(prev)
+        if str(bd) != exp:
+            return False, f"base_day={bd} != 期望 {exp}（base_src={g.get('base_src')}）"
+        if tape_csv:
+            eq, ts = last_equity_before(tape_csv, day_start(str(td)))
+            if eq is None:
+                return False, f"台账找不到 base_day={bd} 收盘权益（cutoff={day_start(str(td))}）"
+            diff = abs(eq - float(g.get("base_equity") or 0))
+            if diff > 0.01:
+                return False, f"base_equity={g.get('base_equity')} 与台账 {ts}={eq} 差 {diff:.4f} > 0.01"
+        return True, f"base_day={bd} 上一交易日吻合，基准可自证"
 
 
 # ---------------------------------------------------------------- 自检
@@ -292,6 +357,7 @@ def selftest():
     # 4) 触发后权益反弹也不自动解除（当日闩死）
     assert g.update(1_001_000.0, now=D1) is True
     assert g.blocked, "当日权益反弹不应自动解除"
+    g._save()                                 # 强制落盘：下一拍未触阈被节流跳过，保证 case5 重载一致
     print("  3 当日不可自动解除 OK")
 
     # 5) 重启不清零：新进程从同一文件加载，仍然 blocked
@@ -336,6 +402,65 @@ def selftest():
     eq, ts = last_equity_before(csv, day_start("20261020"))
     assert eq == 998_000.0 and ts == "2026-10-19 19:59:00", (eq, ts)
     print("  9 台账取昨收权益 OK")
+
+    # 11) A10 自证（独立构造，避免依赖 g2 节流的落盘状态）
+    d2 = tempfile.mkdtemp(prefix="a10_")
+    p2 = os.path.join(d2, STATE_NAME)
+    g3 = DailyLossGuard(p2)
+    g3.update(1_000_000.0, now=D1)            # 播种 base=1,000,000, td=20261019
+    g3.update(1_001_000.0, now=D1)            # 当日末权益 1,001,000
+    g3.update(1_001_000.0, now=D2)            # 跨日 → base_day=20261019, base=1,001,000
+    assert g3.st["base_day"] == "20261019", g3.st["base_day"]
+    assert g3.st["base_equity"] == 1_001_000.0, g3.st["base_equity"]
+    tape = os.path.join(d2, "M_成交流水.csv")
+    with open(tape, "w", encoding="utf-8-sig") as f:
+        f.write("类型,记录时间,K线时间,方向,手数,成交价,参考价,备注\n")
+        f.write("EQUITY,2026-10-19 14:59:00,,,,,,权益=1001000.00 持仓=0\n")
+    ok, msg = g3.self_check(tape_csv=tape)
+    assert ok, f"A10 自证应过：{msg}"
+    # 台账篡改 ⇒ 应失败
+    with open(tape, "w", encoding="utf-8-sig") as f:
+        f.write("类型,记录时间,K线时间,方向,手数,成交价,参考价,备注\n")
+        f.write("EQUITY,2026-10-19 14:59:00,,,,,,权益=999000.00 持仓=0\n")
+    ok2, _ = g3.self_check(tape_csv=tape)
+    assert not ok2, "台账权益与基准差>0.01 应判不自证"
+    print("  10 A10 基准自证（台账吻合/篡改失败）OK")
+
+    # 12) A10 播种路径 base_day：src=tape ⇒ 上一交易日（原实现无条件写 None）
+    g4 = DailyLossGuard(None)
+    assert g4.seed(1_000_000.0, trade_day="20261020", src="tape") is True
+    assert g4.st["base_day"] == "20261019", g4.st["base_day"]
+    ok4, msg4 = g4.self_check()
+    assert ok4, f"A10 tape 播种自证应过：{msg4}"
+
+    # 13) 无历史播种（seed）：基准=当日首拍 ⇒ base_day=当日（退化但自洽）
+    g5 = DailyLossGuard(None)
+    assert g5.seed(1_000_000.0, trade_day="20261020", src="seed") is True
+    assert g5.st["base_day"] == "20261020", g5.st["base_day"]
+    ok5, msg5 = g5.self_check()
+    assert ok5, f"A10 seed 播种自证应过：{msg5}"
+    print("  11 A10 播种路径 base_day（tape/seed）OK")
+
+    # 12) #16 --drill-dailyloss 演练闩锁：只在内存、不落盘、重启即消失
+    d3 = tempfile.mkdtemp(prefix="drill_")
+    p3 = os.path.join(d3, STATE_NAME)
+    g6 = DailyLossGuard(p3)
+    g6.update(1_000_000.0, now=D1)             # 正常状态，远未触阈
+    assert not g6.blocked
+    g6.force_blocked()
+    assert g6.blocked, "演练闩锁未生效"
+    assert g6.st.get("triggered") is False, "演练不得改写 triggered —— 会污染真实风控状态"
+    assert "[DRILL]" in g6.reason(), f"演练原因缺 [DRILL] 标记：{g6.reason()}"
+    g6.update(1_000_000.0, now=D1)             # 走一次正常 update（内部可能触发节流落盘）
+    g6._save()                                 # 强制落盘，验证演练态不会被写进文件
+    with open(p3, "r", encoding="utf-8") as f:
+        _disk = json.load(f)
+    assert _disk.get("triggered") is not True, "演练态被写进状态文件 ⇒ 会污染线上风控"
+    g7 = DailyLossGuard(p3)                    # 模拟重启
+    assert not g7.blocked, "演练闩锁落盘了 ⇒ 重启后仍拦新开仓（演练污染线上）"
+    g6.clear_drill()
+    assert not g6.blocked, "撤掉演练闩锁后应恢复"
+    print("  12 演练闩锁（内存/不落盘/重启消失）OK")
 
     print("[selftest] 全部通过")
     return True
