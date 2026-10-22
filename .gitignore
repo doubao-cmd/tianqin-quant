@@ -196,7 +196,9 @@ HTML效果参考手册.html
 工具/_截面因子_基差/数据/
 工具/_supertrend_ts/data/
 # np.db 是运行时库，connect() 会 CREATE TABLE IF NOT EXISTS 重建；核实结论另有 核实结果.json 入库
-工具/_np_data/np.db
+# ★ 2026-10-22：改成 np.db* 覆盖 SQLite WAL 模式的 -wal / -shm 临时文件
+#   （原写法只匹配精确文件名，这两个后缀文件会漏进 git status）
+工具/_np_data/np.db*
 # _raw/ 是每日原始响应快照：单日 ≈2.3MB（czce_rank 1MB + shfe_rank 0.55MB），一年 ≈570MB ⇒ 不入库
 # 证据仍留在磁盘可复核；要入库的结论放 json/md，不放原始响应
 工具/_np_data/_raw/
