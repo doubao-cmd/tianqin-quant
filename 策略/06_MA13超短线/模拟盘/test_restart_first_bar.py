@@ -11,6 +11,7 @@
 修法：`_init_spec_state` 里 `skip_first` 初始化 False→True，两条路径对齐；
 并把判定抽成 `_bar_gate` 使其可单测（逻辑一字未改）。
 """
+import datetime as _dt
 import os
 import sys
 import tempfile
@@ -86,10 +87,68 @@ s5 = {"last_id": -1, "skip_first": True}
 r_old = _old_gate(s5, 100)
 _ok(r_old is True, f"t7 旧逻辑会把重启首根当新 bar 处理（返回 {r_old}）⇒ bug 可复现")
 
+# ---- t8/t9/t10 ★ 2026-10-22 #19 补可观测性：首根必须落一条 SKIP（可正证）----
+#   原先 `skip_first` 分支只 return False、不落事件 ⇒「首根不处理」只能反证（无 FILL）。
+#   现在要求台账里出现 `SKIP`，备注含「差=…s / 阈值=…s / 陈旧=是|否」。
+def _skip_rows(d, name):
+    """从临时台账里读出 (全部类型, SKIP 行备注) —— 走**真实落盘**，不 mock 记录器。"""
+    p = os.path.join(d, name + "_成交流水.csv")
+    kinds, notes = [], []
+    with open(p, encoding="utf-8-sig") as fh:
+        for ln in fh.read().splitlines()[1:]:
+            if not ln.strip():
+                continue
+            c = ln.split(",")
+            kinds.append(c[0])
+            if c[0] == "SKIP":
+                notes.append(c[-1])
+    return kinds, notes
+
+
+# t8 首根**陈旧**（复现 10-21 18:03：14:55 的 bar 在 18:03:41 才被拿到）⇒ 陈旧=是
+_d8 = tempfile.mkdtemp()
+_rec8 = M._LiveRecorder(_d8, "沥青")
+_now8 = _dt.datetime(2026, 10, 21, 18, 3, 41).timestamp()
+_bar8 = {"id": 103, "datetime": int(_dt.datetime(2026, 10, 21, 14, 55).timestamp() * 1e9)}
+s8 = {"last_id": -1, "skip_first": True, "name": "沥青", "pos": 0,
+      "rec": _rec8, "ksec": 300}
+r8 = M._bar_gate(s8, 103, _bar8, _now8)
+_rec8.stop("A20 t8 结束")
+_k8, _n8 = _skip_rows(_d8, "沥青")
+_ok(r8 is False, f"t8 陈旧首根仍不处理（返回 {r8}，控制流未变）")
+_ok(len(_n8) == 1, f"t8 落了 SKIP 事件 {len(_n8)} 条")
+_ok(bool(_n8) and "陈旧=是" in _n8[0], f"t8 SKIP 备注含「陈旧=是」：{_n8[0] if _n8 else '无'}")
+_ok(bool(_n8) and "差=11021s" in _n8[0] and "阈值=600s" in _n8[0],
+    "t8 差=11021s / 阈值=600s（与 A21 t4 同一场景、同一数字）")
+_ok("STALEBAR" not in _k8,
+    "t8 首根走的是 B 分支、**不落 STALEBAR** ⇒ C 的判定未被本改动影响")
+
+# t9 首根**新鲜**（该 bar 刚收盘 120s）⇒ 陈旧=否
+_d9 = tempfile.mkdtemp()
+_rec9 = M._LiveRecorder(_d9, "甲醇")
+_now9 = _dt.datetime(2026, 10, 22, 9, 5, 0).timestamp()
+_bar9 = {"id": 201, "datetime": int((_now9 - 300 - 120) * 1e9)}   # 结束于 now-120s
+s9 = {"last_id": -1, "skip_first": True, "name": "甲醇", "pos": 0,
+      "rec": _rec9, "ksec": 300}
+r9 = M._bar_gate(s9, 201, _bar9, _now9)
+_rec9.stop("A20 t9 结束")
+_k9, _n9 = _skip_rows(_d9, "甲醇")
+_ok(r9 is False and s9["skip_first"] is False, f"t9 新鲜首根不处理、标记已清（返回 {r9}）")
+_ok(bool(_n9) and "陈旧=否" in _n9[0], f"t9 SKIP 备注含「陈旧=否」：{_n9[0] if _n9 else '无'}")
+_ok(bool(_n9) and "差=120s" in _n9[0], "t9 差=120s（未超 600s 阈值）")
+
+# t10 bar=None（A20 其余用例的调用方式）⇒ 仍 return False，且观测不抛异常
+s10 = {"last_id": -1, "skip_first": True, "name": "豆粕"}
+try:
+    r10 = M._bar_gate(s10, 300)
+    _ok(r10 is False, f"t10 bar=None 照常返回 False（{r10}）")
+except Exception as e:
+    _ok(False, f"t10 bar=None 不应抛异常：{type(e).__name__}: {e}")
+
 print("=" * 72)
 if FAIL:
     print(f"失败 {len(FAIL)} 项：")
     for m in FAIL:
         print("  -", m)
     sys.exit(1)
-print("7/7 通过")
+print("10/10 通过（21 项断言；t8/t9 走真实落盘台账验证 SKIP 备注）")

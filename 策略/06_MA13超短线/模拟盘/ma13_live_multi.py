@@ -2254,6 +2254,32 @@ def _bar_gate(s, bar_id, bar=None, now_ts=None):
     s["last_id"] = bid
     if s.get("skip_first"):
         s["skip_first"] = False     # 启动/重连后的首根 bar：记 id 防重复，不处理
+        # ---- ★ 2026-10-22 #19 补可观测性：**只落观测**，不改控制流、不改返回值、
+        #      不动 C 的判定（`_stale_info` 只被调用，不改变它自己的拦/放结论）----
+        #   为什么必须补：原先这里只 `return False`、不落任何事件（全历史 `SKIP` 命中 0 条）
+        #   ⇒「首根不处理」**永远只能反证**（没有新 FILL），验收永久卡在任务书 §四-3-②。
+        #   ⚠️ 观测失败的方向必须是**不影响交易** ⇒ 整段 try/except 吞掉。
+        try:
+            _pend = _bar_period_sec(s)
+            _limit = STALE_MULT * _pend
+            _st = _stale_info(s, bar, now_ts)
+            if _st is not None:
+                _flag, _dif = "是", f"{_st['diff']:.0f}"
+            else:
+                _bs = _bar_start_epoch(bar)
+                if _bs is None:
+                    _flag, _dif = "否", "?"
+                else:
+                    _now = float(now_ts) if now_ts is not None else time.time()
+                    _flag, _dif = "否", f"{_now - (_bs + _pend):.0f}"
+            _note = (f"差={_dif}s / 阈值={_limit:.0f}s / 陈旧={_flag}"
+                     f" | 首根不处理 | 持仓={int(s.get('pos', 0) or 0)}手")
+            if s.get("rec") is not None:
+                s["rec"].event("SKIP", _note)
+            print(f"[SKIP][{s.get('name', '?')}] 首根不处理 | 陈旧={_flag} 差={_dif}s",
+                  flush=True)
+        except Exception:
+            pass
         return False
     # ---- ★★ #19-C 陈旧 bar 守卫：开仓与出场**都不报单**（陈旧价算的止损同样不可信）----
     #   位置在 last_id 记账**之后** ⇒ 陈旧 bar 被消费掉，不会下一拍再触发。
