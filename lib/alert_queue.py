@@ -31,6 +31,12 @@
 
 【自检】
     python -c "from lib import alert_queue as a; a.selftest()"
+
+【已知限制（#25-A，2026-10-22 登记，本版不实现轮转）】
+    文件**不轮转**，append-only 只增不减。实测约 65 行/天（含降噪前的启动噪声），
+    一年约 2.4 万行；`_fill_cache` / `_already_on_disk` 都只读尾部 512KB/128KB，
+    短期无性能问题。**约 1 年后需人工归档**（建议把上一年的行移到
+    `告警队列_<年>.jsonl.bak`，保持本文件名不变即可，代码无需改动）。
 """
 import json
 import os

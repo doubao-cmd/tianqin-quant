@@ -42,6 +42,12 @@ LEDGER = os.path.join(_HERE, "台账")
 LOG = os.path.join(LEDGER, "守护日志.txt")
 LOCK = os.path.join(LEDGER, "守护.lock")
 HB_DIR = LEDGER                       # 心跳文件所在目录（--sandbox 可重定向）
+# ★★ #25-C（2026-10-22）：告警队列所在目录，**必须跟 --sandbox 一起重定向**。
+#   原实现写死 `os.path.join(_HERE, "台账")` ⇒ 沙箱测试/演练的 CRITICAL 全部灌进
+#   生产 `告警队列.jsonl`（实证：2026-10-22 11:26:30/47/53 三条「假死阈值=0min」
+#   「假死：心跳停滞 0 分钟」正是 test_watchdog_a2.py 的沙箱参数产物，
+#   而生产 `守护日志.txt` 无对应行 —— 因为 LOG 被重定向、告警没有）。
+ALERT_DIR = LEDGER
 RESTART_WAIT = 30      # 旧常量：保留为退避序列的第 1 档
 DEFAULT_LEGS = "JM,M,JD,P,SR"   # 兜底（2026-10-08 相关性选出）；auto 读不到时用
 
@@ -204,32 +210,94 @@ def _log(msg):
     #   以前只写在 `守护日志.txt` 里 ⇒ 无人值守时完全不可见。这里按关键词把
     #   「重启/假死/FATAL/退出」这类事件同步进 `告警队列.jsonl`（最高级），
     #   不动任何控制流、失败只吞掉（守护本身是止损裸奔的最后一道防线，绝不能被日志拖垮）。
+    #
+    # ★★ #25-A（2026-10-22，D2 任务书）：上面那条规则**对，但只对「事件」成立**。
+    #   「守护启动 …」与「假死阈值出处=…」是**永不变化的配置说明**，不是事件；
+    #   它们恰好含「假死」「重启」字样被关键词表误捕获，每次重启落 2 条 CRITICAL
+    #   ⇒ 实测 129 行里 124 条 CRITICAL、其中 60 条纯启动噪声（96% 噪声），
+    #     #17-A 的存在理由（无人值守能看见真事）被埋掉。
+    #   ⇒ 关键词命中后**先排除静态说明**，两条单独按 INFO + 稳定 dedup_key 落盘
+    #     （稳定 key ⇒ 同日第二次重启 0 新增，靠 `_dkey_on_disk` 跨进程兜底）。
+    #   真事件（退出 rc / FATAL / 假死 / 重启 / 拉不起）行为**一字未变**：不传 key ⇒ 天然唯一。
     try:
         _m = str(msg)
-        if any(k in _m for k in ("重启", "假死", "FATAL", "退出 rc", "拉不起")):
+        if any(k in _m for k in ("重启", "假死", "FATAL", "退出 rc", "拉不起")) \
+                and not any(x in _m for x in _NO_ALERT):
             _push_alert(_m)
+        elif _m.startswith("守护启动 "):
+            _push_alert(_m, level="INFO",
+                        dedup_key=f"守护|启动|{datetime.now():%Y%m%d}")
+        elif _m.startswith("假死阈值出处="):
+            _push_alert(_m, level="INFO", dedup_key=f"守护|阈值|{HB_STALL_SEC:.0f}")
     except Exception:
         pass
 
 
-def _push_alert(msg):
-    """把守护侧事件写进核心台账的告警队列（跨进程共用同一文件，append-only 安全）。"""
+# ★ #25-A：静态配置说明（**不是事件**）。这两类文本每次重启都会重复，
+#   按事件处理就是纯噪声源；排除后改按 INFO + 稳定 key 落盘。
+_NO_ALERT = ("阈值出处", "守护启动")
+
+
+def _dkey_on_disk(d, dk):
+    """该 dedup_key 是否已落过盘（只读文件尾部 512KB）。
+
+    ★ 为什么守护要自己实现：守护可能跑在「只有 stdlib」的环境里（见 `_push_alert`
+      的注释），不能 import `lib.alert_queue`。这里保持与其 `_already_on_disk`
+      **同口径**（精确匹配 dedup_key），否则两份去重语义会漂。
+    ★ 为什么只读尾部：文件当前 ~130 行、上限约 2.4 万行/年，尾部 512KB 足够覆盖
+      当日全部记录；真读失败 ⇒ 返回 False（退化为「不去重」，宁可多报一条）。
+    """
+    p = os.path.join(d, "告警队列.jsonl")
+    if not os.path.isfile(p):
+        return False
     try:
-        _d = os.path.join(_HERE, "台账")
+        size = os.path.getsize(p)
+        with io.open(p, "r", encoding="utf-8", errors="replace") as f:
+            start = max(0, size - 512 * 1024)
+            if start:
+                f.seek(start)
+                f.readline()                    # 丢掉被截断的半行
+            for ln in f:
+                ln = ln.strip()
+                if not ln or dk not in ln:
+                    continue                    # 先做便宜的子串过滤，再解析
+                try:
+                    if str(json.loads(ln).get("dedup_key")) == dk:
+                        return True
+                except Exception:
+                    continue
+    except Exception:
+        return False
+    return False
+
+
+def _push_alert(msg, level="CRITICAL", dedup_key=None):
+    """把守护侧事件写进核心台账的告警队列（跨进程共用同一文件，append-only 安全）。
+
+    参数
+    ----
+    level : 等级，**缺省必须是 "CRITICAL"** —— 忘传参的地方宁可多报，不许静默降级。
+    dedup_key : 给了 ⇒ 稳定 key（前置等级名，形如 `INFO:守护|启动|20261022`），
+                同日重复调用只落 1 条；不给 ⇒ 用秒级时间戳，**天然唯一 = 真事件不去重**。
+    """
+    try:
+        _d = ALERT_DIR
         if not os.path.isdir(_d):
             return
         # 守护可能跑在只有 stdlib 的环境里 ⇒ 不 import 项目 lib，直接写最小 JSONL
-        import json as _j
         _td = datetime.now().strftime("%Y%m%d")
         _ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # ★ 这里**刻意不去重**：每一次重启/假死都是独立事件，都该留痕。
-        #   dedup_key 带秒级时间戳 ⇒ 不会被核心的去重缓存吃掉（key 天然唯一）。
-        _dk = f"CRITICAL:守护|{_ts}"
-        _rec = {"ts": _ts, "trade_day": _td, "level": "CRITICAL",
+        _lv = str(level or "CRITICAL").strip().upper()
+        # ★ 真事件（每一次重启/假死）**刻意不去重**：它们是独立事件，都该留痕。
+        #   只有显式给了稳定 key 的静态说明才做同日去重。
+        _dk = (f"{_lv}:{dedup_key}" if dedup_key else f"{_lv}:守护|{_ts}")
+        if dedup_key and _dkey_on_disk(_d, _dk):
+            return
+        _rec = {"ts": _ts, "trade_day": _td, "level": _lv,
                 "source": "守护进程", "text": str(msg)[:2000], "dedup_key": _dk}
         with io.open(os.path.join(_d, "告警队列.jsonl"), "a",
                      encoding="utf-8", newline="") as f:
-            f.write(_j.dumps(_rec, ensure_ascii=False) + "\n")
+            f.write(json.dumps(_rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -824,11 +892,14 @@ def main():
     args = ap.parse_args()
 
     global LOG, LOCK, HB_DIR, CORE, POLL_SEC, BACKOFF, HB_STALL_SEC, HEALTHY_RESET_SEC
+    global ALERT_DIR
     if args.sandbox:                      # 测试：日志/锁/心跳全部落到沙箱目录
         d = os.path.abspath(args.sandbox)
         os.makedirs(d, exist_ok=True)
         LOG, LOCK, HB_DIR = (os.path.join(d, "守护日志.txt"),
                              os.path.join(d, "守护.lock"), d)
+        # ★ #25-C：告警队列也必须落沙箱，否则「沙箱测试」会污染生产台账
+        ALERT_DIR = d
     if args.core:
         CORE = os.path.abspath(args.core)
     if args.poll > 0:
@@ -924,8 +995,12 @@ def main():
                         stalled, age, path = _hb_stalled(keys, started)
                         if stalled:
                             # ★ 红线 5：任何自动干预必须留可 grep 的一行
-                            _log(f"假死：心跳停滞 {age/60:.0f} 分钟"
-                                 f"（{os.path.basename(path)}）→ 重启")
+                            # ★ #25-C3（2026-10-22）：打印**原始秒数**，不再只给四舍五入后的
+                            #   分钟。原来 `{age/60:.0f}` 会把 4.2s 显示成「停滞 0 分钟」，
+                            #   看上去像个不可能事件（实测 2026-10-22 11:26:53 那条就是这么
+                            #   产生的，排查时白绕一圈）。分钟值保留在括号里，便于肉眼读。
+                            _log(f"假死：心跳停滞 {age:.1f}s（≈{age/60:.1f} 分钟）"
+                                 f"（{os.path.basename(path)}）→ 重启，阈值 {HB_STALL_SEC:.0f}s")
                             ok = _kill_core(proc)
                             if not ok:
                                 _log(f"假死处置失败：PID {getattr(proc,'pid',None)} 未能终止，继续等待其自行退出")

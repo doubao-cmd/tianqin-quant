@@ -748,6 +748,69 @@ def t12_pid自检():
         shutil.rmtree(d, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# T13 A22：守护日志分级（#25-A 告警降噪）
+# ---------------------------------------------------------------------------
+def t13_告警分级():
+    print("[T13] A22：静态说明不进 CRITICAL / 真事件进 CRITICAL / 稳定 key 同日去重",
+          flush=True)
+    d = new_sandbox()
+    try:
+        m = _load_wd()
+        m.LOG = os.path.join(d, "unit.txt")
+        m.ALERT_DIR = d          # ★ 关键：必须把告警目录指到沙箱，绝不落生产台账
+        q = os.path.join(d, "告警队列.jsonl")
+
+        def rows():
+            out = []
+            if not os.path.isfile(q):
+                return out
+            with open(q, encoding="utf-8") as f:
+                for ln in f:
+                    ln = ln.strip()
+                    if ln:
+                        try:
+                            out.append(json.loads(ln))
+                        except Exception:
+                            pass
+            return out
+
+        # ---- 13.1 静态配置说明（原噪声源）不得进 CRITICAL，只落 INFO ----
+        m._log("守护启动 symbols=FU（来源 FU） trade=False pid=1 detached=False "
+               "假死阈值=12min 退避=[1, 1, 1, 1] 失败阈=5")
+        m._log("假死阈值出处=交接\\体检报告_A2进程守护_20261020.md §2.2「最大间隔…」")
+        _r1 = rows()
+        _crit1 = [x for x in _r1 if x["level"] == "CRITICAL"]
+        _info1 = [x for x in _r1 if x["level"] == "INFO"]
+        ok(len(_crit1) == 0 and len(_info1) == 2,
+           f"T13.1 「守护启动」+「阈值出处」⇒ CRITICAL {len(_crit1)} 条 / INFO "
+           f"{len(_info1)} 条（应 0 / 2；改前这两条都是 CRITICAL = 60 条噪声的来源）")
+
+        # ---- 13.2 真事件（退出 rc / FATAL）必须仍进 CRITICAL ----
+        _n0 = len(rows())
+        m._log("核心退出 rc=2，1.0s 后重启（连续失败 1 次）")
+        m._log("【FATAL】连续启动失败 5 次，最后 rc=2")
+        _r2 = rows()[_n0:]
+        ok(len(_r2) == 2 and all(x["level"] == "CRITICAL" for x in _r2),
+           f"T13.2 真事件「核心退出 rc=2」「【FATAL】」⇒ 全部 CRITICAL"
+           f"（实测 {[x['level'] for x in _r2]}，level 默认值未被降级）")
+
+        # ---- 13.3 稳定 dedup_key：同日第二次重启 0 新增，且 key 不含秒级时间戳 ----
+        _n1 = len(rows())
+        m._log("守护启动 symbols=FU（来源 FU） trade=False pid=2 detached=False "
+               "假死阈值=12min 退避=[1, 1, 1, 1] 失败阈=5")
+        m._log("假死阈值出处=交接\\体检报告_A2进程守护_20261020.md §2.2「最大间隔…」")
+        _add = len(rows()) - _n1
+        _keys = [x["dedup_key"] for x in rows() if x["level"] == "INFO"]
+        _stable = all(re.fullmatch(r"INFO:守护\|(启动\|\d{8}|阈值\|[\d.]+)", k)
+                      for k in _keys)
+        ok(_add == 0 and _stable,
+           f"T13.3 同日第二次重启新增 {_add} 条（应 0）⇒ dedup 生效；"
+           f"INFO key 稳定无秒级时间戳：{_keys}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     print("=" * 66)
     print(" A2 看门狗验收（沙箱 + 假核心，不触碰实盘账户）")
@@ -756,7 +819,8 @@ def main():
                  (t3t4_退避与熔断, "t34"), (t5_计数归零, "t5"),
                  (t6_防双开, "t6"), (t7_关窗自愈, "t7"),
                  (t9_心跳基线, "t9"), (t10_grace同口径, "t10"),
-                 (t11_fatal拆分, "t11"), (t12_pid自检, "t12")]
+                 (t11_fatal拆分, "t11"), (t12_pid自检, "t12"),
+                 (t13_告警分级, "t13")]
     only = {a.lower() for a in sys.argv[1:] if not a.startswith("-")}
     picked = [t for t in all_tests if not only or t[1] in only]
     for fn, _tag in picked:
