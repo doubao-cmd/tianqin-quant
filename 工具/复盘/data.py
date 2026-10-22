@@ -57,8 +57,18 @@ RECENT_SPECS = {
     "JM": ("焦煤",   "KQ.m@DCE.jm"),
     "JD": ("鸡蛋",   "KQ.m@DCE.jd"),
     "EB": ("苯乙烯", "KQ.m@DCE.eb"),
+    # ★ 2026-10-23 用户要求：把「新交易的几个品种」也做进复盘终端（06 模拟盘现池在跑的腿）。
+    #   只加数据源，**不动 EXCLUDED_SYMBOLS / 池子逻辑**；是否进 bundle 仍由 build_data 的
+    #   EXCLUDED_SYMBOLS 与台账池子周期决定。
+    "MA": ("甲醇",   "KQ.m@CZCE.MA"),
+    "SA": ("纯碱",   "KQ.m@CZCE.SA"),
+    "EG": ("乙二醇", "KQ.m@DCE.eg"),
+    "FU": ("燃料油", "KQ.m@SHFE.fu"),
+    "BU": ("石油沥青", "KQ.m@SHFE.bu"),
 }
-MULT = {"M": 10, "P": 10, "SR": 10, "JM": 60, "JD": 10, "EB": 5}   # 合约乘数（元/点/手）
+# 合约乘数（元/点/手）—— 与 config_symbols.SYMBOLS 第 3 项逐一核对过（2026-10-23）
+MULT = {"M": 10, "P": 10, "SR": 10, "JM": 60, "JD": 10, "EB": 5,
+        "MA": 10, "SA": 20, "EG": 10, "FU": 10, "BU": 10}
 CN2KEY = {cn: k for k, (cn, _c) in RECENT_SPECS.items()}
 RECENT_PERIODS = (1, 5, 15, 1440)   # 1min 供左侧分时图；5/15/日供主图
 
@@ -75,6 +85,15 @@ RECENT_META = {
     "JM": {"has_1015_break": True, "night_end": 23.0},
     "JD": {"has_1015_break": True, "night_end": 0.0},   # 鸡蛋无夜盘
     "EB": {"has_1015_break": True, "night_end": 23.0},
+    # ★ 2026-10-23 新增五腿。时段口径已用抓回的 K 线**实测校验**（2026-10-22 数据）：
+    #   10:15–10:30 小休：五腿同日 10:05/10:10 有 bar、10:15–10:25 无、10:30 恢复 ⇒ 均有小休
+    #     （含 SHFE 的 FU/BU；旧注释「SHFE 无小休」与实测不符，已在本次纠正）
+    #   夜盘：21:00 起、末根 22:55 ⇒ 均为 21:00–23:00，night_end = 23.0
+    "MA": {"has_1015_break": True, "night_end": 23.0},
+    "SA": {"has_1015_break": True, "night_end": 23.0},
+    "EG": {"has_1015_break": True, "night_end": 23.0},
+    "FU": {"has_1015_break": True, "night_end": 23.0},
+    "BU": {"has_1015_break": True, "night_end": 23.0},
 }
 
 ENCODING = "utf-8-sig"        # ★ §6·11：所有 CSV 带 BOM（已实测 EF BB BF），必须 utf-8-sig
