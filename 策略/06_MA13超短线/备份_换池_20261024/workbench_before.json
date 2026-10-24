@@ -1,0 +1,52 @@
+{
+  "active_strategy": "liquidity",
+  "max_legs": 6,
+  "universe_size": 50,
+  "selected": [
+    "FU",
+    "BU",
+    "MA",
+    "M",
+    "SA",
+    "EG"
+  ],
+  "session_gate": {
+    "enabled": false,
+    "k": 1.5,
+    "n_sessions": 20,
+    "_disabled_reason": "2026-10-18 证伪：封盘因果前提不成立（早盘强趋势→午盘，6品种 t 全<2、合计-0.78；选择性 t=1.51 且方向相反）。详见 讨论/封盘可行性_建议不封_20261018.md。状态机代码保留（exec4/gate.py），将来若出现已证有方向信息的时段可重新接线。"
+  },
+  "cross_sectional": {
+    "rank_period_days": 20,
+    "q": 3,
+    "disperse_threshold": 0.5
+  },
+  "selection": {
+    "method": "pool_s2",
+    "vol_window_days": 20,
+    "vol_top_m": 20,
+    "ret_window_days": 3,
+    "ret_top_n": 6,
+    "reselect": "every_6_days",
+    "reselect_min_days": 6,
+    "exclude": [
+      "JM"
+    ],
+    "exclude_note": "人工永久剔除（用户 2026-10-19 拍板）。语义=不参与阶段1 流动性排序、不占名额，等价于不在品种池。所有选品种入口（模拟盘自动重选 / run_workbench / backtest_year）统一生效。不删 universe.py 的元数据（其它工具仍引用），只从选择层排除。"
+  },
+  "entry": {
+    "signal": "ma13",
+    "bar_minutes": 5,
+    "stop": "intrabar_tick",
+    "time_stop_bars": 15
+  },
+  "sizer": {
+    "name": "risk_par",
+    "risk_pct": 0.01,
+    "equity_base": 200000.0,
+    "hand_min": 1,
+    "hand_max": 8,
+    "notional_cap": 2.0
+  },
+  "notes": "默认=卡C流动性筛选(liquidity)：两阶段选品种，底层MA13占位(负期望)，未来换正期望因子。切回卡A时序用 --strategy ma13_timeseries；卡B截面用 --strategy cross_sectional。selection段参数冻结不回测调优。预注册=先设计后验证。"
+}

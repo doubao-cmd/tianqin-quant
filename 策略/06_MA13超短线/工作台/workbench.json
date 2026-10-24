@@ -3,12 +3,12 @@
   "max_legs": 6,
   "universe_size": 50,
   "selected": [
-    "FU",
-    "BU",
+    "RU",
     "MA",
-    "M",
-    "SA",
-    "EG"
+    "AG",
+    "EG",
+    "P",
+    "SN"
   ],
   "session_gate": {
     "enabled": false,
