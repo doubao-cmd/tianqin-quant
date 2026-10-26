@@ -102,6 +102,10 @@ class _Rec:
     def fill(self, *a, **kw):
         pass
 
+    def unconfirmed_fill(self, *a, **kw):
+        # ★ D3 批次1 改动3：生产 _LiveRecorder 新增的方法，mock 需同步
+        pass
+
     def signal(self, *a, **kw):
         pass
 
@@ -199,7 +203,7 @@ def t3_撤单生效后重报一次():
 def t4_已重报过的单不再撤():
     now = time.time()
     o = _Order("ALIVE", 4, oid="c7")
-    pend = [{"symbol": "SHFE.fu2611", "ts": now - 120, "side": "平", "dir": "空", "hands": 8,
+    pend = [{"symbol": "SHFE.fu2611", "ts": now - 60, "side": "平", "dir": "空", "hands": 8,
              "ref_price": 3000.0, "expect_net": 0, "order": o, "offset": "CLOSE",
              "key": "k7", "rs": {"done": True}}]
     api = _Api(_Pos(short_n=8, px_short=3000.0))
@@ -213,7 +217,7 @@ def t4_已重报过的单不再撤():
 def t5_休市不撤单():
     now = time.time()
     o = _Order("ALIVE", 8, oid="c5")
-    pend = [{"symbol": "SHFE.fu2611", "ts": now - 600, "side": "平", "dir": "空", "hands": 8,
+    pend = [{"symbol": "SHFE.fu2611", "ts": now - 60, "side": "平", "dir": "空", "hands": 8,
              "ref_price": 3000.0, "expect_net": 0, "order": o, "offset": "CLOSE", "key": "k5"}]
     api = _Api(_Pos(short_n=8, px_short=3000.0))
     stale = _Quote("SHFE.fu2611", 3000.0,

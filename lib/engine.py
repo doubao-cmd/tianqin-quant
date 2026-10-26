@@ -1723,6 +1723,19 @@ class _LiveRecorder:
         self._w(self._ev, ["FILL", self._now(), "", f"{dir_cn}{offset_cn}",
                            int(vol), f"{price:.2f}", "", symbol])
 
+    def unconfirmed_fill(self, dir_cn, offset_cn, vol, price, symbol):
+        """★★ D3 批次1 改动3（2026-10-26）：未确认成交补一行 `UNCONFIRMED`。
+
+        与 FILL 同 8 列 schema（类型/记录时间/K线时间/方向/手数/成交价/参考价/备注），
+        仅把「类型」换成 UNCONFIRMED、备注写明「下单意图，未确认成交」。
+        下游复盘工具（工具/模拟盘台账.py）只识别 START/SIGNAL/FILL/STOPLOSS，
+        UNCONFIRMED 不在白名单内即自然跳过 ⇒ 不会把「下单意图」误当「真实成交」。
+        ⚠️ 不动 FILL 行本身格式（动格式会炸按列解析的复盘工具）。
+        """
+        self._w(self._ev, ["UNCONFIRMED", self._now(), "", f"{dir_cn}{offset_cn}",
+                           int(vol), f"{price:.2f}", "",
+                           f"{symbol} 下单意图，未确认成交"])
+
     def stoploss(self, dir_cn, line_price, trigger, note):
         self._w(self._ev, ["STOPLOSS", self._now(), "", dir_cn, "", "",
                            f"{line_price:.2f}",

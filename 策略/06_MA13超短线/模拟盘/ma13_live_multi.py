@@ -188,6 +188,22 @@ SYNC_CLOUD = True        # 是否以云端持仓为准同步（关掉=退回旧�
 #   （宁可晚 30 秒才对账，也不能错一次止损线）。
 FIX_WAIT_SEC = 30
 
+# ★★ D3 批次1 改动2（2026-10-26）：pending 终态 TTL（秒）。
+#   单条 pending 一旦进入确认循环，存活超过该秒数必须强制终结（写 PENDEXPIRE、
+#   离开 pending），否则状态机不确定——撤单重报后的新单回不到 pending、挂单永久悬空，
+#   正是今日 M/SA 事故的「确认链断裂」根因（层一）。取 FIX_WAIT_SEC 的 3 倍：
+#   必须明显晚于「等撮合窗口（30s）+ 撤单重报判定（45s）」，确保正常未成交路径
+#   （撤单重报一次）走完后再清，不会误杀正在重报的单。
+PEND_TTL_SEC = 3 * FIX_WAIT_SEC
+
+# ★★ D3 批次1 改动1（2026-10-26）：`RECONWAIT` 超时（秒）。
+#   在途委托是**过渡态**，不是稳定态，任何过渡态都必须有终态。超过该秒数仍 wait ⇒
+#   放弃等待、按云端为真相源重新判定（pending 视为 0），避免「有在途委托就永远 wait
+#   ⇒ 对账永远不跑 ⇒ 云端持仓永久脱管」（今日 M/SA 假平仓事故根因层三）。
+#   与改动2（pending TTL=3×FIX_WAIT_SEC=90s）互为双保险：TTL 先清掉悬空 pending，
+#   此处兜底在「TTL 没生效」时仍强制对账。
+RECON_WAIT_MAX = 180
+
 # ---- ★★ P0-1 撤单重报（2026-10-20 新增，见 交接\06模拟盘_风控增强任务书_20261019.md）----
 #   缺口：原实现只在 FIX_WAIT_SEC 后判一次「成交/未成交」，**从不撤单**。
 #   两种后果：① 该平没平掉 ⇒ 裸奔；② 让价 2 跳不够 ⇒ 单子永久挂着占额度。
@@ -1595,6 +1611,22 @@ def _cloud_fill_stats(api, s):
             #   对"平腿真没成交"仍然有效：此时净仓会变成 ±16 ≠ ±8，照样报未成交。
             expect = _rs.batch_expect(p, pend)
             filled = (expect is None) or (int(net) == int(expect))
+            # ★★ D3 批次1 改动2（2026-10-26）：pending 必须有终态，存活超 PEND_TTL_SEC
+            #   强制终结，交对账判定（改动1 的 RECONFORCE 超时是双保险）。
+            #   ⚠️ 顺序：先算 filled，**已成交的单绝不被 TTL 清掉**（TTL 在 filled 判定之后）。
+            _age = now - float(p["ts"])
+            if filled:
+                pass                                    # 成交路径不碰 TTL
+            elif _age >= PEND_TTL_SEC:
+                rec.event("PENDEXPIRE",
+                          f"{p['dir']}{p['side']} {p['hands']}手 "
+                          f"{p.get('symbol') or '?'} 在途 {_age:.0f}s 超 TTL"
+                          f"（{PEND_TTL_SEC}s）→ 强制终结，交对账判定")
+                # ★★ 改动3（顺手）：未确认成交补一行 UNCONFIRMED，区分「下单意图」与「真实成交」
+                rec.unconfirmed_fill(p["dir"], p["side"], p["hands"],
+                                    float(p.get("ref_price") or 0),
+                                    p.get("symbol") or "")
+                continue                                # 不 append ⇒ 离开 pending
             # ★★ 2026-10-19 新增：未成交时必须**带上委托的真实状态**。
             #   原实现只写"持仓未变化"，交易所的拒单文本被彻底丢掉 ——
             #   10-19 FU 平今废单（offset 用了 CLOSE，昨仓为 0）只能靠横向对比
@@ -1767,6 +1799,13 @@ def _cloud_fill_stats(api, s):
                         _L.unconfirmed(_k, "已成交但云端均价未就绪（读不到）")
             except Exception:
                 pass
+            # ★★ 改动3（顺手）：拒单=未确认成交，补一行 UNCONFIRMED。
+            #   独立于订单生命周期账（_L 可能为 None 也不影响成交流水可观测性），
+            #   下游复盘按类型白名单（START/SIGNAL/FILL/STOPLOSS）跳过 ⇒ 不会误当成交。
+            if (not filled) and _rej:
+                rec.unconfirmed_fill(p["dir"], p["side"], p["hands"],
+                                    float(p.get("ref_price") or 0),
+                                    p.get("symbol") or "")
         s["pending_fill"] = keep
 
 
@@ -1979,6 +2018,7 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     """
     if not SYNC_CLOUD:
         return
+    now = time.time()        # ★ D3 批次1：本函数内统一时钟，wait 超时计时用同一时刻
     # ★★ 等待撮合窗口：本进程刚下过单时，云端余额还没更新（撮合有几秒延迟）。
     #   此刻读到的云端持仓必然「与 s["pos"] 不一致」，若照下面的逻辑就会把
     #   **自己刚开的仓**误判成「外部遗留持仓」并再接管一次——实测 13:37:17 开仓、
@@ -1986,7 +2026,7 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     #   后果：止损被用当时的 ATR 覆盖重算（这次恰好同值，但一般会变）＋
     #   台账多出一条假 RECOVER 污染对账。
     #   ⇒ 下单后 FIX_WAIT 秒内不做对账，等云端自己跟上。
-    if time.time() - float(s.get("last_order_ts") or 0.0) < FIX_WAIT_SEC:
+    if now - float(s.get("last_order_ts") or 0.0) < FIX_WAIT_SEC:
         return
     q = s.get("q")
     if q is None:
@@ -2102,6 +2142,7 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
         s["underlying"] = cur_sym
         _save_underlying(s.get("record_dir"), s["key"], cur_sym)
         s["_recon_base"] = True            # ★ P0-2：本会话对账基线已建立
+        s.pop("_recon_wait_since", None)   # ★ D3 批次1：一致即无过渡态，清超时计时
         return
 
     # ---- ★★ P0-2 对账偏离硬停机（2026-10-20）----
@@ -2128,11 +2169,33 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     if _act == "wait":
         # 过渡态：既不锁，**也不接管**（旧代码靠 FIX_WAIT 单挡，30s 后仍会假接管；
         # 现在有在途委托就明确不下结论，下拍再判）。
-        if not s.get("_recon_wait_logged"):
-            s["_recon_wait_logged"] = True
-            rec.event("RECONWAIT", "对账暂缓（在途委托/换月过渡中）：" + _why)
-        return
+        # ★★ D3 批次1 改动1（2026-10-26）：在途委托是过渡态，必须有终态。
+        #   记录首次 wait 时刻，超过 RECON_WAIT_MAX 秒仍 wait ⇒ 放弃等待，按云端为真相源
+        #   重新判定（pending_orders 视为 0），避免「有在途委托就永远 wait ⇒ 对账永远不跑
+        #   ⇒ 云端持仓永久脱管」（今日 M/SA 假平仓事故根因层三）。
+        if s.get("_recon_wait_since") is None:
+            s["_recon_wait_since"] = now
+        _waited = now - s["_recon_wait_since"]
+        if _waited < RECON_WAIT_MAX:
+            if not s.get("_recon_wait_logged"):
+                s["_recon_wait_logged"] = True
+                rec.event("RECONWAIT", "对账暂缓（在途委托/换月过渡中）：" + _why)
+            return
+        # ★ 超时：放弃等待，按「云端为真相源」重新判定（pending 视为已解决）
+        s.pop("_recon_wait_since", None)
+        rec.event("RECONFORCE",
+                  f"[对账强制] 在途委托已等待 {_waited:.0f}s ≥ {RECON_WAIT_MAX}s "
+                  f"→ 放弃等待，按云端为真相源判定（{_why}）")
+        _act, _why = _rh.plan(
+            s.get("pos", 0), cp,
+            sync_base=bool(s.get("_recon_base")),
+            pending_orders=0,          # ★ 当作无在途委托
+            rollover_active=bool(s.get("rollover_pending")),
+            equity=_eq,
+            price=(float(q.last_price) if q is not None and q.last_price == q.last_price else None),
+            mult=s.get("mult"))
     s.pop("_recon_wait_logged", None)
+    s.pop("_recon_wait_since", None)   # ★ 非 wait 分支收口，避免 stale 计时污染下次 wait
     if _act == "halt":
         if fuse is not None:
             fuse["halted"] = True
