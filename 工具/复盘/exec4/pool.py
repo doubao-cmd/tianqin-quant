@@ -179,7 +179,8 @@ def rho_of(corr: dict, a: str, b: str) -> Optional[float]:
 # 贪心加腿（拍板① 的实现）
 # ---------------------------------------------------------------------------
 def greedy_legs(ranked: list, corr: dict, n_legs: int = N_LEGS,
-                max_rho: float = MAX_RHO, treat_none_as_block: bool = True) -> dict:
+                max_rho: float = MAX_RHO, treat_none_as_block: bool = True,
+                seed: Iterable[str] = ()) -> dict:
     """按 `ranked`（已按流动性降序）贪心加腿，任一新腿与**所有已选腿**的 |ρ| 都必须 ≤ max_rho。
 
     为什么贪心而不是枚举：C(50,5) = 2,118,760 种组合，枚举既算不完，
@@ -189,13 +190,34 @@ def greedy_legs(ranked: list, corr: dict, n_legs: int = N_LEGS,
       ★ 默认 True（保守）。理由：算不出来 ≠ 不相关。宁可选一个已证明低相关的品种，
       也不要因为"不知道"就把两个可能高度同源的品种放进同一个池子。
 
+    seed：★ 2026-10-27 新增。**固定种子腿**（用户要求「鸡蛋 JD 常驻五腿之一」）。
+      语义：种子在贪心开始前**先入座并占掉名额**，再按 ranked 补足剩余名额。
+      · 种子必须已通过 exclude / 缺规格 / 粒度闸门（即出现在 `ranked` 里），
+        否则落空并记入 rejected（理由 "SEED_NOT_IN_RANKED"）——不抛异常。
+      · 种子**彼此之间不做 ρ 检查**（当前只有 JD 一颗，无影响）；后续腿仍与**包含种子
+        在内的全部已选腿**做 ρ 检查，所以种子会正常参与分散约束。
+      · `seed` 为空时行为与旧版**逐位一致**（回归保证）。
+
     返回 {"legs": [...], "rejected": [(key, 冲突对象, rho)], "skipped_no_data": [...]}
     """
+    _rset = set(ranked)
+    # 种子先入座（去重保序，超员截断）
     legs: list = []
-    rejected: list = []
+    for _s in (seed or ()):
+        _k = str(_s).strip().upper()
+        if _k and _k in _rset and _k not in legs:
+            legs.append(_k)
+    legs = legs[:n_legs]
+    rejected: list = [
+        (str(_s).strip().upper(), "SEED_NOT_IN_RANKED", None)
+        for _s in (seed or ())
+        if str(_s).strip().upper() and str(_s).strip().upper() not in _rset
+    ]
     for k in ranked:
         if len(legs) >= n_legs:
             break
+        if k in legs:
+            continue                # ★ 种子已入座，别重复加
         if k in BLACKLIST:
             rejected.append((k, "BLACKLIST", None))
             continue
@@ -228,7 +250,8 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
                 max_rho: float = MAX_RHO, vol_window: int = VOL_WINDOW,
                 corr_window: int = CORR_WINDOW,
                 require_spec: bool = True,
-                notional_cap: float = DEFAULT_NOTIONAL_CAP) -> dict:
+                notional_cap: float = DEFAULT_NOTIONAL_CAP,
+                seed: Iterable[str] = ()) -> dict:
     """S2 主入口：粒度闸门 → 流动性闸门 → 相关性封顶贪心加腿。
 
     参数
@@ -240,6 +263,9 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
     require_spec : 是否强制要求有核验规格（config_symbols.SYMBOLS）。
     notional_cap : 单腿名义上限（元）。`1 手名义 > 它` 的品种被排除（粒度太粗）。
                    默认 40 万 = equity_base 20万 × notional_cap 2.0。
+    seed : ★ 2026-10-27 新增。固定种子腿（`selection.force_include`），
+           先入座占名额、再贪心补足 n_legs。种子仍须过 exclude / 缺规格 / 粒度闸门，
+           即必须出现在 `ranked` 里；否则落空并记入 `rejected`（不抛异常）。
 
     返回
     ----
@@ -284,7 +310,7 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
 
     ranked = [k for k, _ in sorted(turnover.items(), key=lambda kv: kv[1], reverse=True)]
     corr = corr_matrix(daily, ranked, window=corr_window)
-    g = greedy_legs(ranked, corr, n_legs=n_legs, max_rho=max_rho)
+    g = greedy_legs(ranked, corr, n_legs=n_legs, max_rho=max_rho, seed=seed)
 
     legs = g["legs"]
     a, b, r = max_rho_pair(legs, corr)

@@ -394,13 +394,25 @@ def _select_by_method(daily: dict, cfg: dict):
             if k.upper() in _cs.SYMBOLS:
                 _n, _c, _m, _t = _cs.SYMBOLS[k.upper()]
                 specs[k] = {"mult": float(_m)}
+        # ★ 2026-10-27：固定种子腿（用户要求「鸡蛋 JD 常驻五腿之一」）。
+        #   读 selection.force_include；种子先入座占名额，其余 n_legs-|seed| 条照常贪心。
+        #   种子仍须过 exclude / 缺规格 / 粒度闸门（不在 ranked 里就落空，不报错）。
+        _seed = [str(x).strip().upper() for x in (sc.get("force_include") or [])
+                 if str(x).strip()]
         r = _pool.select_pool(
             daily, specs,
             n_legs=int(sc.get("ret_top_n", 5) or 5),
             vol_window=int(sc.get("vol_window_days", 20)),
             corr_window=int(sc.get("corr_window_days", 20)),
             notional_cap=float(sc.get("notional_cap", _pool.DEFAULT_NOTIONAL_CAP)),
+            seed=_seed,
         )
+        if _seed:
+            _landed = [k for k in _seed if k in r["legs"]]
+            _lost = [k for k in _seed if k not in r["legs"]]
+            _log(f"[选品种] 固定种子腿 force_include={','.join(_seed)}"
+                 f" → 入池 {','.join(_landed) or '无'}"
+                 + (f"；落空 {','.join(_lost)}（被 exclude/缺规格/粒度闸门挡住）" if _lost else ""))
         _log(f"[选品种] S2 口径：成交额前20 中 |ρ|≤{_pool.MAX_RHO} 贪心加腿；"
              f"最大|ρ|={r['max_rho_used']:.3f}" if r["max_rho_used"] is not None
              else "[选品种] S2 口径：完成")

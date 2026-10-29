@@ -5,10 +5,9 @@
   "selected": [
     "RU",
     "MA",
-    "AG",
     "EG",
     "P",
-    "SN"
+    "JD"
   ],
   "session_gate": {
     "enabled": false,
@@ -26,13 +25,29 @@
     "vol_window_days": 20,
     "vol_top_m": 20,
     "ret_window_days": 3,
-    "ret_top_n": 6,
+    "ret_top_n": 5,
     "reselect": "every_6_days",
     "reselect_min_days": 6,
     "exclude": [
-      "JM"
+      "JM",
+      "AG",
+      "BU",
+      "SR",
+      "SN",
+      "AU",
+      "CU",
+      "FG",
+      "SA",
+      "SC",
+      "AL",
+      "I",
+      "SP"
     ],
-    "exclude_note": "人工永久剔除（用户 2026-10-19 拍板）。语义=不参与阶段1 流动性排序、不占名额，等价于不在品种池。所有选品种入口（模拟盘自动重选 / run_workbench / backtest_year）统一生效。不删 universe.py 的元数据（其它工具仍引用），只从选择层排除。"
+    "exclude_note": "人工永久剔除。分批依据：①2026-10-19 JM（用户拍板）；②2026-10-27 AG（用户拍板）；③2026-10-27 BU/SR/SN（逐品种台账证据：BU 15笔PF0.34/最大单笔-8120；SR ATR/价0.12%全池最低且PF0.46；SN 单手名义38.7万≈1.93倍equity_base、12%胜率）；④2026-10-27 夜盘前第二批结构性剔除（用户点名+结构扫描）——AU 黄金单手86.4万=4.32倍equity_base、CU 铜54.4万=2.72倍（1手即不可控，与SN同因）；FG 玻璃 tick/5minATR=50%、SA 纯碱36%、SP 纸浆38%、AL 铝34%、I 铁矿石31%（最小跳动吃掉1/3以上ATR，止损必然被噪声扫）；SC 原油config_symbols无规格（tradable()已挡，此处显式登记防将来补规格时意外进池）。语义=不参与阶段1 流动性排序、不占名额，等价于不在品种池。所有选品种入口（模拟盘自动重选 / run_workbench / backtest_year）统一生效。不删 universe.py 的元数据（其它工具仍引用），只从选择层排除。★ 未剔理由留档：LH生猪（成交额253亿、日波动1.83%、可开2手，结构正常，属零证据而非结构缺陷）；M豆粕（tick/ATR 25%边界但有41笔样本PF0.85，禁用单指标砍大样本）；J焦炭/PB铅/SF硅铁/SM锰硅（成交额50-60亿，进不了流动性前20，不叠冗余过滤）。",
+    "force_include": [
+      "JD"
+    ],
+    "force_include_note": "用户 2026-10-27 19:40 拍板：『保持五腿、每周都是五腿、四腿选、固定鸡蛋一腿』。语义＝JD 作为贪心种子**固定占 1 个名额**，其余 4 条由 S2 按 成交额降序+|ρ|≤0.5 贪心选出，合计 5 腿。ret_top_n 同步 6→5（S2 的 n_legs 就是腿数，原 6 = 6 腿）。★ 代码已于 2026-10-27 19:58 落地 seed 参数（工具/复盘/exec4/pool.py 的 greedy_legs/select_pool + ma13_watchdog_main.py::_select_by_method 读本键并传入）⇒ 自 2026-11-02 周规则重选起，JD 固定占 1 席、腿数恒 5。任务书见 交接\\选腿相关性约束_任务书_20261026.md §R6（已按 2026-10-27 实测重写范围）。"
   },
   "entry": {
     "signal": "ma13",
