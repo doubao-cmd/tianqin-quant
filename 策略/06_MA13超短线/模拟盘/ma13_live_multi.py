@@ -172,6 +172,21 @@ RISK_EQUITY = 200000.0     # 手数计算基数（锁死 20 万，与回测 INIT
 #   账户真实余额只用于熔断判断与台账展示。做法对齐 07_布林带
 #   （engine.run_live_boll 传 risk_equity=400000，注释「账户100万里锁死60万」）。
 KSEC = 300
+# ★★ 2026-10-28（用户指令）：日盘尾盘信号不开新仓 —— 只挡「日盘最后一根 → 21:00 开盘」这一条路径。
+#   机制：信号根收盘出信号、下一根开盘成交。日盘最后一根（5min 周期下 14:55 那根，收盘 15:00）
+#   的下一根是 21:00 夜盘开盘，中间隔 6 小时；15:00–21:00 正是欧洲开盘/美盘盘前，
+#   内盘停着不动、外盘全在这段跑 ⇒ 跳空全堆在 21:00 开盘那一下，
+#   入场价被顶到远离信号的位置，MA13 回踩形态已不存在。
+#   台账实证（2026-10-09 ~ 10-28，263 个完整回合，`台账/*_成交流水.csv`）：
+#     · 21:00 首根开仓 8 笔，**0 胜**，合计 −14,090（占全部亏损 25%），横跨 6 个品种；
+#     · 这 8 笔开仓滑点均值 +146 元，其它时点绝对均值 107.7 元（1.55 倍）；
+#       **极端值**：沥青空开跳 7 个点、焦煤多开跳 6 个点。
+#   为什么不连 09:00 一起拦：09:00 首根（夜盘 22:59 收盘 → 次日开盘）实测 7 笔 **+6,320**，
+#     且夜盘已消化过一轮外盘；10:30（休 15min）/13:30（午休）中性。⇒ 只拦日盘尾盘这一条。
+#   ⚠️ 判断口径 = bar 的**结束时刻**（信号真正产生的时刻），不是 bar 起点：
+#     5min 周期下最后一根 bar 的时间戳是 14:55，若按起点判 `>=14:56` 永远不命中。
+#     ⚠️ 依赖本机时区 = 北京时间（与 `_emit_stale_bar` 的打印口径一致）。
+LATE_DAY_CUTOFF = (14, 56)   # HH,MM；日盘此后的信号不开新仓
 DD_FUSE = 0.20             # 账户级回撤熔断线（自峰值回撤 20%）。纯灾难保护阀，
                            # 非策略参数；数值为占位初值，SOP 欠账#1 用真数据定稿。
 RECONNECT_WAIT = 10   # 断线后等待秒数（重连前歇一口气，避免撞上限流）
@@ -2396,6 +2411,24 @@ def _bar_gate(s, bar_id, bar=None, now_ts=None):
     return True
 
 
+def _late_day_block(s, bar):
+    """日盘尾盘信号不开新仓。返回 True=拦（只挡开仓，出场三条通道不经过本函数）。
+
+    判据 = bar 的**结束时刻**（= 该信号真正产生的时刻）落在 [LATE_DAY_CUTOFF, 15:00]。
+      · 5min 周期：14:55 那根结束于 15:00 ⇒ 拦；14:50 那根结束于 14:55 ⇒ 不拦。
+      · 若将来改 1min：14:56..14:59 那几根 ⇒ 拦（口径不变，无需改代码）。
+    失败方向：拿不到 bar 时间 ⇒ 返回 False（放行）。守卫只该少挡，不该多挡。
+    """
+    _bs = _bar_start_epoch(bar)
+    if _bs is None:
+        return False
+    try:
+        _t = _dt.datetime.fromtimestamp(_bs + _bar_period_sec(s))
+    except Exception:
+        return False
+    return LATE_DAY_CUTOFF <= (_t.hour, _t.minute) <= (15, 0)
+
+
 def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     """单品种的一个处理节拍：新 bar 出现（=前一根收盘）才算信号。"""
     sig = sig or _SIG   # 默认 MA13 占位；ctx 提供其他因子时以 ctx 为准
@@ -2403,6 +2436,22 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     sh = shared[s["key"]]
     if len(k) == 0:
         return
+
+    # ---- ★★ 规则 H（判据必须可观测）：日盘尾盘守卫自证 ----
+    #   为什么必须有这一条：次日 14:55 那根**可能根本没信号**，届时台账里一条 LATEDAY 都没有，
+    #   无法区分「守卫生效但没信号」和「守卫压根没加载」。旧 bug 的共同特征正是
+    #   「常量开了、注释写了、日志一条都没有」（见 2026-10-22 盘中扫损那次）。
+    #   ⇒ 重启后**第一个 tick** 就打印一次，之后不再刷屏（每品种一次）。
+    if s.get("_late_probe") is None:
+        s["_late_probe"] = True
+        try:
+            _cut = f"{LATE_DAY_CUTOFF[0]:02d}:{LATE_DAY_CUTOFF[1]:02d}"
+            print(f"[{s['name']}][LATEGUARD] 日盘尾盘守卫已启用 "
+                  f"cutoff={_cut} 周期={_bar_period_sec(s)}s"
+                  f"（拦 bar 结束时刻落在 {_cut}~15:00 的**开仓**信号；出场不受影响）",
+                  flush=True)
+        except Exception:
+            pass
 
     # ---- 工作台集成：时段闸门（ctx=None 时完全不启用，保持原行为）----
     _sid = "closed"
@@ -2613,6 +2662,11 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     # ---- 开仓（对齐回测：趋势 + 回踩；熔断闩死期间禁止）----
     pos = s["pos"]
     _open_ok = True
+    # ★★ 2026-10-28：日盘尾盘信号不开新仓（见 LATE_DAY_CUTOFF 注释的台账实证）。
+    #   **只挡开仓**：出场判定在上面（`elif pos != 0:`）已经走完，不停损、不提前平。
+    _late_block = _late_day_block(s, bar)
+    if _late_block:
+        _open_ok = False
     # ★★ P1-1 单日亏损阀（2026-10-20）：触阈后**只拒绝新开仓**。
     #   本判断只出现在"开仓"这条路上；平仓/止损/撤单三条通道在别处，不经过它。
     _dlg2 = acc_box.get("dloss")
@@ -2628,6 +2682,13 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
             _open_ok = False                      # 截面模式：只开在允许方向
         if _gate is not None and not _gate.can_open(s["key"], _sid):
             _open_ok = False                      # 时段闸门：封禁的 session 不开新仓
+    if pos == 0 and dir_trend != 0 and _late_block and not fuse["halted"]:
+        # ★ 让复盘看得见「有信号、但被日盘尾盘规则拦住」（不写 SIGNAL，避免被当成已开仓）
+        _dcn = "多" if dir_trend > 0 else "空"
+        _note = (f"日盘尾盘信号不开{_dcn}（{LATE_DAY_CUTOFF[0]:02d}:{LATE_DAY_CUTOFF[1]:02d} 之后）"
+                 f" | 防 21:00 夜盘开盘跳空")
+        rec.event("LATEDAY", _note)
+        print(f"[{s['name']}][LATEDAY] {_note}", flush=True)
     if pos == 0 and dir_trend != 0 and _dlg2 is not None and _dlg2.blocked:
         # 让复盘看得见「有信号、但被停加仓阀拦住」（不写 SIGNAL，避免被当成已开仓）
         _dcn = "多" if dir_trend > 0 else "空"
