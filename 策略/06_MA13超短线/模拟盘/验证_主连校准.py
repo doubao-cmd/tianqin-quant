@@ -1,5 +1,18 @@
 # -*- coding: utf-8 -*-
 """
+⚠️ 2026-11-23 18:30 起本脚本的方案已作废，**不要用它得出的结论**。
+
+   生产实现已从 `api.query_his_cont_quotes` 改为 `urllib.request` + `timeout=5`
+   直读 `files.shinnytech.com/continuous_table.json`。原因：前者内部
+   `requests.get(...)` **没有 timeout**（tqsdk/calendar.py），而校准函数跑在
+   wait_update 主循环里，一次网络抖动会让主循环永久阻塞 ⇒ 止损不再被监控。
+
+   保留本文件仅为「旧方案行为留档」。现行实现见 ma13_live_multi.py 的
+   `_cont_table()` / `_calib_cont()`，其正确性由隔离测试覆盖（6 个分支）。
+
+--------------------------------------------------------------------------------
+（以下为作废前的原始说明）
+
 验证 query_his_cont_quotes 能否作为「主连→实际合约」的独立校准源。
 
 ⚠️ 必须在**模拟盘停机后**跑：tqsdk 同一快期账户多会话会互踢，

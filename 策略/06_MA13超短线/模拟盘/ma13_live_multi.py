@@ -22,6 +22,7 @@ MA13 超短线 · 多品种单进程实时模拟盘（P/EB 双候选版）
 默认 ALLOW_TRADE=False 观察模式：只算信号、打印、写台账，不报单。
 """
 import sys, os, time, math, json, threading, io, hashlib, datetime as _dt
+import urllib.request          # 主连校准表（★ 必须带 timeout，不能拖停主循环）
 import numpy as np
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -2018,18 +2019,63 @@ def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_be
 #     同期乙二醇 10-23 夜盘 2 笔 −4.7% 同因（巡检脚本已归档三段证据）。
 #   根因：tqsdk 的 diff 流只 merge 服务端下发的字段。主连标的变了，但服务端
 #     没在增量里重发 underlying_symbol ⇒ 该字段冻结到下次重建订阅（通常=重启）。
-#   方案：api.query_his_cont_quotes() 是**独立 HTTP 日历接口**，直接返回「主连在
-#     某交易日对应的标的合约」，不经过 quote 缓存，故不受该 BUG 影响。查到后
-#     **直接改写 q 对象上的字段**，让全部下游调用点（换月检测、下单、_ref_px、
-#     _cloud_pos、长假强平…）自动受益，不需要逐处替换。
+#   方案：读「主连→标的」公开表（files.shinnytech.com/continuous_table.json，
+#     即 tqsdk TqContCalendar 的同一数据源），不经过 quote 缓存，故不受该 BUG 影响。
+#     查到后**直接改写 q 对象上的字段**，让全部下游调用点（换月检测、下单、
+#     _ref_px、_cloud_pos、长假强平…）自动受益，不需要逐处替换。
+#
+#   ★★ 为什么不用 api.query_his_cont_quotes（2026-11-23 18:40 改，实测推翻原方案）：
+#     它内部 TqContCalendar.__init__ 的 `requests.get(...continuous_table.json)`
+#     **没有 timeout**（tqsdk/calendar.py），且是同步阻塞调用 —— 而本函数跑在
+#     wait_update 主循环里。一次网络抖动就会让**主循环永久阻塞**，后果是
+#     止损不再被监控（比换月错配严重得多）。故改为标准库 urllib + 显式 timeout=5，
+#     最坏退化是「本次不校准」，绝不拖停交易。
 #   安全阀：
 #     ① 只在「新合约比现有更晚」时改写 —— 日历滞后/网络异常返回旧合约时，
 #        绝不把正确值改回去；
-#     ② 任何异常静默回退原值（最坏情况=退化为现状，不会更差）；
-#     ③ 失败不消耗节流窗口，下一拍立即重试；成功才记时。
+#     ② 任何异常先保留原值（最坏情况=退化为现状，不会更差），并且**必须留痕**；
+#     ③ 失败用短退避（120s）重试，成功用长间隔（600s）。原「失败不记时不节流」
+#        在接口持续故障时会每拍都阻塞一次 HTTP（首查含 157KB 表，实测 2.8s），
+#        把主循环拖慢 —— 故改为短退避。
 #   节流 600s：换月多在夜盘/日盘开盘，最坏错 2 根 5min K 线（原方案是错到重启）。
+#
+#   ★★ 可观测性（2026-11-23 补）：此前本函数在「成功且无需改」与「接口一直报错」
+#      两种情况下**日志完全相同（都静默）**，一旦上游表变更就是静默空转而无人知。
+#      现在三条痕迹：
+#        ① 首次成功 / 每 CONTSYNC_LOG_SEC 打一行正常心跳（含日历值、quote 值、耗时）；
+#        ② 连续失败 ≥ CONTSYNC_FAIL_N 次打 WARNING（含异常摘要），之后每 60 次再打；
+#        ③ 从失败恢复时打一行（含此前失败次数）。
 # ============================================================
-CONT_SYNC_SEC = 600
+CONT_SYNC_SEC = 600                    # 成功后的校准间隔
+CONT_SYNC_FAIL_SEC = 120               # 失败后的重试间隔（防每拍阻塞）
+CONTSYNC_LOG_SEC = 6 * 3600            # 正常心跳日志间隔
+CONTSYNC_FAIL_N = 3                    # 连续失败几次开始告警
+CONTSYNC_FAIL_LOG_N = 60               # 告警后每 N 次再报一次（约 2 小时）
+CONT_TABLE_URL = os.getenv(
+    "TQ_CONT_TABLE_URL", "https://files.shinnytech.com/continuous_table.json")
+CONT_TABLE_TTL = 3600                  # 表的进程内缓存秒数（换月是低频事件）
+CONT_TABLE_TIMEOUT = 5                 # ★ HTTP 超时；本调用在主循环里，绝不能无限等
+_CONT_TAB = {"ts": 0.0, "data": None}
+
+
+def _cont_table():
+    """取「主连→标的」表。失败返回旧缓存或 None，绝不抛异常、绝不长时间阻塞。"""
+    now = time.time()
+    if _CONT_TAB["data"] is not None and now - _CONT_TAB["ts"] < CONT_TABLE_TTL:
+        return _CONT_TAB["data"]
+    try:
+        req = urllib.request.Request(
+            CONT_TABLE_URL, headers={"User-Agent": "ma13-calib/1.0"})
+        with urllib.request.urlopen(req, timeout=CONT_TABLE_TIMEOUT) as rsp:
+            raw = rsp.read()
+        data = json.loads(raw.decode("utf-8"))
+        if not isinstance(data, dict) or not data:
+            raise ValueError(f"表内容异常 type={type(data).__name__}")
+    except Exception:
+        return _CONT_TAB["data"]        # 有旧缓存先用旧的：它只会更旧，安全阀会拦住
+    _CONT_TAB["data"] = data
+    _CONT_TAB["ts"] = now
+    return data
 
 
 def _sym_num(sym):
@@ -2041,30 +2087,77 @@ def _sym_num(sym):
     return txt[i:]
 
 
-def _calib_cont(api, s):
-    """把 s['q'].underlying_symbol 校准为主连当前真实标的。永不抛异常。"""
+def _calib_cont(s):
+    """把 s['q'].underlying_symbol 校准为主连当前真实标的。永不抛异常。
+
+    三种痕迹见上方常量区注释（心跳 / 连续失败告警 / 恢复）。
+    """
     q = s.get("q")
     if q is None:
         return
     now = time.time()
-    if now - float(s.get("_cs_ts") or 0.0) < CONT_SYNC_SEC:
+    _fail = int(s.get("_cs_fail") or 0)
+    if now - float(s.get("_cs_ts") or 0.0) < (CONT_SYNC_FAIL_SEC if _fail else CONT_SYNC_SEC):
         return
     cur = str(getattr(q, "underlying_symbol", "") or "")
+    t0 = time.time()
     try:
-        df = api.query_his_cont_quotes(symbol=s["cont"], n=1)
-        if df is None or not len(df) or df.shape[1] < 2:
-            return
-        new = str(df.iloc[-1, 1] or "").strip()
-    except Exception as ex:                       # 网络/权限/接口变更
-        s["_cs_err"] = f"{type(ex).__name__}: {ex}"[:120]
-        return                                    # 不记 ts ⇒ 下一拍重试
-    s["_cs_ts"] = now
-    s["_cs_err"] = ""
-    if not new or new.lower() == "nan" or new == cur:
+        tbl = _cont_table()
+        if tbl is None:
+            raise ValueError("主连表不可用（下载失败且无缓存）")
+        key = str(s["cont"]).replace("KQ.m@", "")
+        rows = tbl.get(key)
+        if not rows or not isinstance(rows, list) or len(rows[-1]) < 2:
+            raise ValueError(f"表中无 {key} 或结构异常")
+        # ★ 只采用「切换日 <= 今天」的最后一条：表里可能已写入尚未生效的未来换月日，
+        #   直接取末行会提前切到还没上市的合约。
+        today = time.strftime("%Y%m%d")
+        valid = [r for r in rows if len(r) >= 2 and str(r[0]) <= today]
+        if not valid:
+            raise ValueError(f"{key} 无 <= {today} 的记录")
+        new = str(valid[-1][1] or "").strip()
+    except Exception as ex:                       # 网络/表变更/结构异常
+        s["_cs_ts"] = now                         # 失败也记时 ⇒ 短退避，别每拍阻塞
+        s["_cs_fail"] = _fail + 1
+        s["_cs_err"] = f"{type(ex).__name__}: {ex}"[:160]
+        if s["_cs_fail"] == CONTSYNC_FAIL_N or (
+                s["_cs_fail"] > CONTSYNC_FAIL_N
+                and s["_cs_fail"] % CONTSYNC_FAIL_LOG_N == 0):
+            msg = (f"主连标的校准连续失败 {s['_cs_fail']} 次，"
+                   f"underlying_symbol 可能失准：{s['_cs_err']}")
+            print(f"[{s['name']}][CONTSYNC] ⚠️ {msg}", flush=True)
+            try:
+                _rec = s.get("rec")                # ★ 不能用 s["rec"]：except 块内
+                if _rec is not None:               #   再抛异常会传播出去，打挂主循环
+                    _rec.event("CONTSYNC", "⚠️ " + msg)
+            except Exception:
+                pass
         return
-    nc, nn = _sym_num(cur), _sym_num(new)
-    if nc.isdigit() and nn.isdigit() and int(nn) <= int(nc):
-        return                                    # 查到的更早 ⇒ 日历滞后，不改
+    cost_ms = (time.time() - t0) * 1000
+    s["_cs_ts"] = now
+    if _fail:
+        print(f"[{s['name']}][CONTSYNC] 已恢复（此前连续失败 {_fail} 次，"
+              f"{cost_ms:.0f}ms）", flush=True)
+        s["_cs_fail"] = 0
+    s["_cs_err"] = ""
+    # ---- 先判定「该不该改」（安全阀 ①），再写心跳：日志要说清「不一致但故意不改」----
+    act = "一致"
+    if not new or new.lower() == "nan":
+        act = "日历值空，保留现有"
+    elif new != cur:
+        nc, nn = _sym_num(cur), _sym_num(new)
+        if nc.isdigit() and nn.isdigit() and int(nn) <= int(nc):
+            act = "日历滞后，保留现有"        # 绝不把正确值改回旧合约
+        else:
+            act = "★不一致→校准"
+    if (not s.get("_cs_ok")
+            or now - float(s.get("_cs_log_ts") or 0.0) >= CONTSYNC_LOG_SEC):
+        s["_cs_ok"] = True
+        s["_cs_log_ts"] = now
+        print(f"[{s['name']}][CONTSYNC] 校准正常 日历={new or '(空)'} "
+              f"quote={cur or '(空)'} {act} {cost_ms:.0f}ms", flush=True)
+    if act != "★不一致→校准":
+        return
     q.underlying_symbol = new                     # ★ 改写引用字段，下游全部受益
     try:
         rec = s.get("rec")
@@ -2113,7 +2206,7 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     q = s.get("q")
     if q is None:
         return
-    _calib_cont(api, s)          # ★ C：先校准「主连对应哪个合约」，再判换月
+    _calib_cont(s)               # ★ C：先校准「主连对应哪个合约」，再判换月
     cur_sym = q.underlying_symbol
     if not cur_sym:
         return
