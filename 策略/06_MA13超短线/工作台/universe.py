@@ -41,6 +41,10 @@ MAIN_CONTINUOUS = [
     dict(key="V",  exch="DCE", name="聚氯乙烯", night=True),
     dict(key="L",  exch="DCE", name="聚乙烯", night=True),
     dict(key="RR", exch="DCE", name="粳米",   night=False),
+    # ★ 2026-11-02 用户拍板：原木 LG 入池（六腿之一）。无夜盘，2024-11 上市。
+    #   注意：成交额仅约 2.8 亿/日，进不了 vol_top_m=20 的流动性闸门，
+    #   必须靠 selection.force_include 固定占席才能进池（同 JD 的 seed 机制）。
+    dict(key="LG", exch="DCE", name="原木",   night=False),
     # 上期所 SHFE
     dict(key="RB", exch="SHFE", name="螺纹钢", night=True),
     dict(key="HC", exch="SHFE", name="热轧卷板", night=True),

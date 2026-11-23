@@ -2009,6 +2009,73 @@ def _send_close(api, s, symbol, side, dir_cn, hands, ref_price, bar_time, pos_be
     return True, ("split" if len(plan) > 1 else plan[0][0]), sent
 
 
+# ============================================================
+# ★★ C：主连 → 实际标的合约 的独立校准（2026-11-23）
+#   BUG 实证（鸡蛋 2026-11-17~11-20，台账 17 笔连续偏离）：
+#     q.underlying_symbol 在**进程存活期间不跟随主连切换**。K 线已换 jd2701
+#     （决策价 ~3200），下单/平仓仍在 jd2612（成交价 ~3590），均偏离 −10.6%；
+#     且换月检测（held_sym != cur_sym）一次都没触发 —— 两边都是 jd2612，恒等。
+#     同期乙二醇 10-23 夜盘 2 笔 −4.7% 同因（巡检脚本已归档三段证据）。
+#   根因：tqsdk 的 diff 流只 merge 服务端下发的字段。主连标的变了，但服务端
+#     没在增量里重发 underlying_symbol ⇒ 该字段冻结到下次重建订阅（通常=重启）。
+#   方案：api.query_his_cont_quotes() 是**独立 HTTP 日历接口**，直接返回「主连在
+#     某交易日对应的标的合约」，不经过 quote 缓存，故不受该 BUG 影响。查到后
+#     **直接改写 q 对象上的字段**，让全部下游调用点（换月检测、下单、_ref_px、
+#     _cloud_pos、长假强平…）自动受益，不需要逐处替换。
+#   安全阀：
+#     ① 只在「新合约比现有更晚」时改写 —— 日历滞后/网络异常返回旧合约时，
+#        绝不把正确值改回去；
+#     ② 任何异常静默回退原值（最坏情况=退化为现状，不会更差）；
+#     ③ 失败不消耗节流窗口，下一拍立即重试；成功才记时。
+#   节流 600s：换月多在夜盘/日盘开盘，最坏错 2 根 5min K 线（原方案是错到重启）。
+# ============================================================
+CONT_SYNC_SEC = 600
+
+
+def _sym_num(sym):
+    """取合约数字部分用于判新旧：DCE.jd2701→'2701'，CZCE.MA701→'701'。"""
+    txt = str(sym or "")
+    i = len(txt)
+    while i > 0 and txt[i - 1].isdigit():
+        i -= 1
+    return txt[i:]
+
+
+def _calib_cont(api, s):
+    """把 s['q'].underlying_symbol 校准为主连当前真实标的。永不抛异常。"""
+    q = s.get("q")
+    if q is None:
+        return
+    now = time.time()
+    if now - float(s.get("_cs_ts") or 0.0) < CONT_SYNC_SEC:
+        return
+    cur = str(getattr(q, "underlying_symbol", "") or "")
+    try:
+        df = api.query_his_cont_quotes(symbol=s["cont"], n=1)
+        if df is None or not len(df) or df.shape[1] < 2:
+            return
+        new = str(df.iloc[-1, 1] or "").strip()
+    except Exception as ex:                       # 网络/权限/接口变更
+        s["_cs_err"] = f"{type(ex).__name__}: {ex}"[:120]
+        return                                    # 不记 ts ⇒ 下一拍重试
+    s["_cs_ts"] = now
+    s["_cs_err"] = ""
+    if not new or new.lower() == "nan" or new == cur:
+        return
+    nc, nn = _sym_num(cur), _sym_num(new)
+    if nc.isdigit() and nn.isdigit() and int(nn) <= int(nc):
+        return                                    # 查到的更早 ⇒ 日历滞后，不改
+    q.underlying_symbol = new                     # ★ 改写引用字段，下游全部受益
+    try:
+        rec = s.get("rec")
+        if rec is not None:
+            rec.event("CONTSYNC", f"主连标的校准 {cur or '(空)'} → {new}"
+                                  f"（query_his_cont_quotes）")
+    except Exception:
+        pass
+    print(f"[{s['name']}][CONTSYNC] {cur or '(空)'} → {new}", flush=True)
+
+
 def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     """★ 云端持仓对账（切 TqKq 后的核心保护，见常量区SYNC_CLOUD 注释）+ ★★换月移交。
 
@@ -2046,6 +2113,7 @@ def _sync_cloud_pos(api, s, allow_trade, sig=None, fuse=None, acc=None):
     q = s.get("q")
     if q is None:
         return
+    _calib_cont(api, s)          # ★ C：先校准「主连对应哪个合约」，再判换月
     cur_sym = q.underlying_symbol
     if not cur_sym:
         return
@@ -2664,7 +2732,19 @@ def _process(api, s, allow_trade, shared, acc_box, fuse, ctx=None, sig=None):
     _open_ok = True
     # ★★ 2026-10-28：日盘尾盘信号不开新仓（见 LATE_DAY_CUTOFF 注释的台账实证）。
     #   **只挡开仓**：出场判定在上面（`elif pos != 0:`）已经走完，不停损、不提前平。
-    _late_block = _late_day_block(s, bar)
+    # ★★ 2026-10-31 修正：判据必须传 `k.iloc[-2]`（**已收盘**的信号来源 bar），
+    #   不能传 `bar`(=`k.iloc[-1]`)。原因：`_process` 在**新 bar 刚创建**时被触发，
+    #   此时 `iloc[-1]` 是那根「刚开始、close 还等于上一根收盘」的未完成 bar。
+    #   实证（10-30）：
+    #     · RU 21:00 处理时 iloc[-1]=21:00（close 继承 14:55 的 19170）⇒ 判成 21:05
+    #       ⇒ 放行，14:55 的信号照常开仓（**漏拦**）；
+    #     · JD 14:55 处理时 iloc[-1]=14:55（close 继承 14:50）⇒ 判成 15:00
+    #       ⇒ 拦截，但信号其实来自 14:50（**误拦**）。
+    #   改判 iloc[-2] 后两者同时纠正：RU 判 14:55→拦；JD 判 14:50→放。
+    #   附带好处：无夜盘品种的日盘最后一根永远不会再被处理（没有下一根），
+    #   本来就没有「下一根开盘」可成交，语义自洽。
+    _sig_bar = k.iloc[-2] if len(k) >= 2 else None
+    _late_block = _late_day_block(s, _sig_bar)
     if _late_block:
         _open_ok = False
     # ★★ P1-1 单日亏损阀（2026-10-20）：触阈后**只拒绝新开仓**。

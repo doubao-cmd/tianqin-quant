@@ -97,13 +97,25 @@ RESELECT_DAYS = 6.0    # 距上次重选超过这个天数 → 允许重选（�
 #   恰好 ≈7.0 天 —— 阈值 7 会被"差一点"跳过，拖到周二才重选；6 保证周一开盘前必刷，
 #   选品种永远用的是"刚过去的那个周五收盘"的数据。
 #
-# ★★ 2026-10-18 追加：**重选只落在周一**（RESELECT_WEEKDAY=0）。
+# ★★ 2026-10-18 追加：**重选不许落在周中**（当天必须是指定星期之一）。
 #   原因：若纯按「≥6 天就重选」漂移，重选日会一路往后挪
 #   （10-18 周日 → 10-24 周六（休市不跑，实际顺延）→ 10-26 周一 → 11-01 周日…），
 #   落在周中时最危险：**手上有持仓却在中途换池**，等于交易做一半换标的。
-#   对齐周一 = 每次都在开盘前、用上一个完整交易周的数据换池，是唯一不发散的选择。
-#   ⚠️ 但「到期待周一」不能无限等：若一直等不到（节假日连休），日志要说明白。
-RESELECT_WEEKDAY = 0   # 0=周一（datetime.weekday() 口径）
+#   对齐固定星期 = 每次都在开盘前、用上一个完整交易周的数据换池，是唯一不发散的选择。
+#   ⚠️ 但「到期待允许日」不能无限等：若一直等不到（节假日连休），日志要说明白。
+#
+# ★★ 2026-11-07 用户改口径：**允许周末换池**（原先是只许周一 RESELECT_WEEKDAY=0）。
+#   旧口径的实际后果：每个周一 08:55 都要「停机 → 重启」手工操作才让新名单生效——
+#   因为计划任务只有 LogonTrigger，开机登录时新守护算出新池、却拿不到旧守护的锁，
+#   打印「已有守护实例在运行」后直接退出 ⇒ 名单写进了 workbench.json 但线上仍是旧池。
+#   用户要的是「周末提前换好，周一一早不用手忙脚乱」。
+#   为什么周末是安全的：
+#     · 周六/周日**非交易日**，不存在「盘中有持仓却被换标的」的情形；
+#     · 用的正是刚收盘的上一完整交易周数据（周五日线），比周一早上拿到的更干净；
+#     · 周一保留为兜底：周末没开机/忘了跑，登录时仍会自动换，行为与旧版一致。
+#   节奏不会发散：周末选完 last_reselect 落在周末，+6 天仍是周末 ⇒ 仍是每周一次。
+#   （若某周只在周一跑过，则下一次落在下周日 → 之后稳定在周末，最多漂移一次。）
+RESELECT_WEEKDAYS = (5, 6, 0)   # 周六 / 周日 / 周一（datetime.weekday()：0=周一 … 6=周日）
 
 def _console_python():
     """拉起核心必须用 **控制台版** python.exe。
@@ -399,6 +411,19 @@ def _select_by_method(daily: dict, cfg: dict):
         #   种子仍须过 exclude / 缺规格 / 粒度闸门（不在 ranked 里就落空，不报错）。
         _seed = [str(x).strip().upper() for x in (sc.get("force_include") or [])
                  if str(x).strip()]
+        # ★ 2026-11-07 结构闸门：读 tick_atr.json（{key: tick/5minATR}，由
+        #   _tmp 侧拉数脚本生成）。表缺失/损坏 ⇒ tick_frac=None ⇒ 闸门关闭
+        #   （选池退回纯 ρ 口径，不阻塞开机——结构表是增强项不是依赖项）。
+        _tf = None
+        _tf_path = os.path.join(WB_DIR, "data", "tick_atr.json")
+        try:
+            with io.open(_tf_path, "r", encoding="utf-8") as _f:
+                _tfj = json.load(_f)
+            _tf = {k: v["tick_frac"] for k, v in (_tfj.get("data") or {}).items()
+                   if v.get("tick_frac") is not None}
+        except Exception:
+            _tf = None
+            _log("[选品种] ⚠️ 结构表 tick_atr.json 缺失/损坏 → 结构闸门本次关闭")
         r = _pool.select_pool(
             daily, specs,
             n_legs=int(sc.get("ret_top_n", 5) or 5),
@@ -406,6 +431,8 @@ def _select_by_method(daily: dict, cfg: dict):
             corr_window=int(sc.get("corr_window_days", 20)),
             notional_cap=float(sc.get("notional_cap", _pool.DEFAULT_NOTIONAL_CAP)),
             seed=_seed,
+            tick_frac=_tf,
+            max_tick_frac=float(sc.get("max_tick_frac", _pool.MAX_TICK_FRAC)),
         )
         if _seed:
             _landed = [k for k in _seed if k in r["legs"]]
@@ -413,12 +440,33 @@ def _select_by_method(daily: dict, cfg: dict):
             _log(f"[选品种] 固定种子腿 force_include={','.join(_seed)}"
                  f" → 入池 {','.join(_landed) or '无'}"
                  + (f"；落空 {','.join(_lost)}（被 exclude/缺规格/粒度闸门挡住）" if _lost else ""))
+        # ★★ 2026-11-02 追加腿（selection.append_include）——与 seed 语义**不同**：
+        #   seed：先入座占名额，且**后续腿要与它查 ρ** ⇒ 强负相关的品种会被挤出去
+        #         （实测 LG 与 RU ρ=-0.527，seed 模式下 RU 被踢、FU 补进，组合更差）。
+        #   append：选完 ret_top_n 条后**直接追加**，不占名额、不做 ρ 检查、不参与排序。
+        #         用于「用户指定必须进池、但成交额进不了前20流动性闸门」的品种（如原木）。
+        _append = [str(x).strip().upper() for x in (sc.get("append_include") or [])
+                   if str(x).strip()]
+        if _append:
+            _up = {str(k).upper(): k for k in daily}
+            _have = {str(k).upper() for k in r["legs"]}
+            _add = [_up[k] for k in _append if k in _up and k not in _have]
+            _miss = [k for k in _append if k not in _up]
+            r["legs"] = list(r["legs"]) + _add
+            _log(f"[选品种] 追加腿 append_include={','.join(_append)}"
+                 f" → 入池 {','.join(_add) or '无'}"
+                 + (f"；缺数据跳过 {','.join(_miss)}" if _miss else ""))
         _log(f"[选品种] S2 口径：成交额前20 中 |ρ|≤{_pool.MAX_RHO} 贪心加腿；"
              f"最大|ρ|={r['max_rho_used']:.3f}" if r["max_rho_used"] is not None
              else "[选品种] S2 口径：完成")
         if r["dropped_toolarge"]:
             _log("[选品种] S2 粒度太粗排除：" + "；".join(
                 f"{k}(1手{ml:,.0f})" for k, ml, _ra in r["dropped_toolarge"]))
+        if r.get("dropped_tickwide"):
+            _log("[选品种] S2 结构闸门排除(tick/ATR>%.2f)：" % float(
+                sc.get("max_tick_frac", _pool.MAX_TICK_FRAC)) + "；".join(
+                f"{k}({v*100:.1f}%)" if v is not None else f"{k}(无数据)"
+                for k, v, _th in r["dropped_tickwide"]))
         return r["legs"], list(r["ranked"])[:20]
 
     # 默认：原 two_stage（手数口径）
@@ -453,14 +501,17 @@ def _maybe_refresh_selection(cfg: dict) -> None:
             if gap < RESELECT_DAYS:
                 _log(f"[选品种] 距上次重选（{last}）{gap} 天 < {RESELECT_DAYS:.0f} 天 → 不重选")
                 return
-            # ★ 到期待周一：避免周中换池（手上有持仓却中途换标的）
-            if today.weekday() != RESELECT_WEEKDAY:
+            # ★ 到期待允许日：避免周中换池（手上有持仓却中途换标的）
+            #   2026-11-07 起允许 周六/周日/周一（见 RESELECT_WEEKDAYS 注释）
+            if today.weekday() not in RESELECT_WEEKDAYS:
                 _wd = "一二三四五六日"[today.weekday()]
-                _tgt = "一二三四五六日"[RESELECT_WEEKDAY]
-                _log(f"[选品种] 距上次重选 {gap} 天（已到期待），但今天周{_wd} "
-                     f"≠ 周{_tgt} → 等到周{_tgt}开盘前再换池（避免周中换池）")
+                _ok = "、".join("周" + "一二三四五六日"[d] for d in RESELECT_WEEKDAYS)
+                _log(f"[选品种] 距上次重选 {gap} 天（已到期待），但今天周{_wd} 不在允许换池日"
+                     f"（{_ok}）→ 等到允许日再换池（避免周中换池）")
                 return
-            why = f"距上次重选 {gap} 天（≥{RESELECT_DAYS:.0f}）且今天是周一"
+            _why_day = "一二三四五六日"[today.weekday()]
+            why = (f"距上次重选 {gap} 天（≥{RESELECT_DAYS:.0f}）"
+                   f"且今天周{_why_day}（允许换池日）")
         else:
             age = _cache_age_days()
             if age is not None and age < RESELECT_DAYS:
@@ -478,12 +529,37 @@ def _maybe_refresh_selection(cfg: dict) -> None:
         import data_feed as _df
         import universe as _u
         sc = cfg.get("selection", {}) or {}
+        # ★★ 2026-11-07：日线根数必须能覆盖 60 日 ρ 窗。
+        #   pool._returns 要求 len(close) >= corr_window+1（60 日窗 ⇒ 61 根），
+        #   而 fetch_daily 里 data_length = days+10。旧写法 days=vol_window+10=30
+        #   ⇒ 只拉 40 根 ⇒ 相关性矩阵全空 ⇒ greedy_legs(treat_none_as_block=True)
+        #   保守拒掉所有非种子腿 ⇒ 实测只选出 JD/MA 两条腿（本该 5 条），还会把
+        #   长缓存覆写成 40 根，污染之后 apply_pool 的离线口径。
+        #   周六入口 select_pool_sat.py 不传 days（走 DEFAULT_DAYS=160）一直是对的；
+        #   这里取三者最大值，保证守护 / 周末 --restart 与周六入口同口径。
+        _days = max(
+            int(sc.get("vol_window_days", 20)) + 10,
+            int(sc.get("corr_window_days", 20)) + 10,
+            int(getattr(_df, "DEFAULT_DAYS", 160)),
+        )
         # ★ use_cache=False：缓存已判旧才走到这里，绝不能再用旧缓存（旧版因此永远不真拉）
         daily = _df.build_universe_daily(_u.all_keys(), use_cache=False, fetch=True,
-                                         days=int(sc.get("vol_window_days", 20)) + 10)
+                                         days=_days)
         if not daily:
             _log("[选品种] 重选失败：拉不到日线 → 沿用现有 selected")
             return
+        # ★ 2026-11-07：把**日线末根**打进日志。10-31 的教训是缓存停在 6 个交易日前
+        #   却无人察觉；这里虽然是 use_cache=False 真拉，也要让人一眼看出用的是哪天的数据。
+        try:
+            _last = max((str((v.get("datetime") or [""])[-1]) for v in daily.values()
+                         if v.get("datetime")), default="")
+            _nbars = max((len(v.get("close") or []) for v in daily.values()), default=0)
+            _cw = int(sc.get("corr_window_days", 20))
+            _log(f"[选品种] 日线末根={_last or '未知'}（品种 {len(daily)} 个，"
+                 f"最多 {_nbars} 根；{_cw}日ρ需≥{_cw + 1}根）"
+                 + (f" ⚠️ 根数不足，ρ 矩阵将全空！" if _nbars < _cw + 1 else ""))
+        except Exception:
+            pass
         # ★ 按 method 分派（two_stage=手数口径 / pool_s2=成交额+ρ封顶）
         sel, stage1 = _select_by_method(daily, cfg)
         skipped = []          # 排除明细已在 _select_by_method 内记录
@@ -850,8 +926,15 @@ def _spawn_detached(extra_argv):
     return p, exe
 
 
-def _stop_existing():
-    """--stop：停掉正在跑的守护（/T 连核心一起收），并清锁。"""
+def _stop_existing(wait: bool = True):
+    """--stop：停掉正在跑的守护（/T 连核心一起收），并清锁。
+
+    ★ 2026-11-07 加强（周末换池重启要靠它可靠）：
+      ① taskkill 之后**轮询等 PID 真的消失**（最多 20s），不再 sleep(1) 就假定死透；
+      ② 到点还活着 ⇒ 返回 **2**，调用方（--restart）据此**放弃启动**。
+         宁可这次不重启，也绝不与旧实例并存 —— 双守护 = 两套核心 = 双份下单。
+      ③ 返回码：0=已停/本来就没跑，1=taskkill 本身失败，2=杀了但没死透。
+    """
     pid = 0
     try:
         with io.open(LOCK, "r", encoding="utf-8") as f:
@@ -865,7 +948,17 @@ def _stop_existing():
         except Exception as e:
             print(f"taskkill 失败：{type(e).__name__}: {e}")
             return 1
-        time.sleep(1)
+        if wait:
+            t0 = time.time()
+            while time.time() - t0 < 20.0 and _pid_alive(pid):
+                time.sleep(0.3)
+        else:
+            time.sleep(1)
+        if _pid_alive(pid):
+            _log(f"人工 --stop：⚠️ PID {pid} 在 taskkill 后仍未退出（等了 "
+                 f"{'20' if wait else '1'}s）")
+            print(f"[WARN] 守护 PID {pid} 仍然存活 —— 请用任务管理器确认后再试")
+            return 2
         _log(f"人工 --stop：已终止守护 PID {pid}（/T 含核心进程树）")
         print(f"已停止守护 PID {pid}（含核心）")
     else:
@@ -878,6 +971,44 @@ def _stop_existing():
     return 0
 
 
+def _restart_handler(args):
+    """--restart：先停、再**前台同步选池**、最后脱离控制台起新实例（周末换池一键用）。
+
+    为什么选池放在**父进程**同步做，而不是丢给新守护自己启动时做：
+      · 旧路径里 `_resolve_symbols()` 在 `_抢锁()` **之前**就调了重选，所以旧守护还活着时
+        新进程会「算出新名单 → 写盘 → 抢不到锁 → 退出」，名单永远不生效（11-06 实况）。
+        先停再起能绕开，但 `--detach` 返回得很快（只等 6s 锁），选池要 ~1 分钟，
+        用户会以为已经好了。
+      · 放在父进程 ⇒ 选池日志直接打在用户双击的那个窗口里，看得见「换成了哪几只」，
+        失败了也当场知道；子进程启动时 gap=0，会自然跳过重选。
+    """
+    print("[换池重启] 1/3 停止现有守护与核心…", flush=True)
+    rc = _stop_existing(wait=True)
+    if rc != 0:
+        print(f"[换池重启] ✗ 停止失败（rc={rc}）→ 放弃本次重启，避免与旧实例并存。", flush=True)
+        print("           请确认没有 ma13_watchdog_main / ma13_live_multi 进程后再试。", flush=True)
+        return rc
+
+    print("[换池重启] 2/3 旧实例已停。开始选池（约 1 分钟，日线全池拉取）…", flush=True)
+    try:
+        with open(WORKBENCH, "r", encoding="utf-8") as f:
+            cfg = json.load(f) or {}
+    except Exception as e:
+        print(f"[换池重启] ⚠️ 读 workbench.json 失败：{e!r} → 跳过选池，沿用现有名单", flush=True)
+        cfg = {}
+    if cfg:
+        try:
+            _maybe_refresh_selection(cfg)
+        except Exception as e:      # _maybe_refresh_selection 内部已兜底，这里再兜一层
+            _log(f"[换池重启] ⚠️ 选池异常：{type(e).__name__}: {e} → 沿用现有名单")
+    keys = [str(k).strip().upper() for k in (cfg.get("selected") or []) if str(k).strip()]
+    print(f"[换池重启] 本次启动品种池 = {','.join(keys) or '（读不到，走兜底）'}", flush=True)
+
+    # 第 3 步交给已有的 --detach 分支（它负责 pythonw 脱离、等锁、打印真实 PID）
+    args.detach = True
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     # ★ 2026-10-18：默认改 auto —— 品种列表的唯一真相源 = workbench.json selected。
@@ -888,6 +1019,8 @@ def main():
     ap.add_argument("--detach", action="store_true",
                     help="脱离控制台运行（正式用法）：关窗口不影响守护")
     ap.add_argument("--stop", action="store_true", help="停止正在跑的守护（含核心）")
+    ap.add_argument("--restart", action="store_true",
+                    help="先停现有守护与核心 → 前台选池 → 再脱离控制台重启（周末换池一键用）")
     ap.add_argument("--hb-check", action="store_true", help="一次性心跳体检后退出")
     ap.add_argument("--grace", type=float, default=0.0,
                     help="配合 --hb-check：视作核心 N 秒前刚启动，启动后不判假死"
@@ -927,6 +1060,12 @@ def main():
 
     if args.stop:
         return _stop_existing()
+
+    if args.restart:
+        rc = _restart_handler(args)
+        if rc is not None:
+            return rc
+        # rc is None ⇒ 停完了、池子选好了，落到下面的 --detach 分支去真正启动
 
     if args.detach:
         extra = ["--symbols", args.symbols, "--detached"]

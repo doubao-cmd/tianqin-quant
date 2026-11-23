@@ -53,7 +53,29 @@ STOP_BUFFER = 0.5          # 止损缓冲（×ATR，放回踩极值外侧）
 STOP_CAP    = 2.0          # 兜底止损宽度（×ATR，止损上限）
 MAX_HOLD    = 15           # 时间止损（根）
 RISK_PCT    = 0.01        # 每笔目标风险 = 当前权益 × 1%（动态复利口径，与 engine 对齐）
-SLIP        = 1            # 滑点（跳）
+
+# ============================================================================
+# ★★ 2026-10-30「同步模拟盘口径」开关组（默认全开；每一开关独立，可单独关闭做对照）
+# ----------------------------------------------------------------------------
+# 背景：2026-10-30 逐条比对 回测 vs ma13_live_multi.py 后，确认 4 处口径不一致。
+#       4 处全部**只在执行层**，不动信号（MA13 斜率/回踩/ATR 一字未改）。
+# 实测依据见同目录 _口径同步说明_20261030.md
+# ============================================================================
+SYNC_SLIP_LIVE = True       # ① 滑点：1 跳 → 模拟盘实测值
+SLIP_LIVE      = 0.0        #    模拟盘 276 条滑点台账合计 760 元 ⇒ 均值 2.75 元/条
+                            #    （8 手 × 1 跳 = 10 元 ⇒ 折合 ≈0.03 跳）。
+                            #    留成可写小数的形式，便于以后按实测重标定。
+SYNC_STOP_BASE_CLOSE = True # ② 止损基准：open[i] → close[i-1]
+                            #    实盘 signals.py:111 `stop_price(dir, float(close[i]), a, swing)`
+                            #    用的是**信号根收盘价**；回测原用下一根 open。
+SYNC_LATE_DAY_GUARD = True  # ③ 尾盘守卫：信号根结束时刻落在 [14:56, 15:00] 不开新仓
+                            #    实盘 LATE_DAY_CUTOFF=(14,56)，见 _late_day_block。
+SYNC_TIME_EXIT_AT_OPEN = True  # ④ 时间止损成交价：保持 open[i]（= 信号根收盘后首笔成交）
+                            #    实盘 bar 收盘后立即市价平、成交≈下一 tick ⇒ 与 open[i] 等价。
+                            #    此开关留 True = 不引入 close[i]（close[i] 含未来信息）。
+# ============================================================================
+
+SLIP        = (SLIP_LIVE if SYNC_SLIP_LIVE else 1)   # 滑点（跳）
 HAND_MIN    = 1
 HAND_MAX    = 8     # 封顶 8 手（风险预算封顶）
 NOTIONAL_CAP = 2.0  # 名义敞口上限（倍权益）：手数 ≤ 权益×2÷每手名义价值。2026-10-07 加——8手对各品种含义差10倍，需按名义而非固定手数分档
@@ -91,8 +113,6 @@ def _window_name(start, end):
     if s.startswith("2026"):
         return f"探针窗{s}_{e}"
     return f"窗口{s}_{e}"
-
-
 # ===============================================================
 
 name_cn, main_code, MULT, TICK = config_symbols.get(SYMBOL_KEY)
@@ -125,6 +145,24 @@ def hand_plan(a, equity, price=None):
         名义手数 = int((eq * NOTIONAL_CAP) / (price * MULT))
         h = min(h, max(HAND_MIN, 名义手数))
     return h
+
+
+LATE_DAY_CUTOFF = (14, 56)   # 与实盘 ma13_live_multi.py:189 逐字一致
+
+
+def _late_day_block(dt_ns):
+    """信号根「结束时刻」落在 [14:56, 15:00] ⇒ True（不开新仓）。
+
+    与实盘 `ma13_live_multi._late_day_block` 同判据：
+      5min 周期：14:55 那根结束于 15:00 ⇒ 拦；14:50 那根结束于 14:55 ⇒ 不拦。
+    入参 dt_ns = 信号根 bar 的 datetime（tqsdk K线是 **UTC 纳秒**，bar 的**开始**时刻）。
+    失败方向：算不出来 ⇒ False（放行）。守卫只该少挡，不该多挡。
+    """
+    try:
+        _end = pd.Timestamp(int(dt_ns)) + pd.Timedelta(hours=8) + pd.Timedelta(seconds=KSEC)
+    except Exception:
+        return False
+    return LATE_DAY_CUTOFF <= (_end.hour, _end.minute) <= (15, 0)
 
 
 def run_backtest(start=None, end=None):
@@ -186,7 +224,17 @@ def run_backtest(start=None, end=None):
         ma13[i] = np.mean(close[i - MA_N:i])
 
     # ---------- 回测循环 ----------
+    # ★ 【2026-10-11 记账架构修复】
+    #   equity  = 已实现权益：只在「开仓计成本 / 平仓结算 pnl」时变化，
+    #             与逐笔 trades_rec 严格同口径（可加对账断言）。
+    #   eq_mark = 对账用镜像：持仓期间按「收盘价 mark-to-market」计浮动盈亏，
+    #             仅供画图/回撤/夏普；其值不影响 equity 与最终收益。
+    #   旧版 bug：equity 在持仓时逐 bar 累加 (close[i]-close[i-1])，
+    #             开仓 bar 多算 (close-开仓价)、平仓 bar 多算 (收盘-上根收盘)，
+    #             使权益曲线系统性虚高（甲醇 2021 实测虚高 139%）。
     equity = INIT
+    eq_mark = INIT
+    peak = INIT
     pos = 0
     entry_price = 0.0
     stop_price = 0.0
@@ -198,6 +246,7 @@ def run_backtest(start=None, end=None):
     bars_in = 0
     trades = 0
     wins = 0
+    peak = INIT
     prev_eq = INIT
     rets = []
     bar_dds = []
@@ -206,17 +255,6 @@ def run_backtest(start=None, end=None):
     trades_rec = []
     blown = False
     comm_total = 0.0
-    # ★ 【2026-10-11 记账架构修复】
-    #   equity      = 已实现权益：只在「开仓扣成本 / 平仓结算 pnl」时变化，
-    #                 与逐笔 trades_rec 严格同口径（可加对账断言）。
-    #   eq_mark     = 对账用镜像：持仓期间按「收盘价 mark-to-market」计浮动盈亏，
-    #                 仅供画图/回撤/夏普；其值不影响 equity 与最终收益。
-    #   旧版 bug：equity 在持仓时逐 bar 累加 (close[i]-close[i-1])，
-    #             开仓 bar 多算 (close-开仓价)、平仓 bar 多算 (收盘-上根收盘)，
-    #             使权益曲线系统性虚高（甲醇 2021 实测虚高 139%）。
-    equity = INIT
-    eq_mark = INIT
-    peak = INIT
 
     start_i = MA_N + SLOPE_N + 1
     start_ns = _START.value
@@ -231,6 +269,9 @@ def run_backtest(start=None, end=None):
             dir_trend = 1.0 if slope > 0 else (-1.0 if slope < 0 else 0.0)
             a = atr[i - 1]
             touch = abs(close[i - 1] - ma13[i - 1]) <= RETRACE_TOL * a
+            # ★ 2026-10-30 同步③：尾盘守卫只拦**开仓**，出场三条通道不受影响
+            #   （与实盘一致：`_late_day_block` 只出现在开仓分支）
+            _late_block = SYNC_LATE_DAY_GUARD and _late_day_block(dts_arr[i - 1])
 
             exit_now = False
             exit_price = None
@@ -276,25 +317,30 @@ def run_backtest(start=None, end=None):
                 })
                 pos = 0; bars_in = 0; cur_open_cost = 0.0
 
-            if pos == 0 and dir_trend != 0 and touch:
-                hand = hand_plan(a, equity, open_[i])
-                entry_price = open_[i]
+            if pos == 0 and dir_trend != 0 and touch and not _late_block:
+                # ★ 2026-10-30 同步②：止损基准改用**信号根收盘价** close[i-1]
+                #   实盘 signals.py:111 `stop_price(dir_trend, float(close[i]), a, swing)`
+                #   i 在实盘=信号根；回测里信号根=i-1 ⇒ close[i-1]。两者同为「已收盘」，
+                #   无未来函数。原口径用 open[i]（成交价），止损线会跟着跳空漂移。
+                _stop_base = close[i - 1] if SYNC_STOP_BASE_CLOSE else open_[i]
+                hand = hand_plan(a, equity, _stop_base)   # 名义上限判据同步用同一价
+                entry_price = open_[i]                    # 成交价不变（pnl/成本仍按真实成交）
                 oc = SLIP * TICK * MULT * hand + COMM * hand
                 if dir_trend > 0:
                     swing_low = np.min(low[max(0, i - SLOPE_N):i])
                     stop_raw = swing_low - STOP_BUFFER * a
-                    stop_price = max(entry_price - STOP_CAP * a, stop_raw)
+                    stop_price = max(_stop_base - STOP_CAP * a, stop_raw)
                     # 【2026-10-08 bugfix】止损价必须落在入场价不利侧（至少留一跳）
-                    if stop_price >= entry_price - TICK:
-                        stop_price = entry_price - STOP_CAP * a
+                    if stop_price >= _stop_base - TICK:
+                        stop_price = _stop_base - STOP_CAP * a
                     pos = hand
                 else:
                     swing_high = np.max(high[max(0, i - SLOPE_N):i])
                     stop_raw = swing_high + STOP_BUFFER * a
-                    stop_price = min(entry_price + STOP_CAP * a, stop_raw)
+                    stop_price = min(_stop_base + STOP_CAP * a, stop_raw)
                     # 【2026-10-08 bugfix】止损价必须落在入场价不利侧（至少留一跳）
-                    if stop_price <= entry_price + TICK:
-                        stop_price = entry_price + STOP_CAP * a
+                    if stop_price <= _stop_base + TICK:
+                        stop_price = _stop_base + STOP_CAP * a
                     pos = -hand
                 # ★ 【2026-10-11 修复】开仓不再即时扣成本：成本记入 cur_open_cost，
                 #   由平仓时的 pnl 一次性结算 ⇒ 逐笔 pnl 与权益变动恒等。
@@ -328,7 +374,7 @@ def run_backtest(start=None, end=None):
             rets.append((eq_mark - prev_eq) / prev_eq)
         prev_eq = eq_mark
 
-    # ★ 【2026-10-11 对账断言】已实现权益必须等于 INIT + 逐笔 pnl 合计（成本已在 pnl 内扣）
+    # ★ 【2026-10-11 对账断言】已实现权益必须等于 INIT + 逐笔 pnl 合计
     _pnl_sum = sum(r["pnl"] for r in trades_rec)
     _diff = equity - INIT - _pnl_sum
     # 容差：逐笔 pnl 保留 2 位小数 ⇒ 每笔最大 ±0.005 元舍入，
@@ -379,7 +425,10 @@ def run_backtest(start=None, end=None):
         #   但 COMPOUND=False 时实际基数=锁死20万 ⇒ 标签与实现不符，误导所有读 json 的人）。
         #   现在由两个开关动态生成，含标定日期，任何人一眼能对上代码。
         "cost_assumption": (
-            f"滑点{SLIP}跳+佣金{COMM}元/手/边; 本金{INIT:.0f}; "
+            f"滑点{SLIP}跳"
+            + ("(同步模拟盘实测均值≈0)"
+               if SYNC_SLIP_LIVE else "(旧口径固定1跳)")
+            + f"+佣金{COMM}元/手/边; 本金{INIT:.0f}; "
             + (f"手数=锁死{PRINCIPAL:.0f}(对齐模拟盘RISK_EQUITY)×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]"
                if not COMPOUND else
                f"手数=当前权益×{RISK_PCT*100:.0f}%÷ATR风险夹[1,8]")
@@ -388,6 +437,17 @@ def run_backtest(start=None, end=None):
                else "止损=理想价成交(零滑点零跳空,系统性虚高,仅供对照)")
             + f"; 乘数{MULT}; 一跳{TICK}; 标定2026-10-10"
         ),
+        # ★ 2026-10-30：记录「同步模拟盘口径」的四个开关，任何人读 json 即知这批数字
+        #   是哪个口径跑出来的（避免新旧结果混用）。
+        "sync_live": {
+            "SLIP_LIVE": bool(SYNC_SLIP_LIVE), "SLIP": SLIP,
+            "STOP_BASE_CLOSE": bool(SYNC_STOP_BASE_CLOSE),
+            "LATE_DAY_GUARD": bool(SYNC_LATE_DAY_GUARD),
+            "TIME_EXIT_AT_OPEN": bool(SYNC_TIME_EXIT_AT_OPEN),
+            "tag": ("同步模拟盘口径(2026-10-30)" if (SYNC_SLIP_LIVE and SYNC_STOP_BASE_CLOSE
+                                                   and SYNC_LATE_DAY_GUARD)
+                    else "旧口径/混合口径"),
+        },
     }
     kline_history = [{"dt": int(d_list[i]), "open": float(o_list[i]), "high": float(h_list[i]),
                      "low": float(l_list[i]), "close": float(c_list[i]), "volume": 0.0}

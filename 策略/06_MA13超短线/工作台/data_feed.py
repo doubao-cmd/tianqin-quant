@@ -25,8 +25,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(_HERE, "data")
 _SIM_DIR = os.path.dirname(os.path.dirname(os.path.dirname(_HERE)))  # 项目根（config_account 所在）
 
-# 日线不需要很长；选阶段1=20日 + 阶段2=3日，多留缓冲
-DEFAULT_DAYS = 40
+# 日线长度：原 40（阶段1=20日 + 阶段2=3日，多留缓冲）。
+# ★ 2026-11-07 扩到 160：S2 相关窗 20→60 日（用户拍板「时间放宽，减少噪音」，
+#   20 个样本估相关系数噪声过大——MA~EG 20日窗 0.37 vs 全年 0.75）。
+#   60 日窗需 61 根 close，40 根根本不够。160 根 ≈ 7.5 个月，留滚动余量。
+#   消费方（selection/pool/backtest_year）窗口全部 ≤60，无副作用。
+DEFAULT_DAYS = 160
 
 # ---------------------------------------------------------------------------
 # ★★ 未收盘 bar 剔除（2026-10-18 修，P0）
