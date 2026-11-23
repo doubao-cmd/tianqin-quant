@@ -1,0 +1,62 @@
+{
+  "symbols": {
+    "KQ.m@CFFEX.T": {
+      "symbol": "KQ.m@CFFEX.T",
+      "probe_time": "2026-11-07 19:01:23",
+      "rows": [
+        {
+          "duration": 300,
+          "name": "5min",
+          "real_rows": 10000,
+          "days": 197,
+          "first_bj": "2026-01-13 14:55:00",
+          "last_bj": "2026-11-06 15:10:00",
+          "bars_per_day": 50.8,
+          "years": 0.81
+        },
+        {
+          "duration": 900,
+          "name": "15min",
+          "real_rows": 10000,
+          "days": 589,
+          "first_bj": "2024-06-04 14:15:00",
+          "last_bj": "2026-11-06 15:00:00",
+          "bars_per_day": 17.0,
+          "years": 2.41
+        },
+        {
+          "duration": 1800,
+          "name": "30min",
+          "real_rows": 10000,
+          "days": 1112,
+          "first_bj": "2022-04-07 15:00:00",
+          "last_bj": "2026-11-06 15:00:00",
+          "bars_per_day": 9.0,
+          "years": 4.56
+        },
+        {
+          "duration": 3600,
+          "name": "60min",
+          "real_rows": 10000,
+          "days": 1667,
+          "first_bj": "2019-12-19 11:00:00",
+          "last_bj": "2026-11-06 15:00:00",
+          "bars_per_day": 6.0,
+          "years": 6.83
+        },
+        {
+          "duration": 86400,
+          "name": "日线",
+          "real_rows": 2632,
+          "days": 2632,
+          "first_bj": "2016-01-05 00:00:00",
+          "last_bj": "2026-11-06 00:00:00",
+          "bars_per_day": 1.0,
+          "years": 10.79
+        }
+      ],
+      "history_series_perm": false,
+      "history_series_error": "get_kline_data_series 数据获取方式仅限专业版用户使用，如需购买专业版或者申请试用，请访问 https://www.shinnytech.com/tqsdk-buy/"
+    }
+  }
+}

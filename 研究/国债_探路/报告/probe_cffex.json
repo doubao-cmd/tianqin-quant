@@ -1,0 +1,221 @@
+{
+  "probe_time": "2026-11-07 18:58:45",
+  "items": {
+    "T": {
+      "symbol": "KQ.m@CFFEX.T",
+      "name": "10年期国债",
+      "tick": 0.005,
+      "mult": 10000,
+      "quote": {
+        "datetime": "2026-11-06 15:14:59.999500",
+        "last_price": 110.28,
+        "volume": 123457.0,
+        "open_interest": 406470.0,
+        "underlying_symbol": "CFFEX.T2612",
+        "expire_datetime": "nan"
+      },
+      "notional_per_lot": 1102800.0,
+      "margin_per_lot_est": 22056.0,
+      "daily": {
+        "real_rows": 2632,
+        "first_bj": "2016-01-05 00:00:00",
+        "last_bj": "2026-11-06 00:00:00",
+        "trading_days": 2632,
+        "HL_deg_pct": 0.0,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.225,
+        "median_volume": 54179.0,
+        "atr14_median": 0.2643,
+        "tick_over_atr_pct": 1.89,
+        "atr_in_ticks": 52.86,
+        "bars_per_day_median": 1,
+        "elapsed_s": 0.29
+      },
+      "min5": {
+        "real_rows": 8964,
+        "first_bj": "2026-02-11 10:30:00",
+        "last_bj": "2026-11-06 15:10:00",
+        "trading_days": 176,
+        "HL_deg_pct": 0.0,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.015,
+        "median_volume": 1508.0,
+        "atr14_median": 0.0164,
+        "tick_over_atr_pct": 30.43,
+        "atr_in_ticks": 3.29,
+        "bars_per_day_median": 51,
+        "elapsed_s": 0.71
+      }
+    },
+    "TF": {
+      "symbol": "KQ.m@CFFEX.TF",
+      "name": "5年期国债",
+      "tick": 0.005,
+      "mult": 10000,
+      "quote": {
+        "datetime": "2026-11-06 15:14:59.999500",
+        "last_price": 106.94,
+        "volume": 93635.0,
+        "open_interest": 227655.0,
+        "underlying_symbol": "CFFEX.TF2612",
+        "expire_datetime": "nan"
+      },
+      "notional_per_lot": 1069400.0,
+      "margin_per_lot_est": 12833.0,
+      "daily": {
+        "real_rows": 2632,
+        "first_bj": "2016-01-05 00:00:00",
+        "last_bj": "2026-11-06 00:00:00",
+        "trading_days": 2632,
+        "HL_deg_pct": 0.0,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.15,
+        "median_volume": 24258.0,
+        "atr14_median": 0.1721,
+        "tick_over_atr_pct": 2.9,
+        "atr_in_ticks": 34.43,
+        "bars_per_day_median": 1,
+        "elapsed_s": 0.35
+      },
+      "min5": {
+        "real_rows": 8964,
+        "first_bj": "2026-02-11 10:30:00",
+        "last_bj": "2026-11-06 15:10:00",
+        "trading_days": 176,
+        "HL_deg_pct": 0.07,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.01,
+        "median_volume": 1187.0,
+        "atr14_median": 0.0118,
+        "tick_over_atr_pct": 42.42,
+        "atr_in_ticks": 2.36,
+        "bars_per_day_median": 51,
+        "elapsed_s": 0.79
+      }
+    },
+    "TS": {
+      "symbol": "KQ.m@CFFEX.TS",
+      "name": "2年期国债",
+      "tick": 0.002,
+      "mult": 20000,
+      "quote": {
+        "datetime": "2026-11-06 15:14:59.999500",
+        "last_price": 102.682,
+        "volume": 52520.0,
+        "open_interest": 89940.0,
+        "underlying_symbol": "CFFEX.TS2612",
+        "expire_datetime": "nan"
+      },
+      "notional_per_lot": 2053640.0,
+      "margin_per_lot_est": 10268.0,
+      "daily": {
+        "real_rows": 1992,
+        "first_bj": "2018-08-17 00:00:00",
+        "last_bj": "2026-11-06 00:00:00",
+        "trading_days": 1992,
+        "HL_deg_pct": 0.05,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.06,
+        "median_volume": 23680.5,
+        "atr14_median": 0.0721,
+        "tick_over_atr_pct": 2.77,
+        "atr_in_ticks": 36.07,
+        "bars_per_day_median": 1,
+        "elapsed_s": 0.17
+      },
+      "min5": {
+        "real_rows": 8964,
+        "first_bj": "2026-02-11 10:30:00",
+        "last_bj": "2026-11-06 15:10:00",
+        "trading_days": 176,
+        "HL_deg_pct": 1.23,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.004,
+        "median_volume": 636.0,
+        "atr14_median": 0.0043,
+        "tick_over_atr_pct": 46.67,
+        "atr_in_ticks": 2.14,
+        "bars_per_day_median": 51,
+        "elapsed_s": 0.7
+      }
+    },
+    "TL": {
+      "symbol": "KQ.m@CFFEX.TL",
+      "name": "30年期国债",
+      "tick": 0.01,
+      "mult": 10000,
+      "quote": {
+        "datetime": "2026-11-06 15:14:59.999500",
+        "last_price": 118.88,
+        "volume": 117335.0,
+        "open_interest": 218018.0,
+        "underlying_symbol": "CFFEX.TL2612",
+        "expire_datetime": "nan"
+      },
+      "notional_per_lot": 1188800.0,
+      "margin_per_lot_est": 41608.0,
+      "daily": {
+        "real_rows": 858,
+        "first_bj": "2023-04-21 00:00:00",
+        "last_bj": "2026-11-06 00:00:00",
+        "trading_days": 858,
+        "HL_deg_pct": 0.0,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.47,
+        "median_volume": 69811.0,
+        "atr14_median": 0.5221,
+        "tick_over_atr_pct": 1.92,
+        "atr_in_ticks": 52.21,
+        "bars_per_day_median": 1,
+        "elapsed_s": 0.14
+      },
+      "min5": {
+        "real_rows": 8964,
+        "first_bj": "2026-02-11 10:30:00",
+        "last_bj": "2026-11-06 15:10:00",
+        "trading_days": 176,
+        "HL_deg_pct": 0.0,
+        "zero_vol_pct": 0.0,
+        "median_range": 0.05,
+        "median_volume": 1505.5,
+        "atr14_median": 0.0536,
+        "tick_over_atr_pct": 18.67,
+        "atr_in_ticks": 5.36,
+        "bars_per_day_median": 51,
+        "elapsed_s": 0.79
+      }
+    }
+  },
+  "corr": {
+    "n_days": 857,
+    "matrix": {
+      "T": {
+        "T": 1.0,
+        "TF": 0.9211,
+        "TS": 0.7577,
+        "TL": 0.8676
+      },
+      "TF": {
+        "T": 0.9211,
+        "TF": 1.0,
+        "TS": 0.8343,
+        "TL": 0.7565
+      },
+      "TS": {
+        "T": 0.7577,
+        "TF": 0.8343,
+        "TS": 1.0,
+        "TL": 0.5962
+      },
+      "TL": {
+        "T": 0.8676,
+        "TF": 0.7565,
+        "TS": 0.5962,
+        "TL": 1.0
+      }
+    },
+    "mean_pairwise": 0.7889,
+    "max_pairwise": 0.9211
+  },
+  "elapsed_s": 57.0
+}
