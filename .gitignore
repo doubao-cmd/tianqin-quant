@@ -311,3 +311,9 @@ workbench.json.bak*
 #    _外盘 / _leadlag 的行情缓存（结论 CSV 与代码仍入库）
 工具/_外盘/_cache/
 工具/_leadlag/_r_wide_5min.parquet
+
+# 7) ★ 计划任务 XML 不入库（2026-11-23 扫描发现）
+#    Windows 任务计划导出文件带 <UserId>S-1-5-21-...</UserId>（账户 SID）与
+#    C:\Users\<用户名>\... 绝对路径，属本机身份信息，违反「公开仓库不含真实身份」。
+策略/**/_计划任务备份/
+*.xml.bak*
