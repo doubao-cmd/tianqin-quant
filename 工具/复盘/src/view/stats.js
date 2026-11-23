@@ -238,7 +238,7 @@ function replayStatsHtml() {
   const s = DB.data[state.sym].stats_all || {};
   const fs = s.n_settled == null ? '' :
     `<div class="stat-h">全样本对照<span class="future-tag">含未来</span></div>
-     <div class="stat-line muted">${s.n_settled} 笔 ｜ ${money(s.pnl_sum)} 元 ｜ 胜率 ${pct(s.win, s.n_settled)}</div>
+     <div class="stat-line muted">${s.n_settled} 笔 ｜ 毛利 ${money(s.pnl_sum)} / 净 ${money(s.net_sum ?? s.pnl_sum)} 元 ｜ 胜率 ${pct(s.win, s.n_settled)}</div>
      <div class="stat-note">灰色对照含尚未回放到的未来数据，仅作最终校验，勿用于途中决策</div>`;
   return `
     <div class="stat-h">回放内 · 截至 ${String(cur).slice(0, 16)}</div>
@@ -400,7 +400,8 @@ export function renderStats() {
     ${_stTrendHtml()}
     <div class="stat-h">全样本（6 品种）</div>
     <div class="stat-line">总交易 <b>${s.n_trades}</b> ｜ 已结算 <b>${s.n_settled}</b> ｜ 接管 <b>${s.n_takeover}</b>（未计） ｜ 未平 <b>${s.n_open}</b></div>
-    <div class="stat-line">合计 <b class="${s.pnl_sum >= 0 ? 'up' : 'down'}">${money(s.pnl_sum)}</b> 元 ｜ 均值 ${num0(s.pnl_mean)} ｜ 胜率 <b>${pct(s.win, s.n_settled)}</b></div>
+    <div class="stat-line">合计毛利 <b class="${s.pnl_sum >= 0 ? 'up' : 'down'}">${money(s.pnl_sum)}</b> 元 ｜ 手续费 ${money(-(s.fee_sum || 0))} ｜ <b>净利 <span class="${(s.net_sum ?? s.pnl_sum) >= 0 ? 'up' : 'down'}">${money(s.net_sum ?? s.pnl_sum)}</span></b></div>
+    <div class="stat-line">均值（净） ${num0(s.net_mean ?? s.pnl_mean)} ｜ 胜率 <b>${pct(s.win, s.n_settled)}</b></div>
     <div class="stat-line">盈 ${s.win} / 亏 ${s.loss} / 平 ${s.flat} ｜ 均盈 ${money(s.avg_win)} ｜ 均亏 ${money(s.avg_loss)} ｜ 盈亏比 ${num2(s.payoff)}</div>
     <div class="stat-line">持仓中位 ${num0(s.hold_median)} 分 ｜ 均值 ${num0(s.hold_mean)} 分</div>
     <div class="stat-line muted">A2 覆盖 ${ex.n}/${ex.n_closes}（${cov}）｜ MFE 中位 ${money(ex.mfe_median)} ｜ MAE 中位 ${money(ex.mae_median)}</div>

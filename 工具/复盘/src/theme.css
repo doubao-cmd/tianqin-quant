@@ -103,6 +103,43 @@ input[type=date]{background:var(--bg);color:#d6dae2;border:1px solid var(--borde
 #simpanel .sp-dir{font-weight:800;font-size:var(--fs-md);min-width:24px}
 #simpanel input[type=number]{width:82px;background:var(--bg);color:#e6e6e6;border:1px solid var(--border);border-radius:4px;padding:3px 5px;font-family:inherit;font-size:var(--fs-xs);outline:none;color-scheme:dark}
 #simpanel input[type=number]:focus{border-color:var(--accent)}
+/* ★ 2026-11-07 下单面板扩展：市价/限价切换、ATR 快捷止损、R 倍快捷止盈、图上取价 */
+#simpanel{width:460px}
+.sp-seg{display:inline-flex;gap:4px;flex:1}
+.sp-seg button{flex:1;font-size:var(--fs-xs);padding:3px 6px;border-radius:4px;
+  background:var(--bg);border:1px solid var(--border);color:var(--muted);cursor:pointer}
+.sp-seg button:hover{background:#232733;color:#e6e6e6}
+.sp-seg button.on{background:#1e3a5f;border-color:#3b82f6;color:#dbeafe;font-weight:700}
+.sp-pick{font-size:var(--fs-xs);padding:2px 8px;border-radius:4px;background:#1f2937;
+  border:1px solid #374151;color:#9ca3af;cursor:pointer;white-space:nowrap}
+.sp-pick:hover{background:#374151;color:#fff}
+.sp-pick.on{background:#7c2d12;border-color:#ea580c;color:#fed7aa;font-weight:700}
+.sp-quick{gap:4px}
+.sp-qlabel{color:var(--muted);min-width:42px;text-align:right;white-space:nowrap}
+.sp-q{flex:1;font-size:var(--fs-xs);padding:3px 0;border-radius:4px;background:var(--bg);
+  border:1px solid var(--border);color:#c7cedb;cursor:pointer}
+.sp-q:hover{background:#232733;color:#fff}
+.sp-q.on{background:#14532d;border-color:#16a34a;color:#bbf7d0;font-weight:700}
+.sp-note{color:var(--muted);font-size:var(--fs-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sp-note.warn{color:#f59e0b}
+.sp-unit{color:var(--muted);white-space:nowrap}
+.sp-live{font-size:var(--fs-xs);color:#f59e0b;margin-right:6px}
+/* ★ R5 账户页（跨会话累计） */
+.acct-kpi{display:grid;grid-template-columns:repeat(2,1fr);gap:4px;margin:6px 0}
+.acct-kpi>div{background:var(--bg);border:1px solid var(--border);border-radius:5px;padding:3px 6px}
+.acct-kpi span{display:block;color:var(--muted);font-size:10px;line-height:1.3}
+.acct-kpi b{font-size:var(--fs-sm)}
+.acct-kpi i{font-style:normal;color:var(--muted);font-size:10px;margin-left:2px}
+.acct-bar{display:flex;align-items:center;gap:6px;margin:6px 0;font-size:var(--fs-xs);flex-wrap:wrap}
+.acct-bar select{background:var(--bg);color:#e6e6e6;border:1px solid var(--border);
+  border-radius:4px;padding:2px 4px;font-size:var(--fs-xs);outline:none}
+.acct-bar button{font-size:var(--fs-xs);padding:2px 8px;border-radius:4px;background:#7f1d1d;
+  border:1px solid #dc2626;color:#fecaca;cursor:pointer}
+.acct-bar button:hover{background:#b91c1c;color:#fff}
+.acct-tbl{max-height:340px;overflow:auto}
+#acct table{font-size:10px;width:100%}
+#acct table th{position:sticky;top:0;background:var(--panel);z-index:1}
+#acct .ct{font-size:var(--fs-xs)}
 .simgrp{opacity:.95}
 .simgrp.pend{color:var(--note);cursor:pointer;border-bottom:1px dashed var(--note)}
 .sim-pos{font-size:var(--fs-xs);line-height:1.7;padding:3px 2px;border-bottom:1px dashed #20242e;color:#c7cedb;margin-bottom:3px}
@@ -129,10 +166,11 @@ input[type=date]{background:var(--bg);color:#d6dae2;border:1px solid var(--borde
 .mk-btn.on{outline:2px solid var(--accent);outline-offset:-2px;font-weight:800}
 #grid{flex:1;min-height:0;display:grid;grid-template-columns:220px 1fr;gap:8px}
 #grid.with-right{grid-template-columns:220px 1fr 340px}
-/* ★ T1.3 左栏可折叠：220px → 0。折叠时 display:none，避免 0 宽元素仍占 gap 与焦点 */
-#grid.left-off{grid-template-columns:0 1fr}
-#grid.with-right.left-off{grid-template-columns:0 1fr 340px}
-#grid.left-off #left{display:none}
+/* ★ 2026-11-07 三栏列号钉死：任一栏 display:none 时不重排，
+   避免 #center 被挤到第 1 列、#right 横跨全宽盖住 K 线（10-19 踩过的坑）。 */
+#grid #left{grid-column:1}
+#grid #center{grid-column:2}
+#grid #right{grid-column:3}
 #left,#right{display:flex;flex-direction:column;gap:6px;min-height:0}
 #grid #right{display:none}
 #grid.with-right #right{display:flex}
@@ -141,6 +179,7 @@ input[type=date]{background:var(--bg);color:#d6dae2;border:1px solid var(--borde
 .ct{font-size:var(--fs-xs);color:var(--muted);margin-bottom:2px}
 #intra{height:190px}
 #qcard{font-size:var(--fs-xs);line-height:1.75;color:#d6dae2}
+#qcard b{color:#fff;font-weight:600}
 #qstrip{display:flex;align-items:baseline;gap:12px;padding:5px 10px;background:linear-gradient(90deg,var(--brand3),var(--brand4));border-radius:6px;white-space:nowrap;overflow:hidden}
 #qstrip .name{font-size:var(--fs-md);font-weight:700}
 #qstrip .px{font-size:var(--fs-lg);font-weight:800}

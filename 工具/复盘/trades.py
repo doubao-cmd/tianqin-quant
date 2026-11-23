@@ -54,57 +54,116 @@ def flow_path(sym_cn: str) -> Path:
 
 
 def load_flow(sym_cn: str) -> pd.DataFrame:
-    """读某品种成交流水（utf-8-sig），返回按时间排序的原始表。"""
+    """读某品种成交流水（utf-8-sig），返回按时间排序的原始表。
+
+    ★ 2026-10-24：加 `_seq`（文件原始行号）并改 `kind="mergesort"`。
+      原因：`sort_values("时间")` 默认 quicksort **非稳定**，同一秒的多笔 FILL
+      会被随机重排 —— 乙二醇 10-19 22:10:00 同秒有 `空平7` 与 `空开8`，
+      顺序不同会把反手误判成加仓（开仓价被加权平均成 4949.5）。
+    """
     d = pd.read_csv(flow_path(sym_cn), encoding=ENCODING, dtype=str)
     d.columns = [str(c).lstrip("\ufeff") for c in d.columns]
     d["时间"] = pd.to_datetime(d["记录时间"], errors="coerce")
-    return d.sort_values("时间").reset_index(drop=True)
+    d["_seq"] = range(len(d))
+    return d.sort_values(["时间", "_seq"], kind="mergesort").reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
 # 事件（图上买卖点直接用这个，不做任何配平推断）
 # ---------------------------------------------------------------------------
+RE_VOID_FULL = re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}")
+RE_VOID_TIME = re.compile(r"(?<!\d)\d{2}:\d{2}:\d{2}(?!\d)")
+
+# 同一秒内的处理顺序：先平后开（反手必然先平旧仓再开新仓，
+# 否则会被误判成「同向加仓」而把开仓价加权平均）
+_TYPE_PRI = {"平": 0, "清零": 1, "开": 2, "接管": 3}
+
+
+def _void_stamps(d: pd.DataFrame) -> list:
+    """解析 VOID 作废标记里点名的时刻。
+
+    台账原文形态（鸡蛋 2026-10-18 22:08:00）：
+      【作废标记】2026-10-18 22:02:34 的 RECOVER/FILL/STOPLOSS 与 22:03:05 的 FILLX
+      为误判产物…统计与复盘请排除这三行 + 该 FILLX。
+    支持两种写法：完整 `YYYY-MM-DD HH:MM:SS`；仅 `HH:MM:SS`（用 VOID 行自己的日期补全）。
+    解析不到任何时刻时**告警**，不静默忽略（规则：台账给了答案，读取端必须认）。
+    """
+    if d is None or d.empty or "类型" not in d.columns:
+        return []
+    out: list = []
+    for _, r in d[d["类型"] == "VOID"].iterrows():
+        note = str(r.get("备注") or "")
+        base = r.get("时间")
+        fulls = RE_VOID_FULL.findall(note)
+        bare = RE_VOID_TIME.findall(RE_VOID_FULL.sub(" ", note))
+        if not fulls and not bare:
+            print(f"[trades] WARNING: {r.get('记录时间')} 的 VOID 行未解析出任何时刻，已忽略：{note[:80]}")
+            continue
+        for s in fulls:
+            ts = pd.to_datetime(s.replace("T", " "), errors="coerce")
+            if pd.notna(ts):
+                out.append(ts)
+        for s in bare:
+            if pd.isna(base):
+                continue
+            ts = pd.to_datetime(f"{pd.Timestamp(base).strftime('%Y-%m-%d')} {s}", errors="coerce")
+            if pd.notna(ts):
+                out.append(ts)
+    return out
+
+
 def load_events(sym_cn: str) -> pd.DataFrame:
-    """每条 FILL / RECOVER / SYNC 一个事件。
+    """每条 FILL / RECOVER / SYNC 一个事件（VOID 点名的事件会被剔除）。
 
     列：时间 / 类型(开|平|接管|清零) / 方向(多|空) / 手数 / 价格 / 合约 / 备注
     """
     d = load_flow(sym_cn)
+    voids = _void_stamps(d)
     rows: list[dict] = []
+
+    def _voided(t) -> bool:
+        if not voids or pd.isna(t):
+            return False
+        return any(abs((pd.Timestamp(t) - ts).total_seconds()) <= 2 for ts in voids)
 
     f = d[d["类型"] == "FILL"]
     for _, r in f.iterrows():
         dr = str(r.get("方向") or "")
         if dr not in ("多开", "空开", "多平", "空平"):
             continue
+        if _voided(r["时间"]):
+            continue
         rows.append({
             "时间": r["时间"], "类型": dr[-1], "方向": dr[0],
             "手数": int(float(r["手数"] or 0)), "价格": float(r["成交价"]),
-            "合约": str(r.get("备注") or ""), "备注": "",
+            "合约": str(r.get("备注") or ""), "备注": "", "_seq": r["_seq"],
         })
 
     for _, r in d[d["类型"] == "RECOVER"].iterrows():
         m = RE_RECOVER_POS.search(str(r.get("备注") or ""))
-        if not m:
+        if not m or _voided(r["时间"]):
             continue
         n = int(m.group(1))
         rows.append({
             "时间": r["时间"], "类型": "接管", "方向": "多" if n > 0 else "空",
             "手数": abs(n), "价格": float("nan"), "合约": "",
-            "备注": str(r.get("备注") or ""),
+            "备注": str(r.get("备注") or ""), "_seq": r["_seq"],
         })
 
     for _, r in d[d["类型"] == "SYNC"].iterrows():
         note = str(r.get("备注") or "")
-        if "清零" in note and "持仓" in note:
+        if "清零" in note and "持仓" in note and not _voided(r["时间"]):
             rows.append({
                 "时间": r["时间"], "类型": "清零", "方向": "", "手数": 0,
-                "价格": float("nan"), "合约": "", "备注": note,
+                "价格": float("nan"), "合约": "", "备注": note, "_seq": r["_seq"],
             })
 
     if not rows:
         return pd.DataFrame(columns=["时间", "类型", "方向", "手数", "价格", "合约", "备注"])
-    return pd.DataFrame(rows).sort_values("时间").reset_index(drop=True)
+    ev = pd.DataFrame(rows)
+    ev["_pri"] = ev["类型"].map(_TYPE_PRI).fillna(9)
+    ev = ev.sort_values(["时间", "_pri", "_seq"], kind="mergesort").reset_index(drop=True)
+    return ev.drop(columns=["_pri", "_seq"])
 
 
 # ---------------------------------------------------------------------------
@@ -162,9 +221,11 @@ def load_trades(sym_cn: str) -> pd.DataFrame:
     """把成交流水还原成每笔交易。
 
     列：品种 / 方向 / 手数 / 开仓时间 / 开仓价 / 平仓时间 / 平仓价 / 止损 / ATR
-        MFE / MAE / 盈亏 / 原因 / 配对 / 持仓分钟
+        MFE / MAE / 盈亏 / 手续费 / 净盈亏 / 原因 / 配对 / 持仓分钟
     `配对` ∈ {FILL平, 反转, 接管, SYNC清零, 未平仓}
-    `盈亏` = (平−开)×方向×手数×乘数（**毛利，未扣手续费**）
+    `盈亏`   = (平−开)×方向×手数×乘数（**毛利，未扣手续费**）
+    `手续费` = 双边费用（元；开腿按开仓价、平腿按平仓价，比例品种现算）
+    `净盈亏` = 盈亏 − 手续费
     """
     key = data.CN2KEY.get(sym_cn, sym_cn.upper())
     mult = data.MULT.get(key, 1)
@@ -178,12 +239,25 @@ def load_trades(sym_cn: str) -> pd.DataFrame:
     # 状态：lots = [{dir, qty, price, time, stop, atr, src}]
     lots: list[dict] = []
     trades: list[dict] = []
+    n_recover_kept = 0
+    n_recover_reset = 0
 
     def _push_trade(lot, qty, exit_time, exit_price, reason, src, sl_row=None):
         dir_sign = lot["dir"]
         pnl = float("nan")
         if pd.notna(lot["price"]) and pd.notna(exit_price):
             pnl = (exit_price - lot["price"]) * dir_sign * qty * mult
+        # 手续费（双边，元）：开仓腿用开仓价、平仓腿用平仓价；比例品种按各自价格现算。
+        # 开仓价缺失（真接管）时用平仓价近似 —— 只影响费用本身，不影响 盈亏(毛利)。
+        fee = float("nan")
+        if pd.notna(exit_price):
+            px_o = float(lot["price"]) if pd.notna(lot["price"]) else float(exit_price)
+            try:
+                fee = (data.comm_per_hand(key, px_o)
+                       + data.comm_per_hand(key, exit_price)) * float(qty)
+            except Exception:
+                fee = float("nan")
+        net_pnl = (pnl - fee) if (pd.notna(pnl) and pd.notna(fee)) else float("nan")
         ex = _nearest(exc, exit_time)
         reason2 = reason
         # ★ 两套止损：
@@ -210,6 +284,8 @@ def load_trades(sym_cn: str) -> pd.DataFrame:
             "MFE": float(ex["MFE"]) if ex is not None else float("nan"),
             "MAE": float(ex["MAE"]) if ex is not None else float("nan"),
             "盈亏": pnl,
+            "手续费": fee,
+            "净盈亏": net_pnl,
             "原因": reason2,
             "配对": src,
             "持仓分钟": (exit_time - lot["time"]).total_seconds() / 60.0
@@ -235,11 +311,23 @@ def load_trades(sym_cn: str) -> pd.DataFrame:
         t, typ = e["时间"], e["类型"]
 
         if typ == "接管":
-            # 重启接管：先清空本地（进程重启后原内存态已丢），再按云端持仓建 lot
+            # ★ 2026-10-24 条件化（原为无条件清空）。
+            #   原注释说「进程重启后原内存态已丢」—— 那对**运行中的进程**成立；
+            #   但 load_trades() 是**离线从台账重建**，FILL 一条不少，重建出来的 lot
+            #   本来就带真实开仓价。此时再清空，等于把正确答案删掉换成 NaN。
+            #   判据：本地净仓 == 云端声称持仓 ⇒ 保留原 lots（只补 stop/atr，不动价与时间）；
+            #         不等 ⇒ 确实有台账外的变化，仍按原逻辑重建（price=NaN）。
+            claimed = _parse_recover_pos(e.get("备注"))
+            net = sum(int(L["dir"]) * int(L["qty"]) for L in lots)
+            if lots and claimed is not None and net == claimed:
+                _fill_recover_meta(lots, e.get("备注"))
+                n_recover_kept += 1
+                continue
             lots = [{"dir": 1 if e["方向"] == "多" else -1, "qty": int(e["手数"]),
                      "price": float("nan"), "time": t,
                      "stop": _parse_recover_stop(e.get("备注")), "atr": float("nan"),
                      "src": "接管"}]
+            n_recover_reset += 1
             continue
 
         if typ == "清零":
@@ -286,9 +374,27 @@ def load_trades(sym_cn: str) -> pd.DataFrame:
     if not trades:
         return pd.DataFrame(columns=["品种", "方向", "手数", "开仓时间", "开仓价", "平仓时间",
                                      "平仓价", "止损", "计划止损", "ATR", "MFE", "MAE", "盈亏",
-                                     "原因", "配对", "持仓分钟"])
+                                     "手续费", "净盈亏", "原因", "配对", "持仓分钟"])
     out = pd.DataFrame(trades).sort_values("开仓时间").reset_index(drop=True)
     return out
+
+
+def _parse_recover_pos(note):
+    """从 RECOVER 备注里取云端持仓（带符号）。解析不到返回 None。"""
+    if note is None or pd.isna(note):
+        return None
+    m = RE_RECOVER_POS.search(str(note))
+    return int(m.group(1)) if m else None
+
+
+def _fill_recover_meta(lots, note) -> None:
+    """本地净仓与云端一致时，只补齐缺失的止损，**不动价格与开仓时间**。"""
+    st = _parse_recover_stop(note)
+    if pd.isna(st):
+        return
+    for L in lots:
+        if pd.isna(L.get("stop", float("nan"))):
+            L["stop"] = st
 
 
 def _parse_recover_stop(note) -> float:

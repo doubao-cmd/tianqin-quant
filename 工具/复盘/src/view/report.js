@@ -31,6 +31,9 @@ const _rpCss = `
 #rpClose{background:#23272f;border:1px solid #333a46;color:#c8ced8;border-radius:5px;
   padding:3px 10px;cursor:pointer;font-size:11px}
 #rpClose:hover{background:#2d323c}
+#rpNext{background:#2b3a2b;border:1px solid #3f6b3f;color:#bfe6bf;border-radius:5px;
+  padding:3px 10px;cursor:pointer;font-size:11px}
+#rpNext:hover{background:#354a35}
 `;
 
 let _rpBuilt = false;
@@ -41,11 +44,18 @@ function _rpEnsure() {
   document.head.appendChild(st);
   const mask = document.createElement('div'); mask.id = 'rpMask';
   const box = document.createElement('div'); box.id = 'rpBox';
-  box.innerHTML = '<h3><span id="rpTitle">会话评分</span><button id="rpClose">关闭</button></h3>'
+  box.innerHTML = '<h3><span id="rpTitle">会话评分</span>'
+    + '<span style="display:flex;gap:8px">'
+    + '<button id="rpNext" title="关掉评分，直接随机开下一局（训练模式）">再来一局 ▶</button>'
+    + '<button id="rpClose">关闭</button></span></h3>'
     + '<div class="bd" id="rpBody"></div>';
   document.body.appendChild(mask); document.body.appendChild(box);
   mask.addEventListener('click', closeReport);
   box.querySelector('#rpClose').addEventListener('click', closeReport);
+  box.querySelector('#rpNext').addEventListener('click', () => {
+    closeReport();
+    if (window.__rtNextRound) window.__rtNextRound();
+  });
   _rpBuilt = true;
 }
 

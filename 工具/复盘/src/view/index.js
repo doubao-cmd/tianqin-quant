@@ -4,17 +4,18 @@ import { pd, rangeStart } from '../core/time.js';
 import { $ } from '../core/fmt.js';
 import { DB } from '../data/index.js';
 import { renderTop, applyLayout, setTab, renderFreshness, syncMarkTab } from './topbar.js';
-import { renderMain } from './main.js';
+import { renderMain, pickPrice, pickCancel } from './main.js';
 import { renderIntraday } from './intra.js';
 import { renderTable } from './table.js';
 import { renderDetail } from './detail.js';
 import { renderStats } from './stats.js';
 import { renderSim } from './simpane.js';
+import { renderAcct } from './acct.js';
 import { renderCompare } from './compare.js';
 import { renderMkTab } from './mklist.js';
 import { updateReplayUI } from '../replay/engine.js';
 
-export { renderMain, renderIntraday, renderTable, renderTop, applyLayout, setTab, renderFreshness, renderDetail, renderStats, renderSim, renderCompare, renderMkTab, syncMarkTab };
+export { renderMain, renderIntraday, renderTable, renderTop, applyLayout, setTab, renderFreshness, renderDetail, renderStats, renderSim, renderCompare, renderMkTab, syncMarkTab, pickPrice, pickCancel, renderAcct };
 
 export function renderAll() {
   if (state.sel != null && !DB.data[state.sym].trades[state.sel]) state.sel = null;
@@ -37,6 +38,7 @@ export function renderAll() {
   renderDetail();
   renderStats();
   renderSim();
+  renderAcct();
   renderCompare();
   syncMarkTab();          // ★ T2.3：训练模式隐藏「标记」tab（不渲染，不是 disabled）
   renderMkTab();          // ★ T2.3：标记列表随进度/模式刷新

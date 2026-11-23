@@ -21,15 +21,22 @@ export function renderSim() {
   let html = '';
   if (st.pending) {
     const p = st.pending;
-    html += `<div class="note">⏳ 待成交：${p.type === 'open' ? `${esc(p.dir)} ${p.qty} 手（止损 ${p.stopPx}${p.targetPx != null ? ' / 止盈 ' + p.targetPx : ''}）` : '市价平仓'} → 下一根开盘成交。点击报价条上的「待成交」字样可撤销。</div>`;
+    const isLimit = p.limitPx != null && p.limitPx !== '';
+    const ext = `${p.targetPx != null ? ' / 止盈 ' + p.targetPx : ''}${p.timeStopBars ? ' / 时间止损 ' + p.timeStopBars + ' 根' : ''}`;
+    html += `<div class="note">⏳ 待成交：${isLimit ? '限价 ' + p.limitPx : '市价'} ${esc(p.dir)} ${p.qty} 手（止损 ${p.stopPx}${ext}）` +
+      ` → ${isLimit ? '到价成交（未成交一直挂着，可随时撤销）' : '下一根开盘成交'}。` +
+      `点报价条上的「待成交」字样可撤销。</div>`;
   }
   if (st.pos) {
     const p = st.pos, cur = d.c[state.replay.abs];
     const dirSign = p.dir === '多' ? 1 : -1;
     const fl = (cur - p.entryPx) * p.qty * cfg.mult * dirSign;
+    const held = state.replay.abs - p.entryBar;
     html += `<div class="sim-pos"><b class="${p.dir === '多' ? 'up' : 'down'}">${esc(p.dir)} ${p.qty} 手</b> @${p.entryPx}` +
       ` ｜ 浮盈 <b class="${fl >= 0 ? 'up' : 'down'}">${sgn(fl)}</b>` +
-      ` ｜ 已持 ${state.replay.abs - p.entryBar} 根 ｜ 止损 ${p.stopPx}${p.targetPx != null ? ' ｜ 止盈 ' + p.targetPx : ''}</div>`;
+      ` ｜ 已持 ${held}${p.timeStopBars ? '/' + p.timeStopBars : ''} 根 ｜ 止损 ${p.stopPx}` +
+      `${p.targetPx != null ? ' ｜ 止盈 ' + p.targetPx : ''}` +
+      `${p.timeStopBars ? ' ｜ 满 ' + p.timeStopBars + ' 根开盘平' : ''}</div>`;
   }
   let rows = '';
   st.closed.forEach(t => {

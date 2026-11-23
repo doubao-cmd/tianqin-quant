@@ -31,6 +31,7 @@ exec4/apply_pool.py —— 把 S2 选出的池子写回 workbench.json（带持�
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -62,19 +63,33 @@ for _p in (_REPLAY, _HERE, WORKBENCH_DIR, ROOT, SIM_DIR):
 
 
 # ---------------------------------------------------------------------------
-def compute_s2_pool(n_legs: int = 5, exclude=None) -> dict:
+def compute_s2_pool(n_legs: int = 5, exclude=None, seed=None,
+                    use_cache: bool = True, daily=None,
+                    corr_window: int = None, max_tick_frac: float = None) -> dict:
     """用工作台本地日线缓存算 S2 池（离线）。
 
     exclude：人工剔除名单（品种 KEY）。剔除后从剩余池里按原规则补足腿数。
              ★ 2026-10-19 新增：用户主观剔除焦煤 JM（不涉及窗口/参数，属标的选择，
                与铁律 2「不遍历参数择优」无关）。
+    seed：固定腿（workbench.json 的 selection.force_include）。★ 2026-10-31 新增：
+          此前**没有**这个参数，导致本脚本选出的池会把固定腿 JD 静默丢掉
+          （同一份日线实测：无 seed → ['RU','MA','EG','P','TA']；带 seed →
+          ['JD','RU','MA','EG','P']）。凡绕过 `pool.select_pool(..., seed=)` 的
+          入口都会重现这个问题，与 JM「绕过统一入口」同类。
+    use_cache：True=读工作台日线缓存（快，但**不校验新鲜度**）；
+               False=真拉全池日线（慢约 1-2 分钟，周六任务必须用这个）。
+               ★ 2026-10-31 实测：缓存末根曾停在 6 个交易日前而无人察觉。
+    daily：已经拉好的 {key: {...}}，传了就不再拉（周六任务先拉一次做新鲜度
+           校验，避免重复拉两遍 57 个品种）。
     """
     import data_feed as df
     import universe as u
     import pool
     from signal_bridge import spec, has_spec
 
-    daily = df.build_universe_daily(u.all_keys(), use_cache=True)
+    if daily is None:
+        daily = df.build_universe_daily(u.all_keys(), use_cache=use_cache,
+                                        fetch=not use_cache)
     if not daily:
         raise RuntimeError(
             "无日线缓存。请先跑：python 工作台/data_feed.py --fetch")
@@ -83,7 +98,25 @@ def compute_s2_pool(n_legs: int = 5, exclude=None) -> dict:
         daily = {k: v for k, v in daily.items() if str(k).upper() not in ex}
         print(f"[exclude] 人工剔除 {len(ex)} 个：{','.join(sorted(ex))}（不参与排序）")
     specs = {k: spec(k) for k in daily if has_spec(k)}
-    return pool.select_pool(daily, specs, n_legs=n_legs)
+    _seed = tuple(str(k).strip().upper() for k in (seed or ()) if str(k).strip())
+    if _seed:
+        print(f"[seed] 固定腿：{','.join(_seed)}（先进座，占掉对应名额；不参与 ρ 检查）")
+    # ★ 2026-11-07 结构闸门：读工作台 tick_atr.json（与 watchdog 同源同口径）。
+    _tf = None
+    _tf_path = os.path.join(os.path.dirname(WORKBENCH_JSON), "data", "tick_atr.json")
+    try:
+        with io.open(_tf_path, "r", encoding="utf-8") as _f:
+            _tfj = json.load(_f)
+        _tf = {k: v["tick_frac"] for k, v in (_tfj.get("data") or {}).items()
+               if v.get("tick_frac") is not None}
+    except Exception:
+        _tf = None
+        print("[tick_atr] ⚠️ 结构表缺失/损坏 → 结构闸门本次关闭")
+    return pool.select_pool(daily, specs, n_legs=n_legs, seed=_seed,
+                            corr_window=corr_window or pool.CORR_WINDOW,
+                            tick_frac=_tf,
+                            max_tick_frac=(pool.MAX_TICK_FRAC if max_tick_frac is None
+                                           else float(max_tick_frac)))
 
 
 def _load_wb() -> dict:
@@ -141,14 +174,31 @@ def main() -> int:
     ap.add_argument("--exclude", nargs="*", default=None,
                     help="人工剔除的品种 KEY（如 JM）；不传则用 workbench.json "
                          "selection.exclude")
+    ap.add_argument("--seed", nargs="*", default=None,
+                    help="★ 固定腿（如 JD）；不传则用 workbench.json "
+                         "selection.force_include。不传且配置文件也为空时才真的没有固定腿")
+    ap.add_argument("--fresh", action="store_true",
+                    help="★ 真拉全池日线（不走缓存）。缓存不校验新鲜度，"
+                         "手动换池建议带上；周六任务默认就是真拉")
     a = ap.parse_args()
 
     cfg = _load_wb()
     old = [str(k).upper() for k in (cfg.get("selected") or [])]
     # 剔除名单：CLI 优先，其次配置文件持久化值（每周自动重选也读它）
     exclude = a.exclude if a.exclude is not None else (cfg.get("selection", {}) or {}).get("exclude")
+    # 固定腿：CLI 优先，其次配置文件（watchdog 走的就是这个字段）
+    seed = a.seed if a.seed is not None else (cfg.get("selection", {}) or {}).get("force_include")
 
-    r = compute_s2_pool(n_legs=a.n_legs, exclude=exclude)
+    # ★ 2026-11-07 修：本入口此前**没读** selection.corr_window_days / max_tick_frac，
+    #   compute_s2_pool 回退到 pool.CORR_WINDOW=20 ⇒ 与守护 _select_by_method（读配置 60）
+    #   口径不一致，dry-run 会算出 JD/MA/RU/EG/FU 而生产是 JD/MA/RU/EG/P。
+    #   凡是「--write 写盘」的入口，必须与守护同参数，否则一次手工换池就把规则悄悄改回去。
+    _sc = cfg.get("selection", {}) or {}
+    _mtf = _sc.get("max_tick_frac")
+    r = compute_s2_pool(n_legs=a.n_legs, exclude=exclude, seed=seed,
+                        use_cache=not a.fresh,
+                        corr_window=int(_sc.get("corr_window_days", 20) or 20),
+                        max_tick_frac=float(_mtf) if _mtf is not None else None)
     new = list(r["legs"])
 
     print("=" * 74)

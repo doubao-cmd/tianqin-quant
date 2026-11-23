@@ -85,6 +85,7 @@ STOP_ATR_MULT = 2.0  # ★ L1 固定止损（2×ATR）
 SLIP = 1           # 滑点（跳），与全项目一致
 RETRACE_TOL = 0.5  # 回踩容差（与 06 同）
 BREAK_N = 20       # 唐奇安突破窗口（经典外生值，不扫）
+BREAK_N2 = 2       # ★ 用户版「三根 K」轨道窗口（2026-11-18 用户外生给定，不扫）
 TSMOM_N = 20       # 时序动量窗口（不扫）
 DIAG_HOLDS = [1, 2, 3, 6, 12, 24, 48]  # ⚠️ 仅供「诊断曲线」，**严禁据此择优**
 # ---- SMC 两个候选信号的外生参数（2026-10-13 新增，定死、不扫）----
@@ -163,6 +164,33 @@ def _s_breakout_20(o, h, l, c, atr, ma):
     """唐奇安：收盘 > 前 20 根最高 → 多；< 前 20 根最低 → 空（轨道不含当前根）。"""
     hh = pd.Series(h).rolling(BREAK_N).max().shift(1).to_numpy()
     ll = pd.Series(l).rolling(BREAK_N).min().shift(1).to_numpy()
+    return np.where(c > hh, 1.0, np.where(c < ll, -1.0, 0.0))
+
+
+def _s_breakout_2(o, h, l, c, atr, ma):
+    """★ 用户版「三根 K 线」突破（2026-11-18 外生给定，不扫参数）。
+
+    规则（用户原话转写）：
+      · 前 2 根（t-2、t-1）的 high/low 构成轨道；
+      · 第 3 根（t）走完之后判断——**盘中触及**上轨 → 开多，触及下轨 → 开空；
+      · 收在两根之间（即未触及）→ 不触发；
+      · 第 4 根（t+1）open 成交（由 screen_one 统一处理，非本函数）。
+    三条写死的口径：
+      ① 轨道只用 t-2、t-1 的 high/low，**不含当根**（含当根 = 未来函数/自指）；
+      ② 触发看 t 的 high/low（用户说的「触及」），**不看收盘** ⇒ 冲高回落也算；
+      ③ 同一根同时触及上、下轨（外包线 / 跳空）⇒ 先后不可判定 ⇒ 置 0 不开仓。
+    """
+    hh = pd.Series(h).rolling(BREAK_N2).max().shift(1).to_numpy()
+    ll = pd.Series(l).rolling(BREAK_N2).min().shift(1).to_numpy()
+    up = h > hh
+    dn = l < ll
+    return np.where(up & dn, 0.0, np.where(up, 1.0, np.where(dn, -1.0, 0.0)))
+
+
+def _s_breakout_2c(o, h, l, c, atr, ma):
+    """同上，但改为**收盘价确认**（c 突破轨道才触发）——仅作敏感性对照，不得择优。"""
+    hh = pd.Series(h).rolling(BREAK_N2).max().shift(1).to_numpy()
+    ll = pd.Series(l).rolling(BREAK_N2).min().shift(1).to_numpy()
     return np.where(c > hh, 1.0, np.where(c < ll, -1.0, 0.0))
 
 
@@ -529,6 +557,8 @@ SIGNALS = {
     "retrace_ma13": ("回踩 MA13 + 斜率定方向（= 06 的进场条件，基准锚）", _s_retrace_ma13),
     "cross_ma13":   ("收盘上/下穿 MA13", _s_cross_ma13),
     "breakout_20":  ("唐奇安 20 根区间突破（轨道不含当前根）", _s_breakout_20),
+    "breakout_2":   ("★用户版 前2根定轨+第3根盘中触及（第4根开盘进）", _s_breakout_2),
+    "breakout_2c":  ("同上但收盘确认（敏感性对照，不得择优）", _s_breakout_2c),
     "tsmom_20":     ("过去 20 根收益的符号（时序动量）", _s_tsmom_20),
     "rev_2bar":     ("连续 2 根同向 → 反向开（逆势）", _s_rev_2bar),
     "vol_break":    ("单根振幅 > 2×ATR 顺势跟进", _s_vol_break),
@@ -577,7 +607,10 @@ def cost_points(key):
 
 
 # ---------------------------------------------------------------- 体检
-def screen_one(key, sig_name, df, diag=False, stop_mult=None):
+def screen_one(key, sig_name, df, diag=False, stop_mult=None, t_lo=None, t_hi=None):
+    """t_lo/t_hi（2026-11-04 新增，**默认 None = 行为与旧版逐位相同**）：
+    只保留「进场 bar ≥ t_lo 且出场 bar < t_hi」的成交，用于 IS/OOS 切窗。
+    指标与信号仍在**全量序列**上计算（不因切窗丢预热），只是筛成交。"""
     sm = STOP_ATR_MULT if stop_mult is None else float(stop_mult)
     o = df["open"].to_numpy(float)
     h = df["high"].to_numpy(float)
@@ -593,6 +626,21 @@ def screen_one(key, sig_name, df, diag=False, stop_mult=None):
 
     valid = np.arange(0, N - HOLD - 1)
     idx = valid[sig[valid] != 0]
+    # ---- 切窗（2026-11-04）：进场 ≥ t_lo、出场 < t_hi，成交必须整体落在窗内 ----
+    _mask = None
+    if t_lo is not None or t_hi is not None:
+        _dtn = df["datetime"].to_numpy()
+        _keep = np.ones(len(idx), dtype=bool)
+        if t_lo is not None:
+            _keep &= _dtn[idx] >= np.datetime64(pd.Timestamp(t_lo))
+        if t_hi is not None:
+            _keep &= _dtn[idx + 1 + HOLD] < np.datetime64(pd.Timestamp(t_hi))
+        idx = idx[_keep]
+        _mask = np.ones(N, dtype=bool)
+        if t_lo is not None:
+            _mask &= _dtn >= np.datetime64(pd.Timestamp(t_lo))
+        if t_hi is not None:
+            _mask &= _dtn < np.datetime64(pd.Timestamp(t_hi))
     if len(idx) == 0:
         return {"key": key, "signal": sig_name, "n": 0,
                 "name_cn": cs.get(key)[0], "per_day": 0.0, "days": 0,
@@ -625,7 +673,7 @@ def screen_one(key, sig_name, df, diag=False, stop_mult=None):
         sd = float(np.std(x, ddof=1)) if len(x) > 1 else 0.0
         return float(np.mean(x) / (sd / math.sqrt(len(x)))) if sd > 1e-12 else 0.0
 
-    days = df["datetime"].dt.date.nunique()
+    days = (df["datetime"][_mask] if _mask is not None else df["datetime"]).dt.date.nunique()
     out = {
         "key": key, "name_cn": cs.get(key)[0], "signal": sig_name,
         "n": int(len(idx)), "per_day": round(len(idx) / days, 2), "days": int(days),

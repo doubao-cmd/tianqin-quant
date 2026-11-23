@@ -31,6 +31,14 @@ BLACKLIST = ("EB",)
 # 拍板①：相关性封顶。0.5 来自实测 RB↔JM = 0.508（同品种链，绝不能同选）
 MAX_RHO = 0.5
 
+# ★ 2026-11-07 新增（用户拍板「除了相关因子再加一个」）：结构闸门阈值。
+#   tick/5minATR = 最小跳动占 5 分钟 ATR 的比例。超过它 ⇒ 1.15×ATR 止损装不下
+#   几个跳动，滑点吃掉大半止损空间，MA13 的止损机制物理上装不进去。
+#   0.30 对齐 2026-10-27 已执行的结构剔除线：I 铁矿 31%、AL 铝 34%、SA 36%、
+#   SP 38%、FG 50% 全在这条线之上被剔；这是「可行性筛选」不是「策略过滤」，
+#   事先可判定、不看任何回测结果（不违反铁律 2）。
+MAX_TICK_FRAC = 0.30
+
 # 拍板③：5 腿
 N_LEGS = 5
 
@@ -194,13 +202,19 @@ def greedy_legs(ranked: list, corr: dict, n_legs: int = N_LEGS,
       语义：种子在贪心开始前**先入座并占掉名额**，再按 ranked 补足剩余名额。
       · 种子必须已通过 exclude / 缺规格 / 粒度闸门（即出现在 `ranked` 里），
         否则落空并记入 rejected（理由 "SEED_NOT_IN_RANKED"）——不抛异常。
-      · 种子**彼此之间不做 ρ 检查**（当前只有 JD 一颗，无影响）；后续腿仍与**包含种子
-        在内的全部已选腿**做 ρ 检查，所以种子会正常参与分散约束。
+      · 种子**彼此之间不做 ρ 检查**（当前只有 JD 一颗，无影响）。
+      · ★★ 2026-11-07 改（用户拍板）：种子**不再参与后续腿的 ρ 检查**。
+        理由：JD 是用户钦定的常驻腿，不是"分散约束"的一部分；相关性约束
+        只应在**动态选出的其余四腿之间**成立（"不是基于鸡蛋来算相关系数，
+        而是剩余四腿之间算"）。JD 与谁都低相关（|ρ|<0.2），旧口径下它
+        实际挡不住谁，但语义上"候选腿被一颗钦定腿否决"是错的。
+        max_rho_pair 同步排除种子 ⇒ max_rho_used 报的是**四腿之间**的分散度。
       · `seed` 为空时行为与旧版**逐位一致**（回归保证）。
 
     返回 {"legs": [...], "rejected": [(key, 冲突对象, rho)], "skipped_no_data": [...]}
     """
     _rset = set(ranked)
+    _seed_set = {str(_s).strip().upper() for _s in (seed or ()) if str(_s).strip()}
     # 种子先入座（去重保序，超员截断）
     legs: list = []
     for _s in (seed or ()):
@@ -221,11 +235,14 @@ def greedy_legs(ranked: list, corr: dict, n_legs: int = N_LEGS,
         if k in BLACKLIST:
             rejected.append((k, "BLACKLIST", None))
             continue
-        # 与所有已选腿比一遍：取 |ρ| 最大的那个作为"冲突对象"
+        # 与所有已选**非种子**腿比一遍：取 |ρ| 最大的那个作为"冲突对象"
+        # ★ 2026-11-07：种子腿跳过 ρ 检查（用户拍板「不基于鸡蛋算相关性」）
         worst_sym = None
         worst_rho = None
         blocked_sym = None          # 相关系数算不出 ⇒ 保守拒绝，记下是谁算不出
         for s in legs:
+            if s in _seed_set:
+                continue
             r = rho_of(corr, k, s)
             if r is None:
                 if treat_none_as_block:
@@ -251,7 +268,10 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
                 corr_window: int = CORR_WINDOW,
                 require_spec: bool = True,
                 notional_cap: float = DEFAULT_NOTIONAL_CAP,
-                seed: Iterable[str] = ()) -> dict:
+                seed: Iterable[str] = (),
+                tick_frac: Optional[dict] = None,
+                max_tick_frac: float = MAX_TICK_FRAC,
+                treat_missing_tickfrac_as_block: bool = True) -> dict:
     """S2 主入口：粒度闸门 → 流动性闸门 → 相关性封顶贪心加腿。
 
     参数
@@ -266,6 +286,13 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
     seed : ★ 2026-10-27 新增。固定种子腿（`selection.force_include`），
            先入座占名额、再贪心补足 n_legs。种子仍须过 exclude / 缺规格 / 粒度闸门，
            即必须出现在 `ranked` 里；否则落空并记入 `rejected`（不抛异常）。
+           ★ 2026-11-07：种子不参与后续腿的 ρ 检查（max_rho_pair 同步排除）。
+    tick_frac : ★ 2026-11-07 新增。{key: tick/5minATR} 结构比值表（调用方从
+                工作台/data/tick_atr.json 读）。None = 关闭结构闸门（旧行为）。
+    max_tick_frac : 结构闸门阈值，默认 0.30（对齐 10-27 的 I 铁矿剔除线）。
+    treat_missing_tickfrac_as_block : 表里查不到的品种是否当"结构未知"拒绝。
+                默认 True（保守：结构未知 ≠ 结构合格）。传了覆盖全候选的表就
+                不会触发这个分支。
 
     返回
     ----
@@ -287,6 +314,8 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
     dropped_nodata: list = []
     dropped_nospec: list = []
     dropped_toolarge: list = []
+    dropped_tickwide: list = []      # ★ 结构闸门：tick/ATR 超阈值（或表里查不到）
+    _tf = tick_frac or {}
 
     for k, d in (daily or {}).items():
         if not d:
@@ -301,6 +330,27 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
         if ml is not None and notional_cap and ml > notional_cap:
             dropped_toolarge.append((k, ml, ml / notional_cap))
             continue
+        # ①½ 结构闸门（2026-11-07）：tick/5minATR > max_tick_frac ⇒ 止损装不下跳动
+        #   表里查不到 = 结构未知 ⇒ 保守拒绝（treat_missing_tickfrac_as_block）。
+        #   注意顺序：必须在流动性闸门之前——结构不可交易与流动性无关。
+        #   ★ tick_frac=None（未提供表）⇒ 闸门整体关闭，行为与旧版逐位一致。
+        if max_tick_frac is not None and _tf:
+            v = _tf.get(k)
+            if v is None:
+                if treat_missing_tickfrac_as_block:
+                    dropped_tickwide.append((k, None, None))
+                    continue
+            else:
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    if treat_missing_tickfrac_as_block:
+                        dropped_tickwide.append((k, None, None))
+                        continue
+                    v = None
+                if v is not None and v > max_tick_frac:
+                    dropped_tickwide.append((k, v, max_tick_frac))
+                    continue
         # ② 流动性闸门：算不出日均成交额 ⇒ 数据不足，跳过（不拿 0 顶替）
         t = turnover_20d(d, mult, window=vol_window)
         if t is None:
@@ -313,7 +363,8 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
     g = greedy_legs(ranked, corr, n_legs=n_legs, max_rho=max_rho, seed=seed)
 
     legs = g["legs"]
-    a, b, r = max_rho_pair(legs, corr)
+    # ★ 2026-11-07：分散度指标排除种子腿（max_rho_used = 四腿之间的最大|ρ|）
+    a, b, r = max_rho_pair(legs, corr, skip=seed)
     mx = abs(r) if r is not None else None
 
     return {
@@ -327,6 +378,8 @@ def select_pool(daily: dict, specs: dict, n_legs: int = N_LEGS,
         "dropped_nospec": sorted(dropped_nospec),
         "dropped_nodata": sorted(dropped_nodata),
         "dropped_toolarge": sorted(dropped_toolarge, key=lambda x: -x[1]),
+        "dropped_tickwide": sorted(dropped_tickwide,
+                                   key=lambda x: -(x[1] if x[1] is not None else 9)),
     }
 
 
@@ -364,15 +417,23 @@ def vol_factor(legs: list, corr: dict, weights: Optional[dict] = None,
     return raw / sw if sw else None
 
 
-def max_rho_pair(legs: list, corr: dict):
+def max_rho_pair(legs: list, corr: dict, skip: Iterable[str] = ()):
     """入选腿里 |ρ| 最大的那一对 → (a, b, rho)；腿数 <2 或算不出返回 (None, None, None)。
 
     必须报出来：拍板① 的阈值 0.5 就取自「RB↔JM = 0.508 不能同选」，
     所以每次选完都要看一眼"最贴边的那一对是谁"，确认没有踩线。
+
+    ★ 2026-11-07 新增 skip：跳过的腿（种子）不参与两两配对 —— max_rho_used
+      报的是"动态四腿之间"的分散度，不被钦定腿污染。
     """
+    _skip = {str(s).strip().upper() for s in (skip or ()) if str(s).strip()}
     best = (None, None, None)
     for i, a in enumerate(legs or []):
+        if str(a).strip().upper() in _skip:
+            continue
         for b in (legs or [])[i + 1:]:
+            if str(b).strip().upper() in _skip:
+                continue
             r = rho_of(corr, a, b)
             if r is None:
                 continue

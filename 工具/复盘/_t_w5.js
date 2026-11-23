@@ -16,8 +16,8 @@ if (/^\s*<!DOCTYPE/i.test(srcRaw)) {
 }
 const appCode = srcRaw + `
 ;globalThis.__P={state,renderAll,renderMain,renderStats,renderTable,makeReplay,updateReplayUI,
-  toggleLeft,trendSeries,trendHover,DB,stepReplay,setMode,setTab,tbSetFilter,tbToggleSort,
-  lgSessions,applyLeft,_trDraw,_stTrendHtml};
+  trendSeries,trendHover,DB,stepReplay,setMode,setTab,tbSetFilter,tbToggleSort,
+  lgSessions,_trDraw,_stTrendHtml};
 `;
 const bundle = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
 
@@ -45,7 +45,8 @@ const sandbox = {
   document: { getElementById(id) { return els[id] || (els[id] = makeEl(id)); },
     createElement() { return makeEl('c'); }, querySelector() { return null; }, querySelectorAll() { return []; },
     addEventListener() {}, activeElement: {}, body: makeEl('body') },
-  Plotly: { react() { plotlyN++; }, newPlot() {}, relayout() {}, Plots: { resize() {} } },
+  // ★ 补 purge / rePlot：renderAll 会先 purge，桩里没有就整段抛错（其余断言全被带塌）
+  Plotly: { react() { plotlyN++; }, newPlot() {}, relayout() {}, purge() {}, rePlot() {}, Plots: { resize() {} } },
   localStorage: { getItem(k) { return (k in LS) ? LS[k] : null; }, setItem(k, v) { LS[k] = String(v); },
     removeItem(k) { delete LS[k]; }, clear() { Object.keys(LS).forEach(k => delete LS[k]); } },
   Blob: function () {}, URL: { createObjectURL() { return ''; }, revokeObjectURL() {} },
@@ -185,17 +186,10 @@ ok(E('rbBanner').style.display === 'none', '退出回放 ⇒ 横幅消失');
 ok(!E('app').classList.contains('replay-on'), '退出回放 ⇒ 左色条消失');
 
 // ═══════════════════════════════════════════════════════════════════════
-console.log('\n[T1.3] 左栏可折叠');
-P.state._leftOff = false; P.applyLeft();
-ok(!E('grid').classList.contains('left-off'), '初始展开');
-P.toggleLeft();
-ok(E('grid').classList.contains('left-off'), '折叠后 #grid 带 left-off');
-ok(LS['rt_left_off'] === '1', '折叠状态写进 localStorage');
-ok(/▶ 分时/.test(E('lcolBtn').textContent), `按钮文案切换（${E('lcolBtn').textContent}）`);
-P.toggleLeft();
-ok(!E('grid').classList.contains('left-off') && LS['rt_left_off'] === '0', '再点一次恢复');
+console.log('\n[T1.3] 左栏折叠：已回退（跳过）');
+// ★ 2026-11-07：左栏折叠功能早已按用户要求回退（见 topbar.js 顶部注释），
+//   源码里只剩注释、没有 toggleLeft ⇒ 旧断言只会抛 ReferenceError，删除。
 
-// ═══════════════════════════════════════════════════════════════════════
 console.log('\n[T2.3] 标记 tab');
 P.state.mode = 'review'; P.renderAll();
 ok(E('tabM').style.display === '', '复看模式：标记 tab 可见');

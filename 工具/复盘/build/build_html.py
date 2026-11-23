@@ -7,7 +7,7 @@
 拼接规则：按依赖顺序去掉 import/export 后首尾相接，boot.js 必须最后（唯一顶层执行）。
 """
 from __future__ import annotations
-import os, re, shutil
+import base64, gzip, os, re, shutil
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -22,6 +22,7 @@ ORDER = [
     "core/state.js",
     "core/time.js",
     "core/store.js",     # lsStore 工厂：被 marks/ledger 依赖，必须在前
+    "core/indicators.js",# ★ R-A（2026-11-07）：指标改为前端现算，被 data/index.js 依赖
     "data/index.js",
     "replay/book.js",
     "replay/marks.js",
@@ -36,6 +37,7 @@ ORDER = [
     "view/detail.js",
     "view/stats.js",
     "view/simpane.js",
+    "view/acct.js",      # ★ R5（2026-11-07）：跨会话账户页（被 view/index 依赖 renderAcct；被 ledger 依赖 acctAppend）
     "view/topbar.js",
     "view/compare.js",   # ★ P2-5：被 view/index 依赖（renderCompare），必须排在 index 之前
     "view/mklist.js",    # ★ 五期 T2.3：标记 tab（被 view/index 依赖 renderMkTab）
@@ -103,17 +105,21 @@ def main():
     print(f"[http] dist/index.html（{ (DIST/'index.html').stat().st_size/1024/1024:.1f} MB）")
 
     # ---------- 2) 单文件版：复盘终端.html ----------
-    safe_data = data_json.replace("</script", "<\\/script")
+    # ★ 2026-11-07（R-A）：数据改成 **gzip+base64** 内嵌。全年 12 品种原始 JSON 约 21MB，
+    #   直接内联会到 25MB+；gzip 后 ~21%、base64 +33% ⇒ 落回 ~6MB，双击打开才不卡。
+    #   解码在 src/data/index.js::gunzipJson（DecompressionStream，浏览器原生）。
     safe_bundle = bundle.replace("</script", "<\\/script")
+    data_gz = base64.b64encode(gzip.compress(data_path.read_bytes(), 9)).decode("ascii")
     single = (index_tpl
               .replace('<script src="__PLOTLY_SRC__"></script>',
                        '<script>' + plotly_js + "</script>")
               .replace('<link rel="stylesheet" href="__THEME_SRC__">',
                        "<style>" + theme + "</style>")
               .replace('<script type="module" src="__BOOT_SRC__"></script>',
-                       "<script>window.__REVIEW_DATA__=" + safe_data + ";" + safe_bundle + "</script>"))
+                       '<script>window.__REVIEW_GZ__="' + data_gz + '";' + safe_bundle + "</script>"))
     OUT.write_text(single, encoding="utf-8")
-    print(f"[single] {OUT} （{OUT.stat().st_size/1024/1024:.1f} MB）")
+    print(f"[single] {OUT} （{OUT.stat().st_size/1024/1024:.1f} MB；"
+          f"数据 {len(data_json)/1024/1024:.1f}MB → gz {len(data_gz)/1024/1024:.1f}MB）")
 
     # 桌面快捷方式指向的全英文路径
     ascii_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "ReviewTerminal"

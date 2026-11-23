@@ -4,31 +4,9 @@ import { isDaily } from '../core/time.js';
 import { $ } from '../core/fmt.js';
 import { DB } from '../data/index.js';
 
-// ★ T1.3 左栏折叠：状态记 localStorage（刷新后保持）。
-//   注意"折叠"不是"缩小"——#left 直接 display:none，否则 0 宽元素仍占 grid gap 并继续被 Tab 摸到。
-const _LEFT_KEY = 'rt_left_off';
-try { state._leftOff = localStorage.getItem(_LEFT_KEY) === '1'; } catch (e) { state._leftOff = false; }
-
-export function applyLeft() {
-  const g = $('grid');
-  if (!g) return;
-  g.classList.toggle('left-off', !!state._leftOff);
-  const b = $('lcolBtn');
-  if (b) {
-    b.classList.toggle('off', !!state._leftOff);
-    b.textContent = state._leftOff ? '▶ 分时' : '◀ 分时';
-    b.title = state._leftOff
-      ? '展开左栏（分时图 + 行情卡）· Ctrl+←'
-      : '折叠左栏，主图多 220px（看 1min/5min 时分时图与主图重复）· Ctrl+←';
-  }
-}
-
-export function toggleLeft() {
-  state._leftOff = !state._leftOff;
-  try { localStorage.setItem(_LEFT_KEY, state._leftOff ? '1' : '0'); } catch (e) {}
-  applyLeft();
-  safeResize();          // ★ 必须走 safeResize（尺寸指纹比对），不能直接 Plotly.Plots.resize
-}
+// ★ 2026-11-07：分时回到 220px 左栏（常驻，不折叠）。方案 B（全宽 90px 带）
+//   因走势被压平、看不清已回退；左栏折叠那套 _LEFT_KEY / _leftOff / toggleLeft /
+//   applyLeft 保持删除状态 —— 左栏常驻更简单，也不再有折叠引发的 grid 重排坑。
 
 // ★ S4/A-freshness：数据新鲜度角标
 //   数据来自 bundle 的 `_meta.freshness`（构建期读 `_缓存/pool/_last_update.json`）。
@@ -137,7 +115,6 @@ export function applyLayout() {
   const g = $('grid');
   g.classList.toggle('with-right', state.showTrades);
   $('tbtn').classList.toggle('on', state.showTrades);
-  applyLeft();                 // ★ T1.3：左栏折叠与"显示/隐藏右栏"互不干扰，各自一个 class
   safeResize();
 }
 
@@ -150,9 +127,12 @@ export function setTab(t) {
   const tc = $('tabC'); if (tc) tc.classList.toggle('on', t === 'cmp');
   // ★ T2.3：第 5 个 tab（标记列表）
   const tm = $('tabM'); if (tm) tm.classList.toggle('on', t === 'marks');
+  // ★ R5：跨会话账户页
+  const ta = $('tabA'); if (ta) ta.classList.toggle('on', t === 'acct');
   $('paneTrade').style.display = t === 'trade' ? 'flex' : 'none';
   $('paneStats').style.display = t === 'stats' ? 'flex' : 'none';
   $('paneBook').style.display = t === 'book' ? 'flex' : 'none';
+  const pa = $('paneAcct'); if (pa) pa.style.display = t === 'acct' ? 'flex' : 'none';
   const pc = $('paneCmp'); if (pc) pc.style.display = t === 'cmp' ? 'flex' : 'none';
   const pm = $('paneMk'); if (pm) pm.style.display = t === 'marks' ? 'flex' : 'none';
 }

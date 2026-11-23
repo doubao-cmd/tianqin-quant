@@ -2,10 +2,31 @@
 import { state, UP, DOWN, canSeeAnswers } from '../core/state.js';
 import { pd, isDaily, tmap, tradeStart, tradeEnd, evTime, breaks, rangeStart, toDate,
          viewMin, clampViewLeft, VIEW_MIN_SPAN_MS } from '../core/time.js';
-import { $, esc, f1, f2, sgn } from '../core/fmt.js';
+import { $, esc, f1, f2, sgn, toast } from '../core/fmt.js';
 import { DB } from '../data/index.js';
 import { bookState, SIM_COLOR } from '../replay/book.js';
 import { markAt, marksList, markColor } from '../replay/marks.js';
+
+// ★ 2026-11-07 图上取价（下单面板用）：返回 Promise<number|null>，null = 用户取消。
+//   同时只允许一个拾取态；重复调用会先把上一个 resolve 成 null。
+let _pickCb = null;
+export function pickPrice() {
+  return new Promise(resolve => {
+    if (_pickCb) { const prev = _pickCb; _pickCb = null; prev(null); }
+    _pickCb = resolve;
+    const el = $('main');
+    if (el) el.style.cursor = 'crosshair';
+    toast('在主图价格区点一下取价 · Esc 取消');
+  });
+}
+export function pickCancel() {
+  if (!_pickCb) return false;
+  const cb = _pickCb; _pickCb = null;
+  const el = $('main');
+  if (el) el.style.cursor = '';
+  cb(null);
+  return true;
+}
 
 function renderQuote(q) {
   const chg = q.c - q.prev, pct = q.prev ? chg/q.prev*100 : 0;
@@ -366,6 +387,19 @@ export function renderMain() {
     });
   }
 
+  // ★ 2026-11-07：下单面板填的止损/止盈/挂单价 → 预览线（画在图上，"画线"的直观反馈）
+  {
+    const sl = state._simLines || {};
+    const addLine = (y, color, dash) => {
+      if (!(y > 0)) return;
+      shapes.push({ type: 'line', x0: xs[0], x1: xs[xs.length-1], y0: +y, y1: +y,
+        line: { color, width: 1, dash }, layer: 'above' });
+    };
+    addLine(sl.stop, '#ef4444', 'dot');
+    addLine(sl.target, '#22c55e', 'dot');
+    addLine(sl.limit, '#3b82f6', 'dash');
+  }
+
   // ★ 用户画线存 state.shapes，重绘时合并；回放时裁到当前 bar（hiBar）
   state._progShapes = shapes.slice();
   (state.shapes || []).forEach(s => {
@@ -395,27 +429,27 @@ export function renderMain() {
     margin:{l:8, r:8, t:8, b:8},
     paper_bgcolor:'#0f1117', plot_bgcolor:'#0f1117',
     font:{family:'Microsoft YaHei', color:'#e6e6e6', size:11},
-    hovermode:'closest', dragmode:'pan',
+    hovermode:'closest', dragmode:false,
     hoverlabel:{bgcolor:'#151d2e', bordercolor:'#3a4350', font:{color:'#e6e6e6', size:11}, align:'left'},
     showlegend:false, shapes:shapes,
     uirevision: state.sel != null
       ? `${state.sym}|${state.period}|${state.sel}`
       : `${state.sym}|${state.period}`,
-    xaxis:{type:'date', range:xr, rangeslider:{visible:false},
+    xaxis:{type:'date', range:xr, fixedrange:true, rangeslider:{visible:false},
       gridcolor:'#232733', tickfont:{color:'#9aa3af'}, linecolor:'#2a2f3a',
       rangebreaks:breaks()},
-    yaxis:{domain:[0.30,1], range:[plo-ppad, phi+ppad],
+    yaxis:{domain:[0.30,1], range:[plo-ppad, phi+ppad], fixedrange:true,
       gridcolor:'#232733', tickfont:{color:'#9aa3af'},
-      linecolor:'#2a2f3a', side:'right'},
-    yaxis2:{domain:[0,0.22], gridcolor:'rgba(255,255,255,0.04)',
+      linecolor:'#2a2f3a', side:'right', automargin:true},
+    yaxis2:{domain:[0,0.22], fixedrange:true, gridcolor:'rgba(255,255,255,0.04)',
       tickfont:{color:'#9aa3af'}, showticklabels: state.ind !== 'vol',
-      linecolor:'#2a2f3a', side:'right'},
+      linecolor:'#2a2f3a', side:'right', automargin:true},
   };
   Plotly.react('main', traces, layout, {
     // ★ P5-2：responsive 关掉，改由 topbar.safeResize() 统一管（避免 ResizeObserver 与手动 resize 打架）
-    displayModeBar:true, scrollZoom:true, responsive:false, displaylogo:false,
-    modeBarButtonsToRemove:['select2d','lasso2d','toggleSpikelines'],
-    modeBarButtonsToAdd:['drawline','drawrect','eraseshape'],
+    // ★ 盘感练习：隐藏 modebar（标注工具栏一并消失）、禁滚轮缩放；拖动/双击缩放由 fixedrange 锁死，
+    //   视图只由「上一根/下一根/日期选择」驱动，保持干净、避免误触改窗。
+    displayModeBar:false, scrollZoom:false, responsive:false, displaylogo:false,
   });
 
   // ★ 捕获用户画的线 + 回放时把缩放根数换算回 R.win（P0-C）
@@ -447,6 +481,23 @@ export function renderMain() {
     state._shapeBound = true;
   }
 
+  // ★ 2026-11-07 图上取价：下单面板点「图上取」→ 进拾取态 → 点主图价格区取 y。
+  //   不用 Plotly 的 drawline（其编辑手柄在 fixedrange + 无 modebar 下无法用），
+  //   直接吃 plotly_click 的 y 值，吸附最小变动价位由调用方（boot）做。
+  if (!state._pickBound) {
+    $('main').on('plotly_click', ev => {
+      if (!_pickCb) return;
+      const p = ev && ev.points && ev.points[0];
+      if (!p) return;
+      const ax = String(p.yaxis || (p.data && p.data.yaxis) || 'y');
+      if (ax.includes('2')) { toast('点到成交量区了，请点上面的价格区'); return; }
+      const cb = _pickCb; _pickCb = null;
+      const el = $('main'); if (el) el.style.cursor = '';
+      cb(+p.y);
+    });
+    state._pickBound = true;
+  }
+
   const seg = isDaily() ? '日线' : (() => {
     const hh = parseInt(xs[xs.length-1].slice(11,13) || 0, 10);
     return hh >= 21 ? '夜盘' : (hh < 12 ? '早盘' : '午盘');
@@ -454,6 +505,6 @@ export function renderMain() {
   // ★ T1.4：#cap 拆两行。原来 100+ 字符挤一行 11px（末尾必被省略号吃掉）。
   //   第一行 = 价格/指标（复盘时要反复对照的数字）；第二行 = 上下文（时段/根数/操作提示）。
   const capL1 = `${xs[xs.length-1]} ｜ 开 ${o[o.length-1].toFixed(1)}  高 ${h[h.length-1].toFixed(1)}  低 ${l[l.length-1].toFixed(1)}  收 ${c[c.length-1].toFixed(1)} ｜ MA13 ${f2(ma[ma.length-1])} ｜ ATR14 ${f2(atr[atr.length-1])}`;
-  const capL2 = `${seg} ｜ 加载 ${xs.length} 根 ｜ 拖动/滚轮缩放 · 悬停看该根详情`;
+  const capL2 = `${seg} ｜ 加载 ${xs.length} 根 ｜ 上一根/下一根推进 · 悬停看该根详情`;
   $('cap').innerHTML = `<div class="cap1">${esc(capL1)}</div><div class="cap2">${esc(capL2)}</div>`;
 }

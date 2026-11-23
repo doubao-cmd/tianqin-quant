@@ -1,8 +1,8 @@
 // 回放控制引擎（P0-B/P0-C）
 // 所有回放私有状态在 state.replay：abs(绝对索引) / win(固定窗口) / playing / stepMs。
 // 本模块不持有散落的 i / playing 字段（验收：全文件 grep = 0）。
-import { state, makeReplay, canSeeAnswers } from '../core/state.js';
-import { pd, rangeStart, tmap } from '../core/time.js';
+import { state, makeReplay, canSeeAnswers, setMode } from '../core/state.js';
+import { pd, rangeStart, tmap, toDate } from '../core/time.js';
 import { $, toast, esc } from '../core/fmt.js';
 import { DB } from '../data/index.js';
 import { renderAll, renderMain, renderIntraday, renderTable, renderStats, renderCompare } from '../view/index.js';
@@ -214,6 +214,92 @@ export function autoWin() {
   return Math.max(60, Math.min(400, Math.round(w / 7)));
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// ★ 2026-11-07 分时「子步动画」：一根 5min bar 里有 5 根 1min，一次性画出来
+//   看起来是"跳一下"；这里按 stepMs×0.8 把 5 个 1min 点依次吐出来 ⇒ 线在长。
+//   为什么放 engine：只有播放循环知道"这一根什么时候开始/下一根什么时候来"。
+// ═══════════════════════════════════════════════════════════════════════
+let _subRAF = null, _subTok = 0;
+
+function _clearSub() {
+  _subTok++;
+  if (_subRAF) { cancelAnimationFrame(_subRAF); _subRAF = null; }
+  state._subCut = null;
+}
+
+function _animIntra(startMs, pmin, stepMs) {
+  const tok = ++_subTok;
+  if (_subRAF) cancelAnimationFrame(_subRAF);
+  const dur = Math.max(120, Math.min(stepMs * 0.85, 4000));   // 慢速时按整根铺满，别"跑完就干等"
+  const per = dur / pmin;
+  const t0 = performance.now();
+  let lastK = 1;
+  const step = (now) => {
+    if (tok !== _subTok) { _subRAF = null; return; }
+    // ★ 回放被外部清掉（交卷/切品种）时，必须把 _subCut 也清掉，
+    //   否则它会一直挂着一个"半根"的 cutoff，分时永远少画 1~4 分钟。
+    if (!state.replay || !state.replay.playing) { _subRAF = null; state._subCut = null; return; }
+    const k = Math.min(pmin, Math.floor((now - t0) / per) + 1);
+    // ★ 只在跨过 1min 档位时重绘。原来每帧都画（60fps × 0.5s ≈ 30 次/根），
+    //   实测 3 根 bar 触发 114 次 Plotly.react —— 纯浪费，还会拖慢主图。
+    if (k !== lastK) {
+      lastK = k;
+      state._subCut = startMs + k * 60000;
+      renderIntraday();
+    }
+    if (k < pmin) _subRAF = requestAnimationFrame(step);
+    else { state._subCut = null; _subRAF = null; }   // 最后一档 = 整根，不必再画一次
+  };
+  _subRAF = requestAnimationFrame(step);
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// ★ 2026-11-07 随机一局（任务书 R4）：随机品种 + 交易日 + 起播时刻。
+//   时段白名单 = 09:00–10:15 / 13:30–14:00 / 21:00–22:00（避开每节最后 1 小时）；
+//   约束 = 起点之后当日至少还有 12 根，否则重抽。品种取 bundle 里全部。
+// ═══════════════════════════════════════════════════════════════════════
+const _RAND_WINDOWS = [['09:00', '10:15'], ['13:30', '14:00'], ['21:00', '22:00']];
+function _inRandWindow(hhmm) {
+  return _RAND_WINDOWS.some(w => hhmm >= w[0] && hhmm < w[1]);
+}
+
+export function startRandomReplay() {
+  const syms = Object.keys(DB.data);
+  for (let tries = 0; tries < 80; tries++) {
+    const sym = syms[(Math.random() * syms.length) | 0];
+    const dd = DB.data[sym];
+    const per = dd.periods && dd.periods[state.period];
+    if (!per || !per.x || per.x.length < 120) continue;
+    const n = per.x.length;
+    const lo = 60, hi = n - 13;           // 前留 60 根预热，后留 12 根可推进
+    if (hi <= lo) continue;
+    const i = lo + ((Math.random() * (hi - lo)) | 0);
+    const hhmm = String(per.x[i]).slice(11, 16);
+    if (!_inRandWindow(hhmm)) continue;
+    if (per.day && per.day.length
+        && (i + 12 >= n || per.day[i + 12] !== per.day[i])) continue;
+    // 命中：直接建回放（不走 setContext，避免"先整段渲染再回放"的二次重绘）
+    state.replay = null;
+    state.sym = sym;
+    state.range = 'ALL';
+    state.sel = null;
+    state._lastViewKey = null;
+    state.mode = 'train';                 // 练习局固定训练态；交卷才切复看
+    try { localStorage.setItem('rt_mode', 'train'); } catch (e) {}
+    state.replay = makeReplay(i, {win: autoWin()});
+    const sp = $('rspeed') && +$('rspeed').value;
+    if (sp > 0) state.replay.stepMs = sp;
+    const rd = $('rdate'); if (rd) rd.value = String(per.x[i]).slice(0, 10);
+    beginSession();
+    setPlay(false);
+    renderAll();
+    toast(`随机开局 · ${dd.name} ${String(per.x[i]).slice(0, 16)} · 训练模式`);
+    return true;
+  }
+  toast('随机失败：80 次都没抽到合规起点');
+  return false;
+}
+
 export function startReplay() {
   // 回放 = 整段：先锁 ALL，否则"近N日"会把前面的 K 整段丢掉
   state.range = 'ALL';
@@ -246,6 +332,19 @@ export function exitReplay() {
   // ★ P2-4：有实质内容才弹评分报告（空会话不打扰）。放在 renderAll 之后，保证图表先复位
   const sc = lastScore();
   if (sc && (sc.nSim > 0 || sc.nMark > 0)) showReport(sc);
+  return rec;
+}
+
+// ★ 2026-11-07 交卷：收尾本局（不弹 CSV 下载）+ 结算卡 + 切复看模式看答案。
+//   与「退出回放」的区别：退出 = 结束走人（不切模式）；交卷 = 结束并对账，接着复盘。
+export function submitSession() {
+  if (!state.replay) { toast('当前没有进行中的回放'); return null; }
+  setPlay(false);                      // ★ 先停播放/清子步，再收尾
+  const rec = flushSession('exit');
+  const sc = lastScore();
+  setMode('review');
+  if (sc && (sc.nSim > 0 || sc.nMark > 0)) showReport(sc);
+  else toast('本局没有模拟单或标记，未计分');
   return rec;
 }
 
@@ -301,14 +400,26 @@ export function setPlay(on) {
           const hit = _openAbsList().find(it => it.abs > prev && it.abs <= R.abs);
           if (hit) { _setAbs(R, hit.abs); state.sel = hit.i; setPlay(false); renderAll(); return; }
         }
-        renderStep();
+        // ★ 2026-11-07：分时子步动画。快档（0.2s/根）跳过，否则 5 次重绘追不上 1 根。
+        if (R.stepMs >= 220) {
+          const d2 = pd();
+          const startMs = toDate(d2.x[R.abs]).getTime();
+          state._subCut = startMs + 60000;        // 先给 1 根，避免全空一帧
+          renderStep();
+          _animIntra(startMs, Math.max(1, +state.period || 5), R.stepMs);
+        } else {
+          state._subCut = null;
+          renderStep();
+        }
         if (R.abs >= N - 1) { setPlay(false); return; }
       }
       replayRAF = requestAnimationFrame(tick);
     };
     replayRAF = requestAnimationFrame(tick);
   } else {
-    try { renderTable(); } catch (e) {}   // 暂停/停止 → 同步一次右侧表格
+    _clearSub();                              // ★ 暂停/停止：子步停在半根 → 补成整根
+    try { renderIntraday(); } catch (e) {}
+    try { renderTable(); } catch (e) {}       // 暂停/停止 → 同步一次右侧表格
   }
   updateReplayUI();
 }

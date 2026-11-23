@@ -1,0 +1,746 @@
+{
+  "retrace_ma13": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "retrace_ma13",
+        "n": 15982,
+        "per_day": 20.6,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.161,
+        "L0_t": 0.52,
+        "L1_gross": 0.453,
+        "L1_net": -2.147,
+        "L1_t": -8.03,
+        "L1_winrate": 0.4128,
+        "stop_share": 0.3576,
+        "ratio": 0.174
+      }
+    ]
+  },
+  "cross_ma13": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "cross_ma13",
+        "n": 7945,
+        "per_day": 10.24,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.12,
+        "L0_t": -0.28,
+        "L1_gross": -0.13,
+        "L1_net": -2.73,
+        "L1_t": -7.26,
+        "L1_winrate": 0.4068,
+        "stop_share": 0.3782,
+        "ratio": -0.05
+      }
+    ]
+  },
+  "breakout_20": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "breakout_20",
+        "n": 5228,
+        "per_day": 6.74,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.321,
+        "L0_t": -0.53,
+        "L1_gross": -0.391,
+        "L1_net": -2.991,
+        "L1_t": -5.8,
+        "L1_winrate": 0.3919,
+        "stop_share": 0.4086,
+        "ratio": -0.15
+      }
+    ]
+  },
+  "tsmom_20": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "tsmom_20",
+        "n": 52223,
+        "per_day": 67.3,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.08,
+        "L0_t": 0.46,
+        "L1_gross": 0.226,
+        "L1_net": -2.374,
+        "L1_t": -15.67,
+        "L1_winrate": 0.4161,
+        "stop_share": 0.3565,
+        "ratio": 0.087
+      }
+    ]
+  },
+  "rev_2bar": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "rev_2bar",
+        "n": 22858,
+        "per_day": 29.46,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.167,
+        "L0_t": -0.61,
+        "L1_gross": 0.009,
+        "L1_net": -2.591,
+        "L1_t": -11.21,
+        "L1_winrate": 0.4251,
+        "stop_share": 0.3592,
+        "ratio": 0.003
+      }
+    ]
+  },
+  "vol_break": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "vol_break",
+        "n": 894,
+        "per_day": 1.15,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.246,
+        "L0_t": -0.16,
+        "L1_gross": -0.41,
+        "L1_net": -3.01,
+        "L1_t": -2.38,
+        "L1_winrate": 0.3546,
+        "stop_share": 0.5101,
+        "ratio": -0.158
+      }
+    ]
+  },
+  "pin_bar": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "pin_bar",
+        "n": 13029,
+        "per_day": 16.79,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.872,
+        "L0_t": -2.44,
+        "L1_gross": -0.721,
+        "L1_net": -3.321,
+        "L1_t": -10.73,
+        "L1_winrate": 0.4005,
+        "stop_share": 0.3729,
+        "ratio": -0.277
+      }
+    ]
+  },
+  "engulf": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "engulf",
+        "n": 23175,
+        "per_day": 29.86,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.047,
+        "L0_t": -0.18,
+        "L1_gross": 0.048,
+        "L1_net": -2.552,
+        "L1_t": -10.98,
+        "L1_winrate": 0.4208,
+        "stop_share": 0.3543,
+        "ratio": 0.019
+      }
+    ]
+  },
+  "spring": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "spring",
+        "n": 1033,
+        "per_day": 1.33,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.707,
+        "L0_t": 0.54,
+        "L1_gross": 0.682,
+        "L1_net": -1.918,
+        "L1_t": -1.8,
+        "L1_winrate": 0.4308,
+        "stop_share": 0.3485,
+        "ratio": 0.262
+      }
+    ]
+  },
+  "upthrust": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "upthrust",
+        "n": 1102,
+        "per_day": 1.42,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.838,
+        "L0_t": -0.62,
+        "L1_gross": -0.334,
+        "L1_net": -2.934,
+        "L1_t": -2.46,
+        "L1_winrate": 0.4029,
+        "stop_share": 0.3793,
+        "ratio": -0.129
+      }
+    ]
+  },
+  "hl_pullback": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "hl_pullback",
+        "n": 24098,
+        "per_day": 31.05,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.098,
+        "L0_t": 0.38,
+        "L1_gross": 0.142,
+        "L1_net": -2.458,
+        "L1_t": -10.95,
+        "L1_winrate": 0.4141,
+        "stop_share": 0.365,
+        "ratio": 0.055
+      }
+    ]
+  },
+  "fvg_retrace": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "fvg_retrace",
+        "n": 1245,
+        "per_day": 1.6,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.45,
+        "L0_t": -0.42,
+        "L1_gross": -0.091,
+        "L1_net": -2.691,
+        "L1_t": -2.89,
+        "L1_winrate": 0.4193,
+        "stop_share": 0.339,
+        "ratio": -0.035
+      }
+    ]
+  },
+  "equal_hl_sweep": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "equal_hl_sweep",
+        "n": 389,
+        "per_day": 0.5,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -2.293,
+        "L0_t": -1.11,
+        "L1_gross": -1.576,
+        "L1_net": -4.176,
+        "L1_t": -2.42,
+        "L1_winrate": 0.3728,
+        "stop_share": 0.4216,
+        "ratio": -0.606
+      }
+    ]
+  },
+  "boll_rsi": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "boll_rsi",
+        "n": 443,
+        "per_day": 0.57,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 1.842,
+        "L0_t": 0.89,
+        "L1_gross": 1.979,
+        "L1_net": -0.621,
+        "L1_t": -0.34,
+        "L1_winrate": 0.4605,
+        "stop_share": 0.3296,
+        "ratio": 0.761
+      }
+    ]
+  },
+  "rsi_oversold": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "rsi_oversold",
+        "n": 5322,
+        "per_day": 6.86,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -1.43,
+        "L0_t": -2.48,
+        "L1_gross": -1.261,
+        "L1_net": -3.861,
+        "L1_t": -7.87,
+        "L1_winrate": 0.413,
+        "stop_share": 0.3517,
+        "ratio": -0.485
+      }
+    ]
+  },
+  "rsi_cross": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "rsi_cross",
+        "n": 1567,
+        "per_day": 2.02,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -2.015,
+        "L0_t": -2.04,
+        "L1_gross": -1.47,
+        "L1_net": -4.07,
+        "L1_t": -4.93,
+        "L1_winrate": 0.4129,
+        "stop_share": 0.3318,
+        "ratio": -0.565
+      }
+    ]
+  },
+  "rsi_divergence": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "rsi_divergence",
+        "n": 3890,
+        "per_day": 5.01,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.235,
+        "L0_t": -0.39,
+        "L1_gross": -1.539,
+        "L1_net": -4.139,
+        "L1_t": -7.51,
+        "L1_winrate": 0.4118,
+        "stop_share": 0.3864,
+        "ratio": -0.592
+      }
+    ]
+  },
+  "boll_meanrev": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "boll_meanrev",
+        "n": 5636,
+        "per_day": 7.26,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.322,
+        "L0_t": -0.58,
+        "L1_gross": -0.406,
+        "L1_net": -3.006,
+        "L1_t": -6.7,
+        "L1_winrate": 0.4202,
+        "stop_share": 0.4049,
+        "ratio": -0.156
+      }
+    ]
+  },
+  "ha_trend": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "ha_trend",
+        "n": 52966,
+        "per_day": 68.26,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.046,
+        "L0_t": -0.27,
+        "L1_gross": -0.02,
+        "L1_net": -2.62,
+        "L1_t": -17.36,
+        "L1_winrate": 0.4148,
+        "stop_share": 0.3606,
+        "ratio": -0.008
+      }
+    ]
+  },
+  "macd": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "macd",
+        "n": 52963,
+        "per_day": 68.25,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.192,
+        "L0_t": 1.11,
+        "L1_gross": 0.118,
+        "L1_net": -2.482,
+        "L1_t": -16.37,
+        "L1_winrate": 0.4113,
+        "stop_share": 0.3609,
+        "ratio": 0.045
+      }
+    ]
+  },
+  "kdj": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "kdj",
+        "n": 52976,
+        "per_day": 68.27,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": -0.034,
+        "L0_t": -0.2,
+        "L1_gross": -0.012,
+        "L1_net": -2.612,
+        "L1_t": -17.21,
+        "L1_winrate": 0.4136,
+        "stop_share": 0.3606,
+        "ratio": -0.005
+      }
+    ]
+  },
+  "cci": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "cci",
+        "n": 23711,
+        "per_day": 30.56,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.297,
+        "L0_t": 1.13,
+        "L1_gross": 0.258,
+        "L1_net": -2.342,
+        "L1_t": -10.33,
+        "L1_winrate": 0.4168,
+        "stop_share": 0.3653,
+        "ratio": 0.099
+      }
+    ]
+  },
+  "roc": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "roc",
+        "n": 51965,
+        "per_day": 66.97,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.368,
+        "L0_t": 2.09,
+        "L1_gross": 0.368,
+        "L1_net": -2.232,
+        "L1_t": -14.51,
+        "L1_winrate": 0.4174,
+        "stop_share": 0.3538,
+        "ratio": 0.142
+      }
+    ]
+  },
+  "sar": {
+    "verdict": {
+      "n_sym": 1,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 1,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "EG",
+        "name_cn": "乙二醇",
+        "signal": "sar",
+        "n": 52976,
+        "per_day": 68.27,
+        "days": 776,
+        "cost_pts": 2.6,
+        "L0_gross": 0.124,
+        "L0_t": 0.72,
+        "L1_gross": 0.074,
+        "L1_net": -2.526,
+        "L1_t": -16.67,
+        "L1_winrate": 0.4151,
+        "stop_share": 0.3597,
+        "ratio": 0.029
+      }
+    ]
+  }
+}

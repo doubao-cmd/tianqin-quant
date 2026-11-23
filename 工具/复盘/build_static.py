@@ -88,6 +88,8 @@ def build_stats(df: pd.DataFrame, exc: pd.DataFrame, n_closes: int,
     · `sum_amount = slip × 手数 × 合约乘数`
     """
     pnl = pd.to_numeric(df["盈亏"], errors="coerce")
+    fee = pd.to_numeric(df.get("手续费"), errors="coerce") if "手续费" in df.columns else pd.Series(index=df.index, dtype=float)
+    net = pd.to_numeric(df.get("净盈亏"), errors="coerce") if "净盈亏" in df.columns else pd.Series(index=df.index, dtype=float)
     settled = pnl.notna()
     p_null = df["平仓价"].isna()
     e_null = df["开仓价"].isna()
@@ -163,6 +165,10 @@ def build_stats(df: pd.DataFrame, exc: pd.DataFrame, n_closes: int,
         "win": win, "loss": loss, "flat": flat,
         "pnl_sum": float(p.sum()) if len(p) else 0.0,
         "pnl_mean": float(p.mean()) if len(p) else None,
+        # ★ 2026-10-24 新增：手续费与净利（毛利的另一侧）
+        "fee_sum": float(fee[settled].sum()) if fee.notna().any() else 0.0,
+        "net_sum": float(net[settled].sum()) if net.notna().any() else None,
+        "net_mean": float(net[settled].mean()) if net.notna().any() else None,
         "win_rate": (win / n_settled) if n_settled else None,
         "avg_win": avg_win, "avg_loss": avg_loss, "payoff": payoff,
         "hold_median": float(h.median()) if len(h) else None,
@@ -292,6 +298,8 @@ def build_data() -> dict:
                 "mfe": None if pd.isna(r["MFE"]) else round(float(r["MFE"]), 0),
                 "mae": None if pd.isna(r["MAE"]) else round(float(r["MAE"]), 0),
                 "pnl": None if pd.isna(r["盈亏"]) else round(float(r["盈亏"]), 0),
+                "fee": None if pd.isna(r.get("手续费")) else round(float(r["手续费"]), 0),
+                "net": None if pd.isna(r.get("净盈亏")) else round(float(r["净盈亏"]), 0),
                 "r": None if pd.isna(r["原因"]) else str(r["原因"]),
                 "k": None if pd.isna(r["配对"]) else str(r["配对"]),
                 "h": None if pd.isna(r["持仓分钟"]) else round(float(r["持仓分钟"]), 0),
@@ -389,7 +397,10 @@ def build_data() -> dict:
     print(f"[P1] n={stats_all['n_trades']} settled={stats_all['n_settled']} "
           f"takeover={stats_all['n_takeover']} open={stats_all['n_open']} "
           f"win/loss/flat={stats_all['win']}/{stats_all['loss']}/{stats_all['flat']} "
-          f"pnl={stats_all['pnl_sum']:.0f}", flush=True)
+          f"pnl={stats_all['pnl_sum']:.0f} "
+          f"fee={-(stats_all['fee_sum'] or 0):.0f} "
+          f"net={(stats_all['net_sum'] if stats_all['net_sum'] is not None else stats_all['pnl_sum']):.0f}",
+          flush=True)
     print(f"[P1] slip n={sl['n_ok']} worse={sl['worse_n']}/{sl['n_ok']} "
           f"median={sl['median']:.2f} sum={sl['sum_amount']:.0f}", flush=True)
     print("[P1] by_symbol: " + " | ".join(
@@ -978,11 +989,13 @@ function renderTable() {
     '<table><thead><tr><th>方向</th><th>手数</th><th>开仓</th><th>盈亏</th></tr></thead><tbody>';
   rows.forEach(t => {
     const cls = t.d === '多' ? 'up' : 'down';
-    const pc = t.pnl == null ? '' : (t.pnl > 0 ? 'up' : (t.pnl < 0 ? 'down' : ''));
-    html += `<tr data-i="${t.i}" class="${state.sel===t.i?'on':''}">` +
+    const v = (t.net != null ? t.net : t.pnl);
+    const pc = v == null ? '' : (v > 0 ? 'up' : (v < 0 ? 'down' : ''));
+    const tip = (t.pnl != null && t.fee != null) ? `毛利 ${Math.round(t.pnl)} / 手续费 ${Math.round(t.fee)} / 净 ${Math.round(t.net ?? t.pnl)}` : '';
+    html += `<tr data-i="${t.i}" class="${state.sel===t.i?'on':''}" title="${tip}">` +
       `<td class="${cls}">${t.d}</td><td>${t.q}</td>` +
       `<td>${t.t ? t.t.slice(5,16) : '—'}</td>` +
-      `<td class="${pc}">${t.e == null ? '<span class="muted">接管</span>' : (t.pnl==null?'—':sgn(t.pnl))}</td></tr>`;
+      `<td class="${pc}">${t.e == null ? '<span class="muted">接管</span>' : (v==null?'—':sgn(v))}</td></tr>`;
   });
   html += '</tbody></table>';
   $('tbody').innerHTML = html;
@@ -1023,7 +1036,8 @@ function renderDetail() {
     `<div>平 ${t.x ? t.x.slice(5,16) : '—'} @ ${f1(t.p)}</div>` +
     `<div>止损 ${f2(t.s)}　计划 ${f2(t.ps)}</div>` +
     `<div>开仓时 MA13 斜率 ${num2(slope)} ｜ 距MA ${num2(dist)} ATR</div>` +
-    `<div>MFE <span class="up">${sgn(t.mfe)}</span>　MAE <span class="down">${sgn(t.mae)}</span>　盈亏 <b>${sgn(t.pnl)}</b></div>` +
+    `<div>MFE <span class="up">${sgn(t.mfe)}</span>　MAE <span class="down">${sgn(t.mae)}</span></div>` +
+    `<div>毛利 <b>${sgn(t.pnl)}</b>　手续费 <span class="muted">${t.fee==null?'—':Math.round(t.fee)}</span>　净 <b class="${(t.net ?? t.pnl) > 0 ? 'up' : ((t.net ?? t.pnl) < 0 ? 'down' : '')}">${sgn(t.net ?? t.pnl)}</b></div>` +
     `<div class="muted">${esc(t.r)}　持仓 ${t.h==null?'—':t.h+' 分'}</div>` +
     `<button id="clr" style="margin-top:4px;width:100%">取消选中</button>`;
   const b = $('clr'); if (b) b.onclick = () => { state.sel = null; renderAll(); };
@@ -1051,7 +1065,8 @@ function renderStats() {
   $('stats').innerHTML = `
     <div class="stat-h">全样本（6 品种）</div>
     <div class="stat-line">总交易 <b>${s.n_trades}</b> ｜ 已结算 <b>${s.n_settled}</b> ｜ 接管 <b>${s.n_takeover}</b>（未计） ｜ 未平 <b>${s.n_open}</b></div>
-    <div class="stat-line">合计 <b class="${s.pnl_sum >= 0 ? 'up' : 'down'}">${money(s.pnl_sum)}</b> 元 ｜ 均值 ${num0(s.pnl_mean)} ｜ 胜率 <b>${pct(s.win, s.n_settled)}</b></div>
+    <div class="stat-line">合计毛利 <b class="${s.pnl_sum >= 0 ? 'up' : 'down'}">${money(s.pnl_sum)}</b> 元 ｜ 手续费 ${money(-(s.fee_sum || 0))} ｜ <b>净利 <span class="${(s.net_sum ?? s.pnl_sum) >= 0 ? 'up' : 'down'}">${money(s.net_sum ?? s.pnl_sum)}</span></b></div>
+    <div class="stat-line">均值（净） ${num0(s.net_mean ?? s.pnl_mean)} ｜ 胜率 <b>${pct(s.win, s.n_settled)}</b></div>
     <div class="stat-line">盈 ${s.win} / 亏 ${s.loss} / 平 ${s.flat} ｜ 均盈 ${money(s.avg_win)} ｜ 均亏 ${money(s.avg_loss)} ｜ 盈亏比 ${num2(s.payoff)}</div>
     <div class="stat-line">持仓中位 ${num0(s.hold_median)} 分 ｜ 均值 ${num0(s.hold_mean)} 分</div>
     <div class="stat-line muted">A2 覆盖 ${ex.n}/${ex.n_closes}（${cov}）｜ MFE 中位 ${money(ex.mfe_median)} ｜ MAE 中位 ${money(ex.mae_median)}</div>

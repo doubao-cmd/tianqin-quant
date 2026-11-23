@@ -5,7 +5,7 @@
 复用原 build_static.py 的数据逻辑（指标全量算完再裁窗口，僵尸腿/吸附/体检口径不变）。
 """
 from __future__ import annotations
-import json, math, re, sys
+import json, math, os, re, sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -74,6 +74,7 @@ SECTOR_FINE = {
     "LH": "农产品", "RR": "农产品",
     # 其他
     "SP": "轻工", "RU": "轻工", "NR": "轻工", "UR": "轻工", "PF": "轻工", "PS": "轻工",
+    "LG": "轻工",   # ★ 2026-11-02 原木（木材链，与纸浆 SP / 橡胶 RU 同类）
     "LC": "新能源",
 }
 
@@ -147,6 +148,30 @@ def _sector_panel(out: dict) -> dict:
     }
 
 
+def _last_atr(blk: dict, n: int = 14):
+    """从 5min 的 o/h/l/c 现算**最后一根**的 ATR14。
+
+    ★ 2026-11-07（R-A）：指标搬到前端后 bundle 里不再有 `periods['5']['atr']`，
+      而风险面板是**构建期**用 Python 算的，读不到就静默退化成
+      "缺 ATR/价格/乘数"、手数全空（真实浏览器实测确认过）。
+      这里按 features.atr 的同一口径补算，只算尾部 n+1 根：
+        tr[j]  = max(H-L, |H-prevC|, |L-prevC|)，prevC[0]=close[0]
+        atr[j] = mean(tr[max(1, j-n) : j])   ← 右端不含 tr[j]，非 Wilder
+    """
+    h, l, c = blk.get("h") or [], blk.get("l") or [], blk.get("c") or []
+    m = len(c)
+    if m < 3 or len(h) != m or len(l) != m:
+        return None
+    j = m - 1
+    a = max(1, j - n)
+    s, cnt = 0.0, 0
+    for k in range(a, j):
+        prev_c = c[k - 1] if k > 0 else c[0]
+        s += max(h[k] - l[k], abs(h[k] - prev_c), abs(l[k] - prev_c))
+        cnt += 1
+    return (s / cnt) if cnt else None
+
+
 def _risk_panel(out: dict) -> dict:
     """A20 风险贡献面板：按 RiskParSizer 公式算每腿「参考手数」，给出名义/风险占比。
 
@@ -191,12 +216,15 @@ def _risk_panel(out: dict) -> dict:
             continue
         ind = (d.get("periods") or {}).get("5") or {}
         atr_s, ma_s = ind.get("atr"), ind.get("ma")
+        # ★ 指标已搬到前端 ⇒ bundle 里没有 atr 数组，改从 o/h/l/c 现算最后一根
+        atr_val = (float(atr_s[-1]) if (atr_s and atr_s[-1] is not None)
+                   else _last_atr(ind))
         price = None
         try:
             price = float(d["last"])
         except Exception:
             pass
-        atr = float(atr_s[-1]) if (atr_s and atr_s[-1] is not None) else None
+        atr = float(atr_val) if (atr_val and atr_val > 0) else None
         mult = float(d.get("mult") or 0)
         tick = float(d.get("tick") or 0)
         if not (price and price > 0 and mult > 0 and tick > 0 and atr and atr > 0):
@@ -270,6 +298,13 @@ def _pool_epochs() -> dict:
 
     返回 {"source","cycle_days","restarts","epochs":[{t,t_last,keys,names,restarts}]}
     """
+    # ★★ 2026-11-07（R1）：回测成交（2026 全年）下**不切池子纪元**。
+    #   纪元是从实盘台账 START 行解析的，最早一条是 2026-10-08；
+    #   而回测成交覆盖 01-05 起整整一年 ⇒ 若照切，只有 501/6503 笔落进纪元，
+    #   面板会显示"总计 501 笔"，静默丢掉 92% 的成交（实测）。宁可不用，不可错算。
+    if SOURCE == "backtest":
+        return {"source": "backtest", "cycle_days": 5, "restarts": 0, "epochs": [],
+                "note": "回测成交：池子纪元属实盘概念（台账 START 行），本模式不切段"}
     import csv as _csv
     import re as _re
 
@@ -519,9 +554,17 @@ def _freshness_payload():
             "archive_total": info.get("archive_total_rows"),
             "archive_new": info.get("archive_new_rows")}
 
-# ★ 复盘窗口（用户 2026-10-18：不需要 3 年，只要这一个月）
-WIN_DAYS = 30          # 所有周期统一保留最近 30 天（"这一个月"）
+# ★ 复盘窗口
+#   2026-10-18：用户要"这一个月" ⇒ WIN_DAYS=30
+#   2026-11-07：用户要"数据更新到 26 年一整年" ⇒ 改成按**绝对起点** WIN_START 起算。
+#   两者并存：WIN_START 优先；设成 None 才回退到 WIN_DAYS。
+WIN_START = pd.Timestamp("2026-01-01")   # 全年（00_总览口径：2026 年 1 月 1 日起）
+WIN_DAYS = 30                            # 回退用：WIN_START=None 时生效
 LEAD_IN_DAYS = 1       # 窗口起点再往前 1 天（夜盘归属次日，保证首根完整）
+
+# ★ 成交源（R1，2026-11-07）：默认 **backtest**（回测成交，全年、每品种几百笔）
+#   `RT_SOURCE=ledger` 可切回实盘台账（旧行为，只有 10-08 之后百余笔）。
+SOURCE = (os.environ.get("RT_SOURCE") or "backtest").strip().lower()
 
 
 def _x(s, period):
@@ -555,6 +598,8 @@ def _clean_nan(o):
 
 def build_stats(df, exc, n_closes, order=None, with_by_symbol=False):
     pnl = pd.to_numeric(df["盈亏"], errors="coerce")
+    fee = pd.to_numeric(df.get("手续费"), errors="coerce") if "手续费" in df.columns else pd.Series(index=df.index, dtype=float)
+    net = pd.to_numeric(df.get("净盈亏"), errors="coerce") if "净盈亏" in df.columns else pd.Series(index=df.index, dtype=float)
     settled = pnl.notna()
     p_null = df["平仓价"].isna()
     e_null = df["开仓价"].isna()
@@ -605,31 +650,65 @@ def build_stats(df, exc, n_closes, order=None, with_by_symbol=False):
     return _clean_nan({"n_trades": n_trades, "n_settled": n_settled, "n_takeover": n_takeover,
         "n_open": n_open, "win": win, "loss": loss, "flat": flat,
         "pnl_sum": float(p.sum()) if len(p) else 0.0, "pnl_mean": float(p.mean()) if len(p) else None,
+        # ★ 2026-10-24：手续费与净利（毛利的另一侧，供前端 stat-line 显示）
+        "fee_sum": float(fee[settled].sum()) if fee.notna().any() else 0.0,
+        "net_sum": float(net[settled].sum()) if net.notna().any() else None,
+        "net_mean": float(net[settled].mean()) if net.notna().any() else None,
         "win_rate": (win / n_settled) if n_settled else None, "avg_win": avg_win, "avg_loss": avg_loss,
         "payoff": payoff, "hold_median": float(h.median()) if len(h) else None,
         "hold_mean": float(h.mean()) if len(h) else None, "by_reason": by_reason,
         "by_symbol": by_symbol, "slippage": slippage, "excursion": excursion})
 
 
+def _load_trade_frames():
+    """按 SOURCE 返回 (全量成交表, 每品种取表函数, 事件表函数, 起点日, 终点日)。
+
+    backtest = 06_MA13超短线 探针窗 txt（2026 全年，每品种几百笔）
+    ledger   = 实盘台账（旧行为，2026-10-08 起百余笔）
+    """
+    if SOURCE == "backtest":
+        import backtest_ledger as BTL
+        all_df = []
+        for key, (cn, _c) in data.RECENT_SPECS.items():
+            if key in EXCLUDED_SYMBOLS:
+                continue
+            t = BTL.load_trades(cn)
+            if len(t):
+                t = t.copy()
+                t["key"] = key
+                all_df.append(t)
+        df = pd.concat(all_df, ignore_index=True) if all_df else pd.DataFrame()
+        ft = pd.to_datetime(df["开仓时间"], errors="coerce").dropna() if len(df) else pd.Series(dtype="datetime64[ns]")
+        fx = pd.to_datetime(df["平仓时间"], errors="coerce").dropna() if len(df) else pd.Series(dtype="datetime64[ns]")
+        s = ft.min().normalize() if len(ft) else pd.Timestamp("2026-01-01")
+        e = fx.max().normalize() if len(fx) else pd.Timestamp.now().normalize()
+        return df, BTL.load_trades, BTL.load_events, s, e
+
+    led = analyze.load_ledger()
+    ft = pd.to_datetime(led.loc[led["类型"] == "FILL", "记录时间"], errors="coerce").dropna()
+    if len(ft):
+        s, e = ft.min().normalize(), ft.max().normalize()
+    else:
+        e = pd.Timestamp.now().normalize()
+        s = e - pd.Timedelta(days=WIN_DAYS)
+    return led, T.load_trades, T.load_events, s, e
+
+
 def build_data():
     out = {}
-    ledger = analyze.load_ledger()
-    exc_all = analyze.excursion_rows(ledger)
-    n_closes_all = analyze.closes_count(ledger)
-    fill_t = pd.to_datetime(ledger.loc[ledger["类型"] == "FILL", "记录时间"], errors="coerce").dropna()
-    if len(fill_t):
-        sim_start = fill_t.min().normalize()
-        sim_end = fill_t.max().normalize()
-    else:
-        sim_end = pd.Timestamp.now().normalize()
-        sim_start = sim_end - pd.Timedelta(days=WIN_DAYS)
-    # ★ 窗口 = 最近 WIN_DAYS 天（"这一个月"），锚定在模拟盘最新成交日
+    ledger, load_trades_fn, load_events_fn, sim_start, sim_end = _load_trade_frames()
+    # ★ 回测源无 EXCURSION 明细 ⇒ 必须是 None（空 DataFrame 会进 excursion_stats 找 'MFE' 列然后 KeyError）
+    exc_all = analyze.excursion_rows(ledger) if SOURCE != "backtest" else None
+    n_closes_all = analyze.closes_count(ledger) if SOURCE != "backtest" else 0
+    # ★ 窗口：WIN_START 优先（2026 全年），否则回退到"最近 WIN_DAYS 天"
     END = sim_end
-    win_start = END - pd.Timedelta(days=WIN_DAYS)
-    start_i = win_start - pd.Timedelta(days=LEAD_IN_DAYS)
-    start_d = win_start - pd.Timedelta(days=LEAD_IN_DAYS)
-    print(f"[window] 数据窗口 = 最近 {WIN_DAYS} 天：{start_i.date()} ~ {END.date()} "
-          f"（模拟盘 {sim_start.date()} ~ {sim_end.date()}）", flush=True)
+    won = WIN_START if WIN_START is not None else (END - pd.Timedelta(days=WIN_DAYS))
+    # ★ 预热：指标改前端算后，切片左端的前 ~35 根没有值 ⇒ 分钟级留 2 天、日线留 45 天
+    start_i = won - pd.Timedelta(days=2)
+    start_d = won - pd.Timedelta(days=45)
+    print(f"[window] 数据窗口：{start_i.date()} ~ {END.date()}"
+          f"（{'全年' if WIN_START is not None else f'最近 {WIN_DAYS} 天'}）"
+          f" | 成交源 = {SOURCE}（{sim_start.date()} ~ {sim_end.date()}）", flush=True)
 
     all_tr = []
     for key in data.RECENT_SPECS:
@@ -654,38 +733,18 @@ def build_data():
                 df = df.assign(x=df["datetime"].dt.normalize() + pd.Timedelta(days=1))
             else:
                 df = df.assign(x=data.to_beijing(df["datetime"]))
-            F = features.build_custom(df)
-            cf = F["close"].astype(float)
-            ema12 = cf.ewm(span=12, adjust=False).mean()
-            ema26 = cf.ewm(span=26, adjust=False).mean()
-            dif = ema12 - ema26
-            dea = dif.ewm(span=9, adjust=False).mean()
-            hist = (dif - dea) * 2
-            delta = cf.diff()
-            up = delta.clip(lower=0).rolling(14).mean()
-            dn = (-delta.clip(upper=0)).rolling(14).mean()
-            rs = up / dn.replace(0, np.nan)
-            F["dif"], F["dea"], F["hist"] = dif, dea, hist
-            F["rsi"] = 100 - 100 / (1 + rs)
-            low9 = F["low"].astype(float).rolling(9).min()
-            high9 = F["high"].astype(float).rolling(9).max()
-            rsv = (cf - low9) / (high9 - low9).replace(0, np.nan) * 100
-            F["k"] = rsv.ewm(com=2, adjust=False).mean()
-            F["d"] = F["k"].ewm(com=2, adjust=False).mean()
-            F["j"] = 3 * F["k"] - 2 * F["d"]
-            f = (F[F["x"] >= start_d] if p == 1440
-                 else F[F["x"].dt.normalize() >= start_i]).reset_index(drop=True)
+            # ★ 2026-11-07（R-A）：指标不再预烘，改为前端装载时现算（core/indicators.js）。
+            #   理由：全年 5min 每根 154 字节里 90 字节是指标（58%），不搬走塞不进单文件。
+            #   ⚠️ 前端从**切片后的数组**起算，左端前 ~35 根没有值 ⇒ 必须留足预热：
+            #      分钟级 2 天，日线 45 天（日线 35 根才够 MA26/MACD）。
+            f = (df[df["x"] >= start_d] if p == 1440
+                 else df[df["x"].dt.normalize() >= start_i]).reset_index(drop=True)
             periods[str(p)] = {
                 "x": [_x(v, p) for v in f["x"]],
                 "o": _arr(f["open"], 1), "h": _arr(f["high"], 1), "l": _arr(f["low"], 1),
                 "c": _arr(f["close"], 1),
                 "v": [int(v) if pd.notna(v) else 0 for v in f["volume"]],
-                "ma": _arr(f["ma"], 2), "atr": _arr(f["atr"], 2),
-                "slope": _arr(f["slope"], 3), "atr_dist": _arr(f["atr_dist"], 3),
-                "boll_u": _arr(f["boll_upper"], 2), "boll_m": _arr(f["boll_mid"], 2), "boll_l": _arr(f["boll_lower"], 2),
                 "day": [pd.Timestamp(sessions.trading_day_of_bj(v)).strftime("%Y-%m-%d") for v in f["x"]],
-                "dif": _arr(f["dif"], 2), "dea": _arr(f["dea"], 2), "hist": _arr(f["hist"], 2),
-                "rsi": _arr(f["rsi"], 2), "k": _arr(f["k"], 2), "d": _arr(f["d"], 2), "j": _arr(f["j"], 2),
             }
         grid5 = pd.DatetimeIndex(pd.to_datetime(periods["5"]["x"]))
         xs5_set = set(periods["5"]["x"])
@@ -695,14 +754,14 @@ def build_data():
             if i < 0: i = 0
             if i >= len(grid5): i = len(grid5) - 1
             return grid5[i].strftime("%Y-%m-%d %H:%M")
-        ev = T.load_events(cn)
+        ev = load_events_fn(cn)
         events = []
         for _, r in ev.iterrows():
             if pd.isna(r["价格"]): continue
             events.append({"t": _snap5(r["时间"]),
                 "day": pd.Timestamp(sessions.trading_day_of_bj(r["时间"])).strftime("%Y-%m-%d"),
                 "y": r["类型"], "d": r["方向"], "q": int(r["手数"]), "p": float(r["价格"])})
-        tr = T.load_trades(cn)
+        tr = load_trades_fn(cn)
         trades = []
         for i, r in tr.iterrows():
             en = r["开仓时间"]; ex = r["平仓时间"]
@@ -719,6 +778,8 @@ def build_data():
                 "mfe": None if pd.isna(r["MFE"]) else round(float(r["MFE"]), 0),
                 "mae": None if pd.isna(r["MAE"]) else round(float(r["MAE"]), 0),
                 "pnl": None if pd.isna(r["盈亏"]) else round(float(r["盈亏"]), 0),
+                "fee": None if pd.isna(r.get("手续费")) else round(float(r["手续费"]), 0),
+                "net": None if pd.isna(r.get("净盈亏")) else round(float(r["净盈亏"]), 0),
                 "r": None if pd.isna(r["原因"]) else str(r["原因"]),
                 "k": None if pd.isna(r["配对"]) else str(r["配对"]),
                 "h": None if pd.isna(r["持仓分钟"]) else round(float(r["持仓分钟"]), 0)})
@@ -822,9 +883,16 @@ def build_data():
         tr_clean = tr[~zmask].copy()
         tr_clean["key"] = key
         all_tr.append(tr_clean)
-        exc_sym = exc_all[exc_all["品种"] == cn] if len(exc_all) else exc_all
-        led_sym = ledger[ledger["品种"] == cn]
-        stats = build_stats(tr_clean, exc_sym, analyze.closes_count(led_sym))
+        # ★ 回测源没有台账的 EXCURSION 行 ⇒ 传 None（build_stats 会跳过 excursion 段），
+        #   不能传空 DataFrame：那样它不是 None，会进去找 'MFE' 列然后 KeyError。
+        exc_sym = None if SOURCE == "backtest" else (
+            exc_all[exc_all["品种"] == cn] if len(exc_all) else exc_all)        # ★ 回测源没有「已平仓流水条数」这个概念（台账才有）；用成交表里已平仓的笔数顶上，
+        #   否则 closes_count 会因为 ledger 缺「类型」列直接抛 KeyError。
+        if SOURCE == "backtest":
+            n_closes_sym = int(len(tr_clean))
+        else:
+            n_closes_sym = analyze.closes_count(ledger[ledger["品种"] == cn])
+        stats = build_stats(tr_clean, exc_sym, n_closes_sym)
         out[key] = {"name": cn, "last": round(last_price, 1), "mult": float(data.MULT.get(key, 1)),
             # ★ P2-1 模拟下单：tick=最小变动价位、comm=每手手续费(元/手,单边)——权威来源=项目根 config_symbols.py
             "tick": _SYMBOLS.get(key, (None, None, 1, 1))[3], "comm": float(_COST.get(key, 0.0)),
@@ -843,14 +911,32 @@ def build_data():
           f"takeover={stats_all['n_takeover']} open={stats_all['n_open']} "
           f"win/loss/flat={stats_all['win']}/{stats_all['loss']}/{stats_all['flat']} "
           f"pnl={stats_all['pnl_sum']:.0f}", flush=True)
-    print(f"[P1] slip n={sl['n_ok']} worse={sl['worse_n']}/{sl['n_ok']} "
-          f"median={sl['median']:.2f} sum={sl['sum_amount']:.0f}", flush=True)
+    # ★ 回测源没有台账的"报价 vs 成交价"配对 ⇒ 滑点统计为空（median/sum 都是 None），
+    #   直接格式化会 TypeError。这里只做显示，不影响产物。
+    if sl.get("median") is None:
+        print(f"[P1] slip n=0（{SOURCE} 源无台账报价，滑点不适用）", flush=True)
+    else:
+        print(f"[P1] slip n={sl['n_ok']} worse={sl['worse_n']}/{sl['n_ok']} "
+              f"median={sl['median']:.2f} sum={sl['sum_amount']:.0f}", flush=True)
     print("[P1] by_symbol: " + " | ".join(
         f"{x['key']} {x['n']}/{x['pnl_n']}/{x['sum']:.0f}" for x in stats_all["by_symbol"]), flush=True)
+    # ★ 数据截止日以**最后一根 5min bar** 为准，不用最后一笔成交日：
+    #   回测成交到 10-30 就没了，但行情到 11-06，角标写 10-30 会让人以为数据没更新。
+    try:
+        _lastx = max(str(_o["periods"]["5"]["x"][-1]) for _o in out.values()
+                     if _o.get("periods") and (_o["periods"].get("5") or {}).get("x"))
+        _data_end = _lastx[:10]
+    except Exception:
+        _data_end = sim_end.strftime("%Y-%m-%d")
     out["_meta"] = {
-        "data_end": sim_end.strftime("%Y-%m-%d"),
+        "data_end": _data_end,
         "sim_start": sim_start.strftime("%Y-%m-%d"),
         "window_days": WIN_DAYS,
+        # ★ 2026-11-07（R1/R-A）：窗口起点与成交源写进 _meta，前端角标据此显示
+        #   「2026 全年 · 回测成交」，不再靠猜。
+        "window_start": won.strftime("%Y-%m-%d"),
+        "source": "backtest" if SOURCE == "backtest" else "ledger",
+        "source_label": "回测成交" if SOURCE == "backtest" else "实盘台账",
         "built": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
         "n_symbols": len(out),
         # ★ S4/A-freshness：把「数据更新于 X 小时前」的角标数据带进 bundle。

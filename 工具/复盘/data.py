@@ -65,11 +65,58 @@ RECENT_SPECS = {
     "EG": ("乙二醇", "KQ.m@DCE.eg"),
     "FU": ("燃料油", "KQ.m@SHFE.fu"),
     "BU": ("石油沥青", "KQ.m@SHFE.bu"),
+    # ★ 2026-11-02：对齐 workbench.json 当前池 JD/RU/MA/EG/P/LG（11-02 14:41 加原木六腿）。
+    #   此前终端只有 10 个旧池品种，当前池的 RU / LG 根本没有数据 ⇒ 点进去空图。
+    #   旧池的 M/SR/JM/SA/FU/BU **保留**（各有 15~41 笔历史成交，是复盘素材，不是死数据）。
+    "RU": ("天然橡胶", "KQ.m@SHFE.ru"),
+    "LG": ("原木",   "KQ.m@DCE.lg"),
 }
-# 合约乘数（元/点/手）—— 与 config_symbols.SYMBOLS 第 3 项逐一核对过（2026-10-23）
+# 合约乘数（元/点/手）—— 与 config_symbols.SYMBOLS 第 3 项逐一核对过（2026-10-24 补 RU/AG/SN）
+#   ★ 2026-10-24 修：原表缺 RU/AG/SN，而台账里已有这三个品种的成交 ⇒
+#     `MULT.get(key, 1)` 静默兜底成 1，白银(15) 的盈亏被低算 15 倍、天然橡胶(10) 低算 10 倍。
+#     锡(SN) 乘数本来就是 1，属"恰好正确"，一并显式登记避免误解。
 MULT = {"M": 10, "P": 10, "SR": 10, "JM": 60, "JD": 10, "EB": 5,
-        "MA": 10, "SA": 20, "EG": 10, "FU": 10, "BU": 10}
+        "MA": 10, "SA": 20, "EG": 10, "FU": 10, "BU": 10,
+        "RU": 10, "AG": 15, "SN": 1, "RB": 10, "V": 5, "LH": 16,
+        "LG": 90}   # ★ 2026-11-02 原木 90 立方米/手（config_symbols 核对）；漏登记会被兜底成 1，盈亏低估 90 倍
+
+# ---------------------------------------------------------------------------
+# 每手手续费（元，单边；开/平各收一次）—— 镜像自 config_symbols.COST / COMM_RATE
+#   （2026-10-24 逐项核对；遵守 D5 不 import config_symbols，config 改动须同步本表）
+#   · 比例品种（COMM_RATE 有值）：rate × 成交价 × 乘数 现算
+#   · 其余品种：取 COMM_COST 常数
+# ---------------------------------------------------------------------------
+COMM_COST = {
+    "MA": 2.0, "M": 1.5, "SA": 4.0, "P": 2.5, "RU": 3.0, "SR": 2.0,
+    "EG": 3.0, "SN": 3.0, "JD": 5.802, "JM": 9.1, "RB": 4.0, "V": 1.5,
+    "FU": 2.33, "BU": 2.213, "AG": 11.018,
+    "LG": 2.16,   # ★ 2026-11-02 原木（config_symbols.COST 核对）
+}
+COMM_RATE = {"FU": 5e-05, "BU": 5e-05, "AG": 5e-05}
+
+
+def comm_per_hand(key, price=None) -> float:
+    """单边每手手续费（元）。比例品种用现价现算；价格缺失/非正时回退常数快照。"""
+    k = str(key).upper()
+    rate = float(COMM_RATE.get(k, 0.0) or 0.0)
+    base = float(COMM_COST.get(k, 0.0) or 0.0)
+    if rate <= 0:
+        return base
+    try:
+        p = float(price)
+        mult = float(MULT[k])
+    except Exception:
+        return base
+    if not (p == p and p > 0 and mult > 0):
+        return base
+    return rate * p * mult
 CN2KEY = {cn: k for k, (cn, _c) in RECENT_SPECS.items()}
+# ★ 2026-10-24 补：台账里已有成交、但不在 RECENT_SPECS 的品种。
+#   缺了这三条时 `CN2KEY.get(中文名, 中文名.upper())` 会退化成中文名，
+#   再 `MULT.get(中文名, 1)` 静默取 1 ⇒ 白银盈亏被低算 15 倍、天然橡胶低算 10 倍。
+CN2KEY.update({"天然橡胶": "RU", "白银": "AG", "锡": "SN", "螺纹钢": "RB", "生猪": "LH"})
+# 品种代码 → 中文名（反向），供只用 key 的调用方查名字
+KEY2CN = {k: cn for cn, k in CN2KEY.items()}
 RECENT_PERIODS = (1, 5, 15, 1440)   # 1min 供左侧分时图；5/15/日供主图
 
 # ---------------------------------------------------------------------------
@@ -94,6 +141,12 @@ RECENT_META = {
     "EG": {"has_1015_break": True, "night_end": 23.0},
     "FU": {"has_1015_break": True, "night_end": 23.0},
     "BU": {"has_1015_break": True, "night_end": 23.0},
+    # ★ 2026-11-02 新增 RU/LG。口径不用猜，按抓回的实际 bar 时间戳判定（同日实测）：
+    #   RU 5min 末根 2026-11-02 22:55 ⇒ 有夜盘 21:00–23:00，night_end=23.0
+    #   LG 5min 末根 2026-11-02 14:55、且 1min 首根 08-31 14:35 起无 21:xx ⇒ **原木无夜盘**，night_end=0.0
+    #   has_1015_break 一律 True —— 已由 2026-10-23 实测推翻旧注释「SHFE 无小休」。
+    "RU": {"has_1015_break": True, "night_end": 23.0},
+    "LG": {"has_1015_break": True, "night_end": 0.0},   # ★ 实测无夜盘（勿按 DCE 默认填 23.0）
 }
 
 ENCODING = "utf-8-sig"        # ★ §6·11：所有 CSV 带 BOM（已实测 EF BB BF），必须 utf-8-sig
@@ -428,10 +481,44 @@ def load_recent(key: str, period=5) -> tuple[pd.DataFrame, dict]:
     return df, meta
 
 
+# ★ 2026-11-07：2026 全年窗口的保留起点。kline2026 不再"每次覆盖"，而是合并后按此裁剪。
+RETAIN_FROM = pd.Timestamp("2025-11-01")
+# 合并后的封顶根数（只对 1min 生效，理由见 _save_recent 注释）
+RECENT_MAX_BARS = {1: 12000}
+
+
 def _save_recent(df: pd.DataFrame, key: str, period: int) -> Path:
+    """写 `kline2026/{KEY}_{period}min.csv`。
+
+    ★★ 2026-11-07 改为 **合并**（原先是整文件覆盖）：
+       用户要求数据覆盖 2026 全年（`fetch_2026.py` 拉的是 15,954 根 5min，起点 2025-11）。
+       而日更走 `fetch_recent_all(data_length=8800)`，一次只回填 8800 根
+       ⇒ 若继续覆盖，第二天起 Jan–Apr 会**静默消失**，且没有任何报错。
+       合并规则：按 datetime 去重、新数据优先（keep="last"），再按 RETAIN_FROM 裁剪。
+    """
     RECENT_DIR.mkdir(parents=True, exist_ok=True)
     p = RECENT_DIR / f"{key}_{period}min.csv"
-    df.to_csv(p, index=False, encoding="utf-8-sig")
+    cur = df.copy()
+    cur["datetime"] = pd.to_datetime(cur["datetime"], errors="coerce")
+    if p.exists():
+        try:
+            old = pd.read_csv(p, encoding=ENCODING)
+            old = _clean_cols(old)
+            old["datetime"] = pd.to_datetime(old["datetime"], errors="coerce")
+            old = old.dropna(subset=["datetime"])
+            cur = pd.concat([old, cur], ignore_index=True)
+        except Exception:
+            pass          # 旧文件坏了就以新数据为准，不要把整个日更搞挂
+    cur = (cur.dropna(subset=["datetime"])
+              .drop_duplicates(subset="datetime", keep="last")
+              .sort_values("datetime").reset_index(drop=True))
+    cur = cur[cur["datetime"] >= RETAIN_FROM]
+    # ★ 1min 必须封顶：它只是"分时图"用的，合并若不限长，一年下来会攒到 6 万多根
+    #   （12 品种 ≈ 30MB），单文件 HTML 又会被撑爆。其余周期按 RETAIN_FROM 保留即可。
+    cap = RECENT_MAX_BARS.get(int(period))
+    if cap and len(cur) > cap:
+        cur = cur.tail(cap).reset_index(drop=True)
+    cur.to_csv(p, index=False, encoding="utf-8-sig")
     return p
 
 

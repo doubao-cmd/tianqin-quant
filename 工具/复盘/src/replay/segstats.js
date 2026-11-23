@@ -129,7 +129,8 @@ export function poolCycles() {
     rows: [], n: 0, total: 0, open: 0, skipped: 0, why: '',
   };
   if (!eps.length) {
-    out.why = 'bundle 缺 _meta.pool_epochs（重跑 build_data.py：池子纪元从台账 START 行解析）';
+    out.why = pe.note
+      || 'bundle 缺 _meta.pool_epochs（重跑 build_data.py：池子纪元从台账 START 行解析）';
     return out;
   }
   const cal = _sgCalendar();

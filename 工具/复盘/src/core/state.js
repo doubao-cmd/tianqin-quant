@@ -5,14 +5,24 @@
 // registerRender 注入，setContext 在运行期（用户操作）才调用，不会在模块求值期执行。
 
 export const UP = '#ef4444', DOWN = '#22c55e';
-export const PERIODS = [['5','5 分钟'],['15','15 分钟'],['1440','日线']];
+export const PERIODS = [['5','5 分钟']];   // ★ 盘感练习：周期固定 5 分钟（已删 15 分钟 / 日线）
 export const RANGES = [['1D','近1日',1],['3D','近3日',3],['ALL','全部',null]];
+
+// ★ 2026-11-07 盘感练习：默认「训练模式」（以前是 review，一打开就开卷）。
+//   记住上次选择，但默认值改成 train —— 忘了切回来也不会一直开卷。
+function _initMode() {
+  try {
+    const m = localStorage.getItem('rt_mode');
+    if (m === 'train' || m === 'review') return m;
+  } catch (e) { /* 隐私模式 */ }
+  return 'train';
+}
 
 export const state = {
   sym: 'M', period: '5', range: '3D', ind: 'vol',
   sel: null,                 // 选中交易索引（DATA[sym].trades 下标）
   showTrades: true,
-  mode: 'review',            // 'train' 训练模式 | 'review' 复看模式（P1-5）
+  mode: _initMode(),         // 'train' 训练模式 | 'review' 复看模式（P1-5）
   shapes: [],                // 用户画线
   replay: null,              // null = 未回放；对象 = 回放中
 };
@@ -83,6 +93,7 @@ export const canSeeAnswers = () => state.mode === 'review';
 // ★ 切换训练/复看模式：清选中、退出回放、图/表/统计三处同刷
 export function setMode(m) {
   state.mode = (m === 'train') ? 'train' : 'review';
+  try { localStorage.setItem('rt_mode', state.mode); } catch (e) { /* 隐私模式 */ }
   state.sel = null;
   _onModeChange('mode');           // ★ P2-3：切模式 = 会话结束，理由记 mode（不是 switch）
   state.replay = null;

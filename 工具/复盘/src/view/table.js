@@ -101,11 +101,13 @@ function _tbBindHead() {
 
 function _rowHtml(t, isNew) {
   const cls = t.d === '多' ? 'up' : 'down';
-  const pc = t.pnl == null ? '' : (t.pnl > 0 ? 'up' : (t.pnl < 0 ? 'down' : ''));
+  const v = (t.net != null ? t.net : t.pnl);
+  const pc = v == null ? '' : (v > 0 ? 'up' : (v < 0 ? 'down' : ''));
+  const ftip = (t.pnl != null && t.fee != null) ? `毛利 ${Math.round(t.pnl)} / 手续费 ${Math.round(t.fee)} / 净 ${Math.round(t.net ?? t.pnl)}` : '';
   return `<tr data-i="${t.i}" class="${isNew ? 'new ' : ''}${state.sel === t.i ? 'on' : ''}">` +
     `<td class="${cls}">${t.d}</td><td class="num">${t.q}</td>` +
     `<td class="num">${t.t ? t.t.slice(5, 16) : '—'}</td>` +
-    `<td class="num ${pc}">${t.e == null ? '<span class="muted">接管</span>' : (t.pnl == null ? '—' : sgn(t.pnl))}</td></tr>`;
+    `<td class="num ${pc}" title="${ftip}">${t.e == null ? '<span class="muted">接管</span>' : (v == null ? '—' : sgn(v))}</td></tr>`;
 }
 
 function _bindRow(tr) {

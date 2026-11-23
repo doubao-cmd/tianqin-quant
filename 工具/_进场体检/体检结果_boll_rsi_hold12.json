@@ -1,0 +1,50 @@
+{
+  "boll_rsi": {
+    "verdict": {
+      "n_sym": 2,
+      "need": 1,
+      "pass_hard": 0,
+      "pass_sig": 0,
+      "grade_A": 2,
+      "grade_B": 0,
+      "grade_C": 0,
+      "verdict": "FAIL（判死，全部 A 档：毛/成本 < 1.0，净亏）"
+    },
+    "rows": [
+      {
+        "key": "MA",
+        "name_cn": "甲醇",
+        "signal": "boll_rsi",
+        "n": 423,
+        "per_day": 0.55,
+        "days": 776,
+        "cost_pts": 2.4,
+        "L0_gross": 0.96,
+        "L0_t": 0.76,
+        "L1_gross": 0.601,
+        "L1_net": -1.799,
+        "L1_t": -1.67,
+        "L1_winrate": 0.435,
+        "stop_share": 0.3144,
+        "ratio": 0.251
+      },
+      {
+        "key": "P",
+        "name_cn": "棕榈油",
+        "signal": "boll_rsi",
+        "n": 504,
+        "per_day": 0.65,
+        "days": 776,
+        "cost_pts": 4.5,
+        "L0_gross": 3.567,
+        "L0_t": 1.01,
+        "L1_gross": 3.137,
+        "L1_net": -1.363,
+        "L1_t": -0.42,
+        "L1_winrate": 0.4524,
+        "stop_share": 0.3155,
+        "ratio": 0.697
+      }
+    ]
+  }
+}

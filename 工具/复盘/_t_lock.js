@@ -18,10 +18,13 @@ if (/^\s*<!DOCTYPE/i.test(srcRaw)) {
   srcRaw = last.slice(last.indexOf('// ===== core/fmt.js'));
 }
 const appCode = srcRaw + `
-;try{globalThis.__P = {state, viewMin, clampViewLeft, VIEW_MIN_DATE, toDate,
+;try{globalThis.__P = {state, viewMin, clampViewLeft, VIEW_MIN_DATE, toDate, setContext, exitReplay,
   renderAll: (typeof renderAll === 'function' ? renderAll : null)};}catch(e){globalThis.__P = {__err: e.message};}
 `;
 const bundle = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+// ★ boot 的 loadData() 会对注入对象执行 delete d._meta（同一引用）⇒ 先留底，
+//   否则测试读到的是 undefined，左界退回硬编码常量。
+const BUNDLE_META = bundle._meta;
 
 function makeEl(id) {
   const el = {
@@ -84,6 +87,8 @@ const Plotly = {
     }
     return Promise.resolve();
   },
+  purge() {},
+  rePlot() {},
   relayout(div, upd) {
     const el = typeof div === 'string' ? doc.getElementById(div) : div;
     if (el && upd && upd['xaxis.range']) {
@@ -140,7 +145,9 @@ if (!P || P.__err) {
 await new Promise(r => setTimeout(r, 120));
 
 const { state, viewMin, clampViewLeft, VIEW_MIN_DATE, toDate } = P;
-const CUT = Date.parse(VIEW_MIN_DATE + 'T00:00:00');
+// ★ 2026-11-07：数据窗口从「10-08 起 30 天」扩到「2026 全年」，左界 = bundle._meta.window_start。
+//   测试跟着数据走，别写死常量（否则换窗口就得改测试）。
+const CUT = Date.parse(String((BUNDLE_META && BUNDLE_META.window_start) || VIEW_MIN_DATE) + 'T00:00:00');
 const syms = Object.keys(bundle).filter(k => k !== '_meta');
 const periods = ['5', '15', '1440'];
 
@@ -172,16 +179,22 @@ const periods = ['5', '15', '1440'];
 })();
 
 // ---------- [C] 钳制：越界被顶回，界内原样 ----------
+// ★ 2026-11-07：窗口从「10-08 起 30 天」扩到「2026 全年」，原来写死的 09-15 / 10-01
+//   现在都落在窗口**内部**，钳制自然不触发（不是回归，是测试前提过期）。
+//   ⇒ 改成相对左界取日期，换窗口不用再改。
+const fmt = t => { const d = new Date(t); const p2 = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p2(d.getMonth()+1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
 (function () {
   state.sym = syms[0]; state.period = '5';
   const v = viewMin();
-  const tooEarly = ['2026-09-15 09:00', '2026-10-01 10:00'];
-  const [ca, cb] = clampViewLeft(tooEarly[0], tooEarly[1]);
+  const D = 86400000;
+  const early = [fmt(v.t - 30 * D), fmt(v.t - 10 * D)];
+  const [ca, cb] = clampViewLeft(early[0], early[1]);
   chk('[C] 越界左端被顶回 ' + VIEW_MIN_DATE,
       toDate(ca).getTime() >= v.t,
-      `${tooEarly[0]} → ${new Date(toDate(ca)).toISOString().slice(0, 16)}`);
+      `${early[0]} → ${new Date(toDate(ca)).toISOString().slice(0, 16)}`);
   // 界内：原样返回（引用相同，便于调用方判断"没改动"）
-  const inA = '2026-10-10 09:00', inB = '2026-10-12 15:00';
+  const inA = fmt(v.t + 5 * D), inB = fmt(v.t + 7 * D);
   const r2 = clampViewLeft(inA, inB);
   chk('[C] 界内原样返回', r2[0] === inA && r2[1] === inB);
 })();
@@ -190,11 +203,12 @@ const periods = ['5', '15', '1440'];
 (function () {
   state.sym = syms[0]; state.period = '5';
   const v = viewMin();
+  const D = 86400000;
   // b 比左界还早 ⇒ 必须给保底跨度，不能 0 宽
-  const [ca, cb] = clampViewLeft('2026-09-15 09:00', '2026-09-16 09:00');
+  const [ca, cb] = clampViewLeft(fmt(v.t - 30 * D), fmt(v.t - 29 * D));
   const span = toDate(cb).getTime() - toDate(ca).getTime();
-  chk('[D] 退化范围有保底跨度（>=1天）', span >= 86400000,
-      `跨度 ${(span / 86400000).toFixed(2)} 天`);
+  chk('[D] 退化范围有保底跨度（>=1天）', span >= D,
+      `跨度 ${(span / D).toFixed(2)} 天`);
   chk('[D] 左端仍是左界', Math.abs(toDate(ca).getTime() - v.t) < 1000);
 })();
 
@@ -207,20 +221,31 @@ const periods = ['5', '15', '1440'];
 })();
 
 // ---------- [F] 端到端：renderAll 后主图 range[0] 不早于左界 ----------
+// ★ 2026-11-07 两个必须遵守的前提（否则测试自己造出假失败）：
+//   ① boot() 末尾有 `setTimeout(() => { if (!state.replay) startRandomReplay(); }, 80)`
+//      ——「打开即随机开一局」是产品行为（boot.js:380），测试跑起来时已经有一局在放，
+//      `state.replay.abs` 是随机起点（5min 的索引）。先退出，再断言"整段视图"。
+//   ② 切品种/周期必须走**唯一入口** setContext()，不能直接改 state.period：
+//      setContext() 才会 `state.replay = null` + 清选中（state.js:85-86）。
+//      直接改会带着上一周期的 R.abs 去切更短的周期（1440 只有 236 根），
+//      renderMain 的 slice 越界 → 空数组 → q.c 为 undefined → q.c.toFixed 抛错。
+//      真实用户点周期按钮走的就是 setContext()，所以这不是绕过，而是还原真实路径。
 (function () {
+  if (state.replay) { try { P.exitReplay(); } catch (e) { state.replay = null; } }
   let bad = [];
   for (const s of syms) {
     for (const p of periods) {
-      state.sym = s; state.period = p; state.range = 'ALL'; state.sel = null;
       state._lastViewKey = null;
       _plotCalls.length = 0;
       try {
-        if (P.renderAll) P.renderAll();
+        if (P.setContext) P.setContext({ sym: s, period: p, range: 'ALL' });
+        else if (P.renderAll) P.renderAll();
         else if (typeof ctx.renderAll === 'function') ctx.renderAll();
       } catch (e) {
         bad.push(`${s}/${p} renderAll 抛错 ${e.message}`);
         continue;
       }
+      if (state.replay) bad.push(`${s}/${p} 切上下文后回放没退出`);
       const mainCall = _plotCalls.filter(c => c.div === 'main').pop();
       if (!mainCall || !mainCall.layout || !mainCall.layout.xaxis) continue;
       const r = mainCall.layout.xaxis.range;

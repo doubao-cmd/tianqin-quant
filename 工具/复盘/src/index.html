@@ -14,9 +14,6 @@
     <span id="dataInfo" class="data-info"></span>
     <span id="modeSlot"></span>
     <div class="spacer"></div>
-    <div class="btns">
-      <button id="lcolBtn" class="lcol-btn" title="折叠/展开左栏（Ctrl+←）：左栏是分时图，看 1min/5min 时和主图重复">◀ 分时</button>
-    </div>
     <div id="periods" class="btns"></div>
     <div id="ranges" class="btns"></div>
     <div class="btns">
@@ -43,6 +40,9 @@
       <span class="rsep"></span>
       <button id="rjprev">◀ 上一笔</button>
       <button id="rjnext">下一笔 ▶</button>
+      <span class="rsep"></span>
+      <button id="rrand" class="rb-rand" title="随机一局：随机品种 + 随机交易日 + 随机起播时刻（09:00–10:15 / 13:30–14:00 / 21:00–22:00）">随机 ▶</button>
+      <button id="rsubmit" class="rb-submit" title="交卷：结束本局、弹评分并切到复看模式看答案">交卷 ✓</button>
       <input type="range" id="rscrub" min="0" max="0" step="1" value="0" title="回放进度：拖动只看位置，松手才跳转（P1-6）">
       <span id="rpos"></span>
       <span class="spacer"></span>
@@ -72,17 +72,55 @@
   <!-- ★ T2.4：上次进度提示条（非阻塞，可选"继续"） -->
   <div id="rbResume" class="rb-resume" style="display:none"></div>
   <div id="simpanel" style="display:none">
-    <div class="sp-row"><span class="sp-title" id="spTitle">模拟开仓</span><button id="spX">✕</button></div>
+    <div class="sp-row"><span class="sp-title" id="spTitle">模拟开仓</span><span class="sp-live" id="spLive"></span><button id="spX">✕</button></div>
     <div class="sp-row">
       <label>方向</label><span id="spDir" class="sp-dir"></span>
       <label>手数</label><input type="number" id="spQty" min="1" max="20" step="1">
+      <span class="sp-note" id="spQtyHint"></span>
+    </div>
+    <div class="sp-row">
+      <label>方式</label>
+      <div class="sp-seg" id="spMode">
+        <button data-m="market" class="on">市价 · 下一根开盘</button>
+        <button data-m="limit">限价挂单</button>
+      </div>
+    </div>
+    <div class="sp-row" id="spLimitRow" style="display:none">
+      <label>挂单价</label><input type="number" id="spLimit" step="0.01">
+      <button class="sp-pick" data-pick="limit" title="在主图上点一下取该价">图上取</button>
+      <span class="sp-note" id="spLimitHint"></span>
     </div>
     <div class="sp-row">
       <label>止损价</label><input type="number" id="spStop" step="0.01">
+      <button class="sp-pick" data-pick="stop" title="在主图上点一下取该价">图上取</button>
+      <span class="sp-note" id="spStopNote"></span>
+    </div>
+    <div class="sp-row sp-quick">
+      <span class="sp-qlabel">快捷</span>
+      <button class="sp-q" data-stop="0.5">0.5×ATR</button>
+      <button class="sp-q on" data-stop="1">1×ATR</button>
+      <button class="sp-q" data-stop="1.5">1.5×ATR</button>
+      <button class="sp-q" data-stop="2">2×ATR</button>
+    </div>
+    <div class="sp-row">
       <label>止盈价</label><input type="number" id="spTarget" step="0.01" placeholder="留空=不设">
+      <button class="sp-pick" data-pick="target" title="在主图上点一下取该价">图上取</button>
+      <span class="sp-note" id="spTargetNote"></span>
+    </div>
+    <div class="sp-row sp-quick">
+      <span class="sp-qlabel">快捷</span>
+      <button class="sp-q" data-tgt="1">1R</button>
+      <button class="sp-q" data-tgt="2">2R</button>
+      <button class="sp-q" data-tgt="3">3R</button>
+      <button class="sp-q" data-tgt="0">不设</button>
+    </div>
+    <div class="sp-row">
+      <label>时间止损</label><input type="number" id="spTime" min="1" max="300" step="1" placeholder="留空=不设">
+      <span class="sp-unit">根</span>
+      <span class="sp-note" id="spTimeHint"></span>
     </div>
     <div class="sp-row muted" id="spHint"></div>
-    <div class="sp-row"><button id="spOk" class="trade-btn buy">确认下单（下一根开盘成交）</button><button id="spCancel">取消</button></div>
+    <div class="sp-row"><button id="spOk" class="trade-btn buy">确认下单</button><button id="spCancel">取消</button></div>
   </div>
   <div id="mkPanel" style="display:none">
     <div class="sp-row"><span class="sp-title" id="mkBar">标记</span><button id="mkX">✕</button></div>
@@ -106,6 +144,7 @@
     </div>
   </div>
   <div id="grid">
+    <!-- ★ 2026-11-07 回退方案 B：分时在 220px 窄栏里画（全宽带看不清走势），行情卡回到左栏独立卡片。 -->
     <div id="left">
       <div class="card"><div class="ct" id="ititle">分时</div><div id="intra"></div></div>
       <div class="card" id="qcard"></div>
@@ -121,6 +160,7 @@
       <div class="tabs">
         <button id="tabT" class="on">成交</button>
         <button id="tabB">模拟</button>
+        <button id="tabA" title="跨会话累计的模拟账户（R5）：资金曲线 + 指标 + 逐笔">账户</button>
         <button id="tabS">统计</button>
         <button id="tabC" title="与实盘对照（P2-5）：只在复看模式可用">对照</button>
         <button id="tabM" title="决策标记列表（T2.3）：训练模式不渲染">标记</button>
@@ -132,6 +172,9 @@
       </div>
       <div id="paneBook" class="pane" style="display:none">
         <div class="card" id="simpane"><div class="ct" id="simtitle"></div><div id="simbody"></div></div>
+      </div>
+      <div id="paneAcct" class="pane" style="display:none">
+        <div class="card" id="acct"></div>
       </div>
       <div id="paneStats" class="pane" style="display:none">
         <div class="card" id="stats"></div>

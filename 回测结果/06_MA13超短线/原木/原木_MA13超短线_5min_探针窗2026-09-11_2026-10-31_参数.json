@@ -1,0 +1,48 @@
+{
+  "symbol": "KQ.m@DCE.lg",
+  "symbol_cn": "原木",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 0.0,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0
+  },
+  "start": "2026-09-11",
+  "end": "2026-10-31",
+  "bars": 4574,
+  "annual_bars": 11124.3,
+  "trades": 69,
+  "wins": 23,
+  "win_rate": 0.3333,
+  "sharpe": -0.6962,
+  "sharpe_11500": -0.7079,
+  "final_equity": 196896.05,
+  "total_return": -0.0155,
+  "max_drawdown": 0.0251,
+  "bar_avg_drawdown": 0.0037,
+  "blown": false,
+  "commission": 1528.95,
+  "cost_assumption": "滑点0.0跳(同步模拟盘实测均值≈0)+佣金2.16元/手/边; 本金200000; 手数=锁死200000(对齐模拟盘RISK_EQUITY)×1%÷ATR风险夹[1,8]+名义敞口≤权益×2倍; 止损=GAP_FILL保守成交(多头min(止损线,开盘)/空头max); 乘数90; 一跳0.5; 标定2026-10-10",
+  "sync_live": {
+    "SLIP_LIVE": true,
+    "SLIP": 0.0,
+    "STOP_BASE_CLOSE": true,
+    "LATE_DAY_GUARD": true,
+    "TIME_EXIT_AT_OPEN": true,
+    "tag": "同步模拟盘口径(2026-10-30)"
+  }
+}

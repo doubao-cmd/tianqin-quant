@@ -25,6 +25,7 @@ import { lsStore } from '../core/store.js';
 import { bookState } from './book.js';
 import { marksList } from './marks.js';
 import { scoreSession } from './score.js';
+import { acctAppend } from '../view/acct.js';
 
 // ★ 同 marks.js：key 常量/句柄/读写封装一律 lg 前缀，防拼接后顶层撞名
 const LEDGER_KEY = 'rt:sessions:v1';
@@ -104,6 +105,22 @@ function _flush(reason) {
   // ★ 用会话开始时的 sym/period 显式算，不能用"当前"的（可能已被切走）
   const st = bookState(R, c.sym);
   const d = pd(c.sym, c.period);
+  // ★ R5（2026-11-07）：本会话已平仓 → 并入跨会话账户（k = 会话ID+开平仓bar，重复 flush 也只记一次）
+  try {
+    acctAppend(st.closed.map(t => ({
+      k: `${c.id}|${t.entryBar}|${t.exitBar}`,
+      sid: c.id, sym: c.sym, dir: t.dir, qty: t.qty,
+      ePx: t.entryPx, xPx: t.exitPx,
+      eX: (d.x[t.entryBar] != null ? String(d.x[t.entryBar]) : ''),
+      xX: (d.x[t.exitBar] != null ? String(d.x[t.exitBar]) : ''),
+      reason: t.reason, hold: t.holdBars,
+      pnl: Math.round(t.pnl * 100) / 100,
+      fee: Math.round((t.fee || 0) * 100) / 100,
+      t: Date.now(),
+    })));
+  } catch (e) {
+    if (window.console) console.warn('[R5] 账户并入失败：', e);
+  }
   const nOpen = (R.book || []).filter(a => a.type === 'open').length;
   const nMarks = marksList(c.sym, c.period).filter(m => (m.ts || 0) >= c.t0).length;
 
@@ -122,8 +139,7 @@ function _flush(reason) {
   }
 
   const rec = {
-    id: c.id, t0: c.t0, t1: c.t1, src: c.src,
-    sym: c.sym, period: c.period, mode: c.mode,
+    id: c.id, t0: c.t0, t1: c.t1, src: c.src,    sym: c.sym, period: c.period, mode: c.mode,
     startBarX: c.startBarX,
     endBarX: (d.x[R.abs] != null ? String(d.x[R.abs]) : c.endBarX),
     nStep: c.nStep,

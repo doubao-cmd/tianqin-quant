@@ -64,17 +64,30 @@ export function rangeStart(xs) {
 //   · 返回 {i, t}：i = 第一根 >= 该日的索引，t = 它的毫秒时间戳
 //   · 找不到（数据全在该日之前）时返回 i=0 ⇒ 不锁（不能把视图锁成空的）
 // ---------------------------------------------------------------------------
-export const VIEW_MIN_DATE = '2026-10-08';
+// ★ 2026-11-07（R-A）：数据窗口从"2026-10-08 起的 30 天"扩到 **2026 全年**，
+//   左界锁死日跟着改成「窗口起点」（bundle._meta.window_start）；没这个键时回退旧常量。
+//   锁死的理由不变：窗口左侧还有 2 天预热 bar（指标要用），拖过去是一片无交易的空图。
+export const VIEW_MIN_DATE = '2026-01-01';   // 兜底值；实际取 bundle._meta.window_start
 const _VDAY_MS = Date.parse(VIEW_MIN_DATE + 'T00:00:00');
 let _vminKey = null, _vminVal = null;
 
+function viewMinMs() {
+  const ws = DB.meta && DB.meta.window_start;
+  if (ws) {
+    // 窗口起点当天 00:00 起算：再把 +1 天，避免首日只有预热 bar
+    return Date.parse(String(ws).slice(0, 10) + 'T00:00:00') || _VDAY_MS;
+  }
+  return _VDAY_MS;
+}
+
 export function viewMin() {
-  const key = state.sym + '|' + state.period;
+  const key = state.sym + '|' + state.period + '|' + ((DB.meta && DB.meta.window_start) || '');
   if (_vminKey === key && _vminVal) return _vminVal;
   const d = DB.data[state.sym];
   const xs = (d && d.periods && d.periods[state.period] && d.periods[state.period].x) || [];
-  let i = xs.findIndex(s => toDate(s).getTime() >= _VDAY_MS);
-  if (i < 0) i = 0;                 // 数据全在 10-08 之前 ⇒ 不锁（否则视图为空）
+  const minMs = viewMinMs();
+  let i = xs.findIndex(s => toDate(s).getTime() >= minMs);
+  if (i < 0) i = 0;                 // 数据全在该日之前 ⇒ 不锁（否则视图为空）
   _vminKey = key;
   _vminVal = { i, t: xs.length ? toDate(xs[i]).getTime() : 0 };
   return _vminVal;

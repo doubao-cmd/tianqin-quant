@@ -196,6 +196,11 @@ const ok = (c, m) => { console.log((c ? '  ✓ ' : '  ✗ ') + m); if (!c) fail+
   await flush();
 
   // ═══ [D] marker 合并 ═══
+  // ★ 2026-11-07：_initMode() 默认 train，训练模式按设计不画成交标记（防开卷）。
+  //   旧版没在这里切模式，断言能过靠的是测试顺序的偶然。显式切复看再测 marker 合并。
+  P.setMode('review');
+  P.renderAll ? P.renderAll() : null;
+  await flush();
   console.log('[D] P5-3 成交标记合并为 2 个 trace');
   const mc2 = env.Plotly._calls.filter(c => c.div === 'main');
   const mCall = mc2[mc2.length - 1];

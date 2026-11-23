@@ -1,0 +1,73 @@
+{
+  "symbol": "KQ.m@GFEX.lc",
+  "symbol_cn": "碳酸锂",
+  "period": "5min",
+  "strategy": "MA13超短线_顺势回踩",
+  "INIT": 200000.0,
+  "params": {
+    "MA_N": 13,
+    "SLOPE_N": 5,
+    "ATR_N": 14,
+    "RETRACE_TOL": 0.5,
+    "STOP_BUFFER": 0.5,
+    "STOP_CAP": 2.0,
+    "MAX_HOLD": 15,
+    "RISK_PCT": 0.01,
+    "SLIP": 0.0,
+    "hand_range": [
+      1,
+      8
+    ],
+    "KSEC": 300,
+    "INIT": 200000.0
+  },
+  "start": "2024-01-01",
+  "end": "2024-12-31",
+  "bars": 14069,
+  "annual_bars": 10837.0,
+  "trades": 670,
+  "wins": 207,
+  "win_rate": 0.309,
+  "sharpe": 1.1392,
+  "sharpe_11500": 1.1735,
+  "final_equity": 227130.0,
+  "total_return": 0.1356,
+  "max_drawdown": 0.0523,
+  "bar_avg_drawdown": 0.0128,
+  "blown": false,
+  "commission": 0.0,
+  "cost_assumption": "滑点0.0跳(同步模拟盘实测均值≈0)+佣金0.0元/手/边; 本金200000; 手数=锁死200000(对齐模拟盘RISK_EQUITY)×1%÷ATR风险夹[1,8]+名义敞口≤权益×2倍; 止损=GAP_FILL保守成交(多头min(止损线,开盘)/空头max); 乘数1.0; 一跳20.0; 标定2026-10-10",
+  "sync_live": {
+    "SLIP_LIVE": true,
+    "SLIP": 0.0,
+    "STOP_BASE_CLOSE": true,
+    "LATE_DAY_GUARD": true,
+    "TIME_EXIT_AT_OPEN": true,
+    "tag": "同步模拟盘口径(2026-10-30)"
+  },
+  "_lc_note": "检验用：品种参数仅运行时内存注入(config_symbols.py 未改)，策略逻辑与 PVC 回测逐字一致；COMM=0 为毛口径，手续费按逐笔成交价事后折算；LC 主连 KQ.m@GFEX.lc，乘数1吨/手，最小变动20元/吨。",
+  "_fee_tiers": {
+    "现行0.8‰(2026-09-22起)": 101543.45,
+    "中档1.6‰(2026-07~09)": 203086.9,
+    "高档3.2‰(2026-01~07)": 406173.79
+  },
+  "_net_by_tier": {
+    "现行0.8‰(2026-09-22起)": -74413.45,
+    "中档1.6‰(2026-07~09)": -175956.9,
+    "高档3.2‰(2026-01~07)": -379043.79
+  },
+  "_hands": {
+    "max_hand": 3,
+    "min_hand": 1,
+    "hand_dist": {
+      "1": 656,
+      "2": 13,
+      "3": 1
+    },
+    "exit_reason": {
+      "止损": 495,
+      "时间止损": 175
+    }
+  },
+  "_gross_pnl": 27130.0
+}

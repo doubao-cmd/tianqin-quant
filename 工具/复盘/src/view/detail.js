@@ -51,7 +51,8 @@ export function renderDetail() {
     `<div>平 ${t.x ? t.x.slice(5,16) : '—'} @ ${f1(t.p)}</div>` +
     `<div>止损 ${f2(t.s)}　计划 ${f2(t.ps)}</div>` +
     `<div>开仓时 MA13 斜率 ${num2(slope)} ｜ 距MA ${num2(dist)} ATR</div>` +
-    `<div>MFE <span class="up">${sgn(t.mfe)}</span>　MAE <span class="down">${sgn(t.mae)}</span>　盈亏 <b>${sgn(t.pnl)}</b></div>` +
+    `<div>MFE <span class="up">${sgn(t.mfe)}</span>　MAE <span class="down">${sgn(t.mae)}</span></div>` +
+    `<div>毛利 <b>${sgn(t.pnl)}</b>　手续费 <span class="muted">${t.fee==null?'—':Math.round(t.fee)}</span>　净 <b class="${(t.net ?? t.pnl) > 0 ? 'up' : ((t.net ?? t.pnl) < 0 ? 'down' : '')}">${sgn(t.net ?? t.pnl)}</b></div>` +
     `<div class="muted">${esc(t.r)}　持仓 ${t.h==null?'—':t.h+' 分'}</div>` +
     (t.x && t.p != null ? _dtAfterHtml(t, d, DB.data[state.sym].mult || 1) : '') +
     `<button id="clr" style="margin-top:4px;width:100%">取消选中</button>`;

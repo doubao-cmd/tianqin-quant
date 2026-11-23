@@ -19,7 +19,7 @@ if (/^\s*<!DOCTYPE/i.test(srcRaw)) {
   srcRaw = last.slice(last.indexOf('// ===== core/fmt.js'));
 }
 const appCode = srcRaw + `
-;try{globalThis.__P = {state, DB, renderAll, renderStats, renderFreshness,
+;try{globalThis.__P = {state, DB, renderAll, renderStats, renderFreshness, setMode,
   renderTop: (typeof renderTop==='function'?renderTop:null)};}catch(e){globalThis.__P={__err:e.message};}
 `;
 const bundle = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
@@ -239,6 +239,8 @@ async function main() {
         JSON.stringify(Object.keys(sec.by_sector||{})));
     // 面板能渲染
     state.sym = Object.keys(bundle).filter(k=>k!=='_meta')[0];
+    // ★ 2026-11-07：stats 面板在训练模式下只渲染占位文案（防开卷）⇒ 先切复看再断言
+    try { P.setMode && P.setMode('review'); } catch(e) {}
     try { P.renderStats(); } catch(e) {}
     const html = doc.getElementById('stats').innerHTML || '';
     chk('[I] stats 面板含"板块构成"', html.includes('板块构成'));
