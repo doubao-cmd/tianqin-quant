@@ -135,6 +135,22 @@ def main(n_bars: int = 400):
         with open(os.path.join(DATA, "_contracts.json"), "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=1)
         print(f"\n完成 {saved}/{len(kl)} 个品种 → {DATA}")
+
+        # ---- ④ 交易日历（scan 端据此区分「休市」和「该开没开」）----
+        # ★ 列名实测为 date / trading（不是 trade_date），tqsdk 3.10.4 api.py:1062
+        # 只写到本地文件，scan 端不连网也能判断今天该不该有数据。
+        try:
+            cld = api.get_trading_calendar(
+                start_dt=today - dt.timedelta(days=7),
+                end_dt=today + dt.timedelta(days=90))
+            days = {str(d)[:10]: bool(t) for d, t in zip(cld["date"], cld["trading"])}
+            with open(os.path.join(DATA, "_calendar.json"), "w", encoding="utf-8") as f:
+                json.dump(days, f, ensure_ascii=False)
+            fut = sum(1 for d, t in days.items() if t and d >= today.strftime("%Y-%m-%d"))
+            print(f"交易日历 {len(days)} 天（未来 {fut} 个交易日）→ _calendar.json")
+        except Exception as e:
+            print(f"[warn] 交易日历写入失败（{type(e).__name__}: {e}），"
+                  f"scan 端将退回工作日判断")
     finally:
         api.close()
 

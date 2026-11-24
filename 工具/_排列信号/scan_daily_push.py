@@ -37,19 +37,27 @@ if ROOT not in sys.path:
 DATA = os.path.join(HERE, "data")
 OUT = os.path.join(HERE, "out")
 CFG = os.path.join(HERE, "push_config.json")
+CAL = os.path.join(DATA, "_calendar.json")   # fetch_daily.py 每天写，用来判断休市
 NP_DB = os.path.abspath(os.path.join(HERE, "..", "_np_data", "np.db"))
 DISCLAIMER = "仅为纯技术分析，不构成任何买卖建议。"
-MA_N = 60
-MIN_BARS = 159          # MA60 至少要有 100 个有效点，持续天数才有意义
+
+# 判据（aligned / streak / early_series / MA_N / MIN_BARS）放在 core.py，
+# 与 review_events.py 共用同一份——两套判据会让回访统计对应不上看板。
+from core import aligned, streak, early_series, MIN_BARS  # noqa: E402
 
 # 推送里「正在多/正在空」只列最近 N 个交易日内成立的，更久的折叠成一行。
 # 这是展示口径，不是策略参数——不影响任何信号判定，md 里始终是全量。
 FRESH_DAYS = 5
 
+# 数据不可信的品种占比超过这个值，整条推送退化成告警、不推名单。
+# 为什么要有这条：名单的用处是「一屏看完谁在排列」，缺了三分之一还照样列，
+# 用户会按那份名单做判断，而他不知道少了哪些——残缺名单比没有名单更危险。
+# 0.4 不是策略参数，是「这份名单还叫不叫全市场」的底线，可以改但不要调着玩。
+STALE_ABORT = 0.4
+
 # 侧证（只进 md，不进推送正文）：回答「这波排列是预期还是现实」
 #   基差 = 期货 − 现货（np_data 的 dom_basis 就是这个口径，已实测校准）
 #   基差朝排列方向走 = 期货领跑 = 预期型；背离 = 现货领跑 = 现实型
-SIDE_MIN_JUMP_PP = 1.0   # 20 日基差率变化小于该值视为「无信息」，标中性
 SIDE_Z_MIN = 1.0         # 20 日变化在自身历史里的 z 分数下限
 SIDE_EXTREME = 0.10      # 基差率三年分位低于 10% / 高于 90% 视为极端
 
@@ -61,30 +69,6 @@ PUSH_HIDE = set(BASIS_UNUSABLE) if P.PUSH_HIDE_BASIS_UNUSABLE else set()
 
 def cn_of(key: str) -> str:
     return P.cn_of(key)
-
-
-def aligned(o: pd.DataFrame) -> pd.DataFrame:
-    """四线同向：MA5>MA10>MA20>MA60 为多，反向为空。只在状态转移日记 trig。"""
-    m5, m10, m20 = o["ma5"], o["ma10"], o["ma20"]
-    ma60 = o["close"].rolling(MA_N).mean()
-    o["ma60"] = ma60
-    o["a60"] = np.where(
-        (m5 > m10) & (m10 > m20) & (m20 > ma60), 1,
-        np.where((m5 < m10) & (m10 < m20) & (m20 < ma60), -1, 0),
-    )
-    prev = o["a60"].shift(1).fillna(0)
-    o["a60_trig"] = np.where((o["a60"] != 0) & (o["a60"] != prev), o["a60"], 0)
-    return o
-
-
-def streak(o: pd.DataFrame, i: int, direction: int) -> int:
-    n = 0
-    for j in range(i, -1, -1):
-        if int(o.at[j, "a60"] or 0) == direction:
-            n += 1
-        else:
-            break
-    return n
 
 
 def load_contracts() -> dict:
@@ -151,7 +135,8 @@ def _basis_rate(con, sym: str):
         d20 = cur - float(rr.iloc[-21]) if len(rr) > 40 else float("nan")
         chg = (rr - rr.shift(20)).reindex(win.index).dropna()
         z = (d20 - chg.mean()) / chg.std() if len(chg) > 100 and chg.std() > 0 else float("nan")
-        return dict(cur=cur, pct=pct, d20=d20, z=z, median=float(win.median()))
+        return dict(cur=cur, pct=pct, d20=d20, z=z, median=float(win.median()),
+                    date=str(rr.index[-1])[:10])
 
     orig = pack(rate)
     if orig is None:
@@ -173,6 +158,9 @@ def _basis_rate(con, sym: str):
             clean_src = rate[~bad.fillna(False)]
 
     clean = pack(clean_src) or orig
+    # 时效要看**原始序列**的最后一根，不受清洗影响——清洗如果把最后一天当异常剔掉，
+    # clean 的 date 会退到前一天，从而被误判成「基差停更 1 天」。
+    clean["date"] = str(rate.index[-1])[:10]
     clean["suspect"] = suspect
     clean["orig_d20"] = orig["d20"]
     clean["orig_z"] = orig["z"]
@@ -221,6 +209,11 @@ def nature_of(d: int, basis: dict | None) -> tuple[str, str]:
         return "无数据", ""
     if basis.get("unusable"):
         return "不可用", basis.get("why", "基差源不可用")
+    # ★ 基差停更就别判方向。「预/现」回答的是「这波谁在领跑」，用的是当日基差；
+    #   拿三天前的基差去描述今天的排列，结论可能完全反过来，而手机上看不出差别。
+    #   实测 36 个有基差的品种当天都是 lag=0，所以 lag>0 就是异常，不是正常延迟。
+    if int(basis.get("lag") or 0) > 0:
+        return "无数据", f"基差停在 {basis.get('date', '?')}（落后 {basis['lag']} 天）"
     v = _verdict(d, basis["d20"], basis["z"], basis["pct"])
     if basis.get("suspect"):
         vo = _verdict(d, basis.get("orig_d20", basis["d20"]),
@@ -237,8 +230,12 @@ def nature_of(d: int, basis: dict | None) -> tuple[str, str]:
     return "现实", "现货领跑，期货跟随"
 
 
-def load_side(symbols: list[str]) -> dict:
-    """批量读取侧证。np.db 不存在时整体降级为空，不影响看板本身。"""
+def load_side(symbols: list[str], asof: str = "") -> dict:
+    """批量读取侧证。np.db 不存在时整体降级为空，不影响看板本身。
+
+    asof 用来算基差的滞后天数（lag）——基差库由另一个采集任务写，
+    它停了 scan 不会报错，只会悄悄拿旧基差去判「预期/现实」。
+    """
     if not os.path.exists(NP_DB):
         return {}
     out = {}
@@ -249,6 +246,11 @@ def load_side(symbols: list[str]) -> dict:
             for s in symbols:
                 b = _basis_rate(con, s)
                 r = _receipt(con, s)
+                if b and asof and b.get("date"):
+                    try:
+                        b["lag"] = int((pd.Timestamp(asof) - pd.Timestamp(b["date"])).days)
+                    except Exception:
+                        b["lag"] = 0
                 if b or r:
                     out[s] = dict(basis=b, receipt=r)
         finally:
@@ -259,9 +261,16 @@ def load_side(symbols: list[str]) -> dict:
     return out
 
 
-def collect() -> tuple[list[dict], str, list[dict]]:
-    """扫描全部日线。返回 (行, 数据日期, 因数据不足被跳过的品种)。"""
-    rows, asof, thin = [], "", []
+def collect() -> tuple[list[dict], str, list[dict], list[dict], dict]:
+    """扫描全部日线。返回 (行, 数据日期, 数据不足, 数据不可信, 信号活跃度)。
+
+    ★ 数据不可信分两种，原因不同、处理相同（都**不参与任何判定**）：
+      1. 末根日期落后于全池最新 —— 这次没拉到（tqsdk 掉线、合约停牌）
+      2. 末根是最新，但近期缺了交易日 —— 拉到过，中间断了
+    第 2 种只看末根日期是抓不到的，而它恰好是 `streak` 会跨过去继续数、
+    `prev` 会跳到缺口前那一天的地方，正是最容易给出错误信号的情形。
+    """
+    rows, thin, loaded = [], [], []
     cmap = load_contracts()
     for f in sorted(glob.glob(os.path.join(DATA, "*_1440min.csv"))):
         key = os.path.basename(f).split("_")[0]
@@ -271,9 +280,58 @@ def collect() -> tuple[list[dict], str, list[dict]]:
         if d is None:
             continue
         if len(d) < MIN_BARS:
-            thin.append(dict(key=key, n=len(d), need=MIN_BARS))
+            thin.append(dict(key=key, cn=cn_of(key), n=len(d), need=MIN_BARS))
             continue
+        loaded.append((key, d))
+
+    # ---- 基准交易日：取「多数品种都有」的日期 ----
+    # 不用 data/_calendar.json：它只覆盖最近 7 天 + 未来 90 天，查不了历史缺口。
+    # 40 个品种的日期并集本身就是最稳的交易日基准——任何一个源头出错，
+    # 都盖不过其他 39 个；而单一数据源出错时会整段错，反而看不出来。
+    from collections import Counter
+    cnt: Counter = Counter()
+    for key, d in loaded:
+        cnt.update({str(x)[:10] for x in d["datetime"]})
+    need = max(3, int(len(loaded) * 0.6))
+    base = sorted(k for k, v in cnt.items() if v >= need)
+
+    asof = max((str(d["datetime"].iloc[-1])[:10] for key, d in loaded), default="")
+
+    stale = []
+    for key, d in loaded:
+        ds = [str(x)[:10] for x in d["datetime"]]
+        last = ds[-1]
+        if last < asof:
+            why, why_s = f"末根停在 {last}", f"停{last[5:]}"
+        else:
+            recent = [t for t in base[-20:] if t <= last]
+            miss = [t for t in recent if t not in set(ds)]
+            if not miss:
+                continue
+            why = f"缺 {len(miss)} 个交易日（{'、'.join(miss[:5])}）"
+            why_s = f"缺{len(miss)}天"
+        stale.append(dict(key=key, cn=cn_of(key), date=last, why=why, why_s=why_s))
+    stale_keys = {s["key"] for s in stale}
+
+    # ---- 信号活跃度：每种事件在全部品种的全部历史上触发过几次 ----
+    # ★ 为什么必须有这个：苗头从上线起就没触发过（两处条件互斥），
+    #   但它每天在手机上显示「苗头：无」，和「今天真的没有」长得一模一样。
+    #   一个死掉的字段显示「无」，是比缺功能更严重的误导——它给出了一个错误的否定。
+    #   这里让每种事件类型自己证明它还活着；某个类型合计为 0 就说明判据失效了。
+    alive = {"新多": 0, "新空": 0, "苗头多": 0, "苗头空": 0, "破坏": 0}
+
+    for key, d in loaded:
         o = aligned(S.indicators(d))
+        tr = o["a60_trig"].to_numpy()
+        a6 = o["a60"].to_numpy()
+        prev_a6 = np.concatenate(([0], a6[:-1]))
+        alive["新多"] += int((tr == 1).sum())
+        alive["新空"] += int((tr == -1).sum())
+        alive["破坏"] += int(((a6 == 0) & (prev_a6 != 0)).sum())
+        es = early_series(o)
+        alive["苗头多"] += int((es == 1).sum())
+        alive["苗头空"] += int((es == -1).sum())
+
         i = len(o) - 1
         if not np.isfinite(o.at[i, "ma60"]):
             continue
@@ -283,31 +341,39 @@ def collect() -> tuple[list[dict], str, list[dict]]:
         close = float(o.at[i, "close"])
         atr = float(o.at[i, "atr"])
         date = str(o.at[i, "datetime"])[:10]
-        asof = max(asof, date)
         m5, m10, m20, m60 = (float(o.at[i, k]) for k in ("ma5", "ma10", "ma20", "ma60"))
-        pm5, pm10 = float(o.at[i - 1, "ma5"]), float(o.at[i - 1, "ma10"])
-        up = (m5 > m10) and (pm5 <= pm10)
-        dn = (m5 < m10) and (pm5 >= pm10)
-        early = 1 if (up and m10 > m20 > m60) else (-1 if (dn and m10 < m20 < m60) else 0)
+        early = int(es[i])
         row = dict(
             key=key, cn=cn_of(key), date=date, close=close,
             ma5=m5, ma10=m10, ma20=m20, ma60=m60,
             atr=atr, atr_pct=atr / close * 100 if close else 0.0,
+            # 发散度：MA5 距 MA60 的百分比（多头为正、空头为负）。
+            # 只是标注，不参与任何判定——四线挤在一起和四线张开的排列，
+            # 判据上完全等价，但被一根阳线打散的概率差很多。
+            spread=(m5 - m60) / m60 * 100 if m60 else 0.0,
             d=c, prev=pc, trig=trig, early=early,
             roll=1 if (cmap.get(key, {}) or {}).get("roll_bar_date") == date else 0,
             streak=streak(o, i, c) if c else 0,
+            stale=1 if key in stale_keys else 0,
         )
         rows.append(row)
-    return rows, asof, thin
+    return rows, asof, thin, stale, alive
 
 
 def short_text(rows: list[dict], asof: str, side: dict | None = None,
-               warn: str = "") -> tuple[str, str]:
+               warn: str = "", stale: list[dict] | None = None,
+               alive: dict | None = None) -> tuple[str, str]:
     """手机短文案 + 标题。当日变化在前，正在排列的全量在后。
     (预)=期货领跑、现货没跟；(现)=现货领跑、期货跟随；(核)=基差单日异动已剔除、暂不判定；
-    不标=中性或基差无数据。基差不可用的品种（AG/AU/FU）不进推送，只在 md 里出现。"""
+    不标=中性或基差无数据。基差不可用的品种（FU）不进推送，只在 md 里出现。"""
     side = side or {}
-    vis = [r for r in rows if r["key"] not in PUSH_HIDE]   # 推送可见集合
+    stale_keys = {s["key"] for s in (stale or [])}
+    # ★ 数据不可信的品种不进任何名单（事件 / 正在排列 / 计数），只留顶部一行提示。
+    #   理由：用停在三天前的 K 线、或跨着缺口的 K 线算出来的「新空」，
+    #   在手机上和一个真的新空长得一模一样，但你没有任何办法分辨。这属于错报，
+    #   不是弱信号——弱信号可以标一下，错报只能不出。
+    vis = [r for r in rows if r["key"] not in PUSH_HIDE
+           and r["key"] not in stale_keys]                 # 推送可见集合
     live = [r for r in vis if not r["roll"]]               # 换月当天的均线不可比，不出信号
     new_l = sorted([r for r in live if r["trig"] == 1], key=lambda x: -x["atr_pct"])
     new_s = sorted([r for r in live if r["trig"] == -1], key=lambda x: -x["atr_pct"])
@@ -321,12 +387,23 @@ def short_text(rows: list[dict], asof: str, side: dict | None = None,
         cn = r.get("cn") or ""
         return f"{cn}{r['key']}" if cn else r["key"]
 
-    def tag(r: dict, d: int, with_cn: bool = True, with_streak: bool = False) -> str:
+    def tag(r: dict, d: int, with_cn: bool = True, with_streak: bool = False,
+            with_spread: bool = False) -> str:
+        """品种标记。with_spread 只给事件行用——正在排列的长名单不加，否则太挤。
+
+        发散度格式 `4.8%` = MA5 距 MA60 的绝对值。为什么给数字不给「强/弱」：
+        分档就要定阈值，阈值就是个参数，会被人拿去调；数字没有阈值，自己看。
+        """
         nat, _ = nature_of(d, side.get(r["key"], {}).get("basis"))
         s = {"预期": "预", "现实": "现", "待核": "核"}.get(nat, "")
         base = nm(r) if with_cn else r["key"]
+        marks = []
         if s:
-            base = f"{base}({s})"
+            marks.append(s)
+        if with_spread:
+            marks.append(f"{abs(r.get('spread') or 0):.1f}%")
+        if marks:
+            base = f"{base}({' '.join(marks)})"
         if with_streak and r["streak"]:
             base = f"{base}{'空' if d < 0 else '多'}{r['streak']}"
         return base
@@ -337,18 +414,36 @@ def short_text(rows: list[dict], asof: str, side: dict | None = None,
     if warn:
         lines.append(warn)
     lines.append(f"【排列看板】数据截至 {asof}")
-    lines.append(f"新多：{'、'.join(tag(r, 1) for r in new_l) if new_l else '无'}")
-    lines.append(f"新空：{'、'.join(tag(r, -1) for r in new_s) if new_s else '无'}")
+    if stale:
+        items = "、".join(f"{s['key']}({s['why_s']})" for s in stale[:5])
+        more = f" 等{len(stale)}个" if len(stale) > 5 else ""
+        lines.append(f"⚠️ 数据不可信、今日不参与判定：{items}{more}")
+    def none_of(names: tuple[str, ...]) -> str:
+        """没信号时该写什么。★ 判据在全历史上一次都没触发过，就不能写「无」——
+        「无」的意思是「今天没有」，而死字段的意思是「永远不会响」，两回事。
+        苗头 2026-11-24 之前就处在这种状态，每天显示「无」，没人能看出来。"""
+        a = alive or {}
+        present = [n for n in names if n in a]
+        if present and all(int(a.get(n) or 0) == 0 for n in present):
+            return "判据全样本零触发（字段疑似失效，不要当成「今天没有」）"
+        return "无"
+
+    lines.append("新多：" + ("、".join(tag(r, 1, with_spread=True) for r in new_l)
+                           if new_l else none_of(("新多",))))
+    lines.append("新空：" + ("、".join(tag(r, -1, with_spread=True) for r in new_s)
+                           if new_s else none_of(("新空",))))
     if early_only:
         lines.append("苗头：" + "、".join(
-            f"{nm(r)}(苗·{'多' if r['early'] > 0 else '空'})" for r in early_only))
+            f"{nm(r)}(苗·{'多' if r['early'] > 0 else '空'} {abs(r.get('spread') or 0):.1f}%)"
+            for r in early_only))
     else:
-        lines.append("苗头：无")
+        lines.append("苗头：" + none_of(("苗头多", "苗头空")))
     if broken:
         lines.append("破坏：" + "、".join(
-            f"{nm(r)}(原{'多' if r['prev'] > 0 else '空'})" for r in broken))
+            f"{nm(r)}(原{'多' if r['prev'] > 0 else '空'} {abs(r.get('spread') or 0):.1f}%)"
+            for r in broken))
     else:
-        lines.append("破坏：无")
+        lines.append("破坏：" + none_of(("破坏",)))
 
     def hold_block(label: str, rs: list[dict], d: int) -> None:
         """只列最近 FRESH_DAYS 个交易日内成立的；更久的折叠成一行。
@@ -374,16 +469,24 @@ def short_text(rows: list[dict], asof: str, side: dict | None = None,
             for k in range(0, len(items), 6):
                 lines.append("  " + "、".join(items[k:k + 6]))
         if old:
-            mx = max(old, key=lambda x: x["streak"] or 0)
-            lines.append(f"  另{len(old)}个持续更久（最久 {mx['key']} "
-                         f"{'空' if d < 0 else '多'}{mx['streak']}）")
+            olds = sorted(old, key=lambda x: -(x["streak"] or 0))
+            tail = "、".join(f"{r['key']}{'空' if d < 0 else '多'}{r['streak']}" for r in olds)
+            if len(olds) > 6:
+                tail = "、".join(f"{r['key']}{'空' if d < 0 else '多'}{r['streak']}" for r in olds[:6])
+                tail += f" 等{len(olds)}个"
+            lines.append(f"  另{len(old)}个更久：{tail}")
 
     hold_block("正在多", hold_l, 1)
     hold_block("正在空", hold_s, -1)
     if rolled:
         lines.append("换月跳过信号：" + "、".join(nm(r) for r in rolled))
+    # ★ 底部必须解释括号里那两个东西，否则就是让用户猜。
+    #   「未标」以前写「中性」，但实际有三种情况（变化不显著 / 数据缺失 / 异动待核），
+    #   写成「中性」会被读成「期货现货同步走」，那是四种里的一种，不是全部。
     lines.append("（预）期货领跑、现货没跟；（现）现货领跑、期货跟随；"
-                 "（核）基差单日异动已剔除、暂不判定；未标=中性")
+                 "未标=基差无明确方向")
+    lines.append("（核）基差当日异动已剔除、暂不判定；"
+                 "（x.x%）=MA5 距 MA60 幅度；破坏=排列散了，不等于反向")
     lines.append(DISCLAIMER)
     return title, "\n".join(lines)
 
@@ -396,11 +499,16 @@ def _st(r: dict) -> str:
 
 
 def long_md(rows: list[dict], asof: str, side: dict | None = None,
-            thin: list[dict] | None = None) -> str:
+            thin: list[dict] | None = None, stale: list[dict] | None = None,
+            alive: dict | None = None) -> str:
     side = side or {}
     thin = thin or []
-    live = [r for r in rows if not r["roll"]]
-    rolled = [r for r in rows if r["roll"]]
+    stale = stale or []
+    stale_keys = {s["key"] for s in stale}
+    # 与推送保持同一口径：数据不可信的品种不进任何名单（否则 md 与手机对不上）
+    live = [r for r in rows if not r["roll"] and r["key"] not in stale_keys]
+    rolled = [r for r in rows if r["roll"] and r["key"] not in stale_keys]
+    frozen = [r for r in rows if r["key"] in stale_keys]
     lines = [
         f"# 排列看板（MA60 同向） · 数据截至 {asof}",
         "",
@@ -412,6 +520,34 @@ def long_md(rows: list[dict], asof: str, side: dict | None = None,
     if rolled:
         lines.append("> ⚠️ 换月跳过信号：" + "、".join(
             f"{r['key']}（{r['date']} 起新合约）" for r in rolled) + "\n")
+
+    # ---- 信号活跃度：证明每种事件不是死字段 ----
+    if alive:
+        dead = [k for k, v in alive.items() if not v]
+        lines.append("## 信号活跃度（全部品种、全部历史合计）\n")
+        lines.append("| 事件 | 触发次数 |")
+        lines.append("|---|---|")
+        for k, v in alive.items():
+            lines.append(f"| {k} | {v} |")
+        lines.append("")
+        if dead:
+            lines.append(f"> ⚠️ **{'、'.join(dead)} 全样本零触发**，判据很可能已失效。"
+                         "这种情况下推送不会写「无」，会直接把这个问题标出来。\n")
+        else:
+            lines.append("> 每种事件都有触发记录，说明判据是活的——"
+                         "「今天没有」才真的等于今天没有。\n")
+
+    # ---- 基差时效：停了就不给「预/现」，这里必须说清是哪几个、停在哪天 ----
+    if side:
+        lagging = [(k, int((v.get("basis") or {}).get("lag") or 0))
+                   for k, v in side.items()
+                   if (v.get("basis") or {}).get("date")
+                   and not (v.get("basis") or {}).get("unusable")]
+        lagging = [(k, l) for k, l in lagging if l > 0]
+        if lagging:
+            lst = "、".join(f"{k}({l}天)" for k, l in sorted(lagging, key=lambda x: -x[1])[:10])
+            lines.append(f"> ⚠️ 基差数据停更：{lst}。这些品种**不给（预）/（现）方向**——"
+                         "用几天前的基差判断今天的领跑关系会得出相反结论。\n")
 
     # ---- 当日事件的侧证：回答「这波排列是预期还是现实」----
     events = [r for r in live if r["trig"] or (r["early"] and not r["d"]) or (r["d"] == 0 and r["prev"])]
@@ -445,6 +581,10 @@ def long_md(rows: list[dict], asof: str, side: dict | None = None,
         lines.append("")
         lines.append("> 性质判据：基差朝排列方向走 = 期货领跑 = **预期**（现货没跟，赚情绪的钱）；"
                      "背离 = 现货领跑 = **现实**（有实货压着）。")
+        lines.append("> ★ **这是描述，不是预测**：818 个事件里能回算收益的 616 个，"
+                     "标(预)与标(现)之后 10/20 日的收益没有显著差异"
+                     "（20 日 +0.60% vs −1.59%，t≈−1.8，且样本高度重叠）。"
+                     "它回答「这波谁先动」，不回答「谁走得远」，**不要拿它当筛选依据**。")
         lines.append("> **待核**：最新一天的基差被判定为异常跳变（|日变化| > 3×MAD），"
                      "剔掉后结论会翻转，因此不给方向。")
         lines.append("> 基差率 = (期货−现货)/期货，负值为期货贴水；分位越低表示贴水越极端。"
@@ -466,16 +606,19 @@ def long_md(rows: list[dict], asof: str, side: dict | None = None,
         if not rs:
             lines.append("_无_\n")
             continue
-        # ⑤⑥ 是全量长名单，加一列基差分位方便快速扫
+        # ⑤⑥ 是全量长名单，加板块 + 发散度 + 基差分位三列，方便快速扫
         if idx >= 4:
-            lines.append("| 品种 | 名称 | 持续 | 收盘 | MA5 | MA10 | MA20 | MA60 | ATR% | 基差分位 | 性质 |")
-            lines.append("|---|---|---|---|---|---|---|---|---|---|---|")
-            for r in rs:
+            lines.append("| 品种 | 名称 | 板块 | 持续 | 收盘 | 发散% | MA5 | MA10 | MA20 | MA60 | ATR% | 基差分位 | 性质 |")
+            lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+            for r in sorted(rs, key=lambda x: (P.SECTOR_ORDER.index(P.sector_of(x["key"]))
+                                               if P.sector_of(x["key"]) in P.SECTOR_ORDER else 9,
+                                               -(x["streak"] or 0))):
                 b = side.get(r["key"], {}).get("basis")
                 nat, _ = nature_of(r["d"], b)
                 pct_txt = ("不可用" if b.get("unusable") else f"{b['pct']:.0%}") if b else "—"
                 lines.append(
-                    f"| {r['key']} | {r['cn']} | {_st(r)} | {r['close']:.2f} | "
+                    f"| {r['key']} | {r['cn']} | {P.sector_of(r['key'])} | {_st(r)} | {r['close']:.2f} | "
+                    f"{abs(r.get('spread') or 0):.1f}% | "
                     f"{r['ma5']:.2f} | {r['ma10']:.2f} | {r['ma20']:.2f} | {r['ma60']:.2f} | "
                     f"{r['atr_pct']:.2f}% | {pct_txt} | {nat} |")
         else:
@@ -489,13 +632,30 @@ def long_md(rows: list[dict], asof: str, side: dict | None = None,
 
     # ---- 品种池说明：谁被剔了、为什么 ----
     lines.append("\n## ⓘ 品种池说明\n")
-    lines.append(f"在扫 **{len(P.POOL)}** 个品种；已剔除 **{len(P.EXCLUDED)}** 个。\n")
+    lines.append(f"在扫 **{len(P.POOL)}** 个品种"
+                 f"（农产品 {sum(1 for k in P.POOL if P.sector_of(k) == '农产品')} / "
+                 f"化工 {sum(1 for k in P.POOL if P.sector_of(k) == '化工')} / "
+                 f"黑色 {sum(1 for k in P.POOL if P.sector_of(k) == '黑色')}），"
+                 f"已剔除 **{len(P.EXCLUDED)}** 个。\n")
     lines.append("### 已剔除（不进扫描）\n")
     lines.append("| 品种 | 名称 | 理由 |")
     lines.append("|---|---|---|")
     for k, (cn, why) in P.EXCLUDED.items():
         lines.append(f"| {k} | {cn} | {why} |")
     lines.append("")
+    if stale:
+        lines.append("### ⚠️ 数据不可信 · 已从上面所有名单排除\n")
+        lines.append("| 品种 | 名称 | 原因 | 该品种最后一根的旧状态 |")
+        lines.append("|---|---|---|---|")
+        for s in stale:
+            r = next((x for x in frozen if x["key"] == s["key"]), None)
+            snap = (f"{_st(r)} 收盘 {r['close']:.2f}" if r and r.get("d") else
+                    ("未成排列" if r else "—"))
+            lines.append(f"| {s['key']} | {s['cn']} | {s['why']} | {snap} |")
+        lines.append("")
+        lines.append("> 这些品种**没有**进入今日的事件与正在排列统计（手机上也不显示），"
+                     "上表只是它停更前那根 K 线的状态，不要当今天的结论用。"
+                     "检查顺序：tqsdk 是否掉线 → 该合约是否停牌/换月 → 本地 csv 是否被截断。\n")
     if thin:
         lines.append("### 本次因数据不足跳过\n")
         lines.append("| 品种 | 根数 | 门槛 |")
@@ -503,9 +663,12 @@ def long_md(rows: list[dict], asof: str, side: dict | None = None,
         for t in thin:
             lines.append(f"| {t['key']} | {t['n']} | ≥{t['need']} |")
         lines.append("")
-    lines.append("> 准入四条线：具体主力合约 ≥159 根（MA60 有 100 个有效点）、"
-                 "20 日日均成交额 ≥10 亿元、基差率三年中位偏离 0 不超过 20%、"
-                 "一手保证金 ≤2 万元（价格×乘数×交易所保证金率，粗算）。\n")
+    lines.append("> 准入三条线（数据层面）：具体主力合约 ≥159 根（MA60 有 100 个有效点）、"
+                 "20 日日均成交额 ≥10 亿元、基差率三年中位偏离 0 不超过 20%。\n")
+    lines.append("> 关注范围（主观边界）：农产品 / 化工（含橡胶、燃料油、纸浆）/ 黑色；"
+                 "贵金属、有色、新能源金属、航运指数不看。\n")
+    lines.append("> ★ 保证金不是准入线：一手占用高低与均线排列是否可信无关，"
+                 "只按板块筛，不按钱筛。\n")
     if PUSH_HIDE:
         lines.append("### 基差源不可用（品种保留、信号照常，侧证不给方向）\n")
         lines.append("| 品种 | 理由 |")
@@ -616,13 +779,28 @@ def _save_fail(d: dict) -> None:
         pass
 
 
+def _is_trading_day(d: dt.date) -> bool | None:
+    """d 是不是交易日。None = 本地没有日历文件，判断不了（调用方自己退回工作日猜）。
+
+    ★ 存在的意义：把「今天休市所以没数据」和「今天该有数据但没拉到」分开。
+      旧版一律静默跳过，结果 10-19 那次定时任务连续四天没触发，
+      手机上什么都没收到，看起来和「今天没信号」一模一样。
+    """
+    try:
+        cal = json.load(open(CAL, encoding="utf-8"))
+    except Exception:
+        return None
+    k = d.strftime("%Y-%m-%d")
+    return bool(cal[k]) if k in cal else None
+
+
 def main() -> int:
-    rows, asof, thin = collect()
+    rows, asof, thin, stale, alive = collect()
     if not rows:
         print("[error] data/ 下无可用日线，先跑 fetch_daily.py")
         return 1
     os.makedirs(OUT, exist_ok=True)
-    side = load_side([r["key"] for r in rows])
+    side = load_side([r["key"] for r in rows if not r["stale"]], asof)
 
     # 上次失败 → 本次文案顶部补一行告警（webhook 挂了时，这条是唯一能自我暴露的方式）
     fail = _load_fail()
@@ -631,17 +809,39 @@ def main() -> int:
         warn = (f"⚠️ 上次推送失败（{str(fail.get('last', ''))[:16]}，"
                 f"连续 {fail['n']} 次）：{str(fail.get('reason', ''))[:48]}")
 
-    title, text = short_text(rows, asof, side, warn=warn)
+    n_total = len(rows)
+    abort = bool(n_total) and len(stale) / n_total >= STALE_ABORT
+    if abort:
+        # 残缺的名单比没有名单更危险：用户会按它做判断，却不知道少了谁。
+        title = f"排列看板 {asof[5:]} 数据不全"
+        keys = "、".join(s["key"] for s in stale[:8]) + ("…" if len(stale) > 8 else "")
+        text = "\n".join([
+            f"【排列看板】数据截至 {asof}",
+            f"⚠️ {len(stale)}/{n_total} 个品种数据不可信：{keys}",
+            "名单已不完整，今天不推排列结果。",
+            "检查顺序：tqsdk 是否登录 → 网络 → 定时任务是否运行。",
+            "",
+            DISCLAIMER,
+        ])
+    else:
+        title, text = short_text(rows, asof, side, warn=warn, stale=stale, alive=alive)
     stamp = asof.replace("-", "")
     p_md = os.path.join(OUT, f"watch_{stamp}.md")
     p_tx = os.path.join(OUT, f"watch_{stamp}.txt")
     with open(p_md, "w", encoding="utf-8") as f:
-        f.write(long_md(rows, asof, side, thin))
+        f.write(long_md(rows, asof, side, thin, stale, alive))
     with open(p_tx, "w", encoding="utf-8") as f:
         f.write(text)
 
     print(text)
     print(f"\n落盘 {p_md}\n落盘 {p_tx}")
+
+    # 事件回访：每天顺带刷新一份（纯统计，失败不影响推送）
+    try:
+        import review_events
+        review_events.main(quiet=True)
+    except Exception as e:
+        print(f"[warn] 事件回访失败（{type(e).__name__}: {e}），不影响本次推送")
 
     if "--no-push" in sys.argv:
         print("推送已跳过（--no-push）")
@@ -652,15 +852,52 @@ def main() -> int:
         print("未配置推送渠道（channel=none），本次只落盘。")
         return 0
 
-    # 节假日/数据未更新：同一批数据不重复推
+    # ---- 数据没更新：可能只是休市，也可能是拉取失败。★ 别静默。----
     p_last = os.path.join(OUT, "_last_asof.txt")
     try:
         last = open(p_last, encoding="utf-8").read().strip()
     except Exception:
         last = ""
+    t_now = dt.datetime.now()
     if last == asof:
-        print(f"数据未更新（最新仍是 {asof}），跳过推送。")
-        return 0
+        today_s = t_now.strftime("%Y-%m-%d")
+        # ① 数据就是今天的，只是今天已经推过一次 → 静默跳过（防重复推送）
+        if asof >= today_s:
+            print(f"今天（{asof}）的数据已推送过，跳过。")
+            return 0
+        # ② 数据停在过去 → 先分清休市还是掉线
+        tday = _is_trading_day(t_now.date())
+        if tday is None:
+            tday = t_now.weekday() < 5       # 没有日历文件就按工作日猜
+        # 当天 bar 要等日盘 15:00 收盘才完整，17:00 之后才算「该有了」
+        if not (tday and t_now.hour >= 17):
+            print(f"数据未更新（最新仍是 {asof}）：今天休市或尚未收盘，跳过推送。")
+            return 0
+        # 该有却没有 → 推告警。同一个 asof 每天只推一条，避免整点重复刷屏。
+        p_al = os.path.join(OUT, "_stale_alert.json")
+        try:
+            prev_al = json.load(open(p_al, encoding="utf-8"))
+        except Exception:
+            prev_al = {}
+        if prev_al.get("day") == t_now.strftime("%Y-%m-%d") and prev_al.get("asof") == asof:
+            print(f"数据仍未更新（{asof}），今天已告警过一次，不重复推。")
+            return 0
+        alarm = (f"【排列看板】数据没更新\n"
+                 f"今天是交易日，但日线还停在 {asof}，"
+                 f"{t_now.strftime('%m-%d')} 的 bar 没拉到。\n"
+                 f"本次没有名单可看。\n"
+                 f"检查：每日排列看板.bat 是否跑完 / tqsdk 是否登录成功 / 合约是否停牌。\n"
+                 f"{DISCLAIMER}")
+        ok, msg = send(cfg, f"排列看板 数据未更新 {asof}", alarm)
+        print(msg)
+        if ok:
+            try:
+                with open(p_al, "w", encoding="utf-8") as f:
+                    json.dump({"day": t_now.strftime("%Y-%m-%d"), "asof": asof},
+                              f, ensure_ascii=False)
+            except Exception:
+                pass
+        return 0 if ok else 1
 
     ok, msg = send(cfg, title, text)
     if not ok and "errcode" not in msg:      # 网络类失败重试一次；key 失效重试无意义
