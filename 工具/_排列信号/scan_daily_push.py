@@ -42,6 +42,10 @@ DISCLAIMER = "仅为纯技术分析，不构成任何买卖建议。"
 MA_N = 60
 MIN_BARS = 159          # MA60 至少要有 100 个有效点，持续天数才有意义
 
+# 推送里「正在多/正在空」只列最近 N 个交易日内成立的，更久的折叠成一行。
+# 这是展示口径，不是策略参数——不影响任何信号判定，md 里始终是全量。
+FRESH_DAYS = 5
+
 # 侧证（只进 md，不进推送正文）：回答「这波排列是预期还是现实」
 #   基差 = 期货 − 现货（np_data 的 dom_basis 就是这个口径，已实测校准）
 #   基差朝排列方向走 = 期货领跑 = 预期型；背离 = 现货领跑 = 现实型
@@ -347,25 +351,37 @@ def short_text(rows: list[dict], asof: str, side: dict | None = None,
         lines.append("破坏：无")
 
     def hold_block(label: str, rs: list[dict], d: int) -> None:
-        """全量名单：超过 6 个就分行，手机上更好扫。"""
+        """只列最近 FRESH_DAYS 个交易日内成立的；更久的折叠成一行。
+
+        为什么不是「全列」：一个排列站了 16 天，昨天已经报过、明天还一样，
+        每天重复推送没有新信息。为什么不是「全删」：站得越久说明趋势越顺，
+        SN 空 18 天是全池最强的空头，删掉等于把最强的信号扔掉。
+        所以折叠、不删——手机上只给近期，完整名单在 md。
+        """
         if not rs:
             lines.append(f"{label}(0)：无")
             return
-        items = [tag(r, d, with_cn=False, with_streak=True) for r in rs]
-        if len(items) <= 6:
-            lines.append(f"{label}({len(items)})：{'、'.join(items)}")
+        fresh = [r for r in rs if (r["streak"] or 0) <= FRESH_DAYS]
+        old = [r for r in rs if (r["streak"] or 0) > FRESH_DAYS]
+        head = f"{label}({len(rs)})" + (f"·近{FRESH_DAYS}日{len(fresh)}" if old else "") + "："
+        items = [tag(r, d, with_cn=False, with_streak=True) for r in fresh]
+        if not items:
+            lines.append(head + "无新增")
+        elif len(items) <= 6:
+            lines.append(head + "、".join(items))
         else:
-            lines.append(f"{label}({len(items)})：")
+            lines.append(head)
             for k in range(0, len(items), 6):
                 lines.append("  " + "、".join(items[k:k + 6]))
+        if old:
+            mx = max(old, key=lambda x: x["streak"] or 0)
+            lines.append(f"  另{len(old)}个持续更久（最久 {mx['key']} "
+                         f"{'空' if d < 0 else '多'}{mx['streak']}）")
 
     hold_block("正在多", hold_l, 1)
     hold_block("正在空", hold_s, -1)
     if rolled:
         lines.append("换月跳过信号：" + "、".join(nm(r) for r in rolled))
-    hidden = [r["key"] for r in rows if r["key"] in PUSH_HIDE and r["d"]]
-    if hidden:
-        lines.append(f"未列：{'、'.join(hidden)}")
     lines.append("（预）期货领跑、现货没跟；（现）现货领跑、期货跟随；"
                  "（核）基差单日异动已剔除、暂不判定；未标=中性")
     lines.append(DISCLAIMER)
@@ -487,8 +503,9 @@ def long_md(rows: list[dict], asof: str, side: dict | None = None,
         for t in thin:
             lines.append(f"| {t['key']} | {t['n']} | ≥{t['need']} |")
         lines.append("")
-    lines.append("> 准入线：具体主力合约 ≥159 根（MA60 有 100 个有效点）、"
-                 "20 日日均成交额 ≥10 亿元、基差率三年中位偏离 0 不超过 20%。\n")
+    lines.append("> 准入四条线：具体主力合约 ≥159 根（MA60 有 100 个有效点）、"
+                 "20 日日均成交额 ≥10 亿元、基差率三年中位偏离 0 不超过 20%、"
+                 "一手保证金 ≤2 万元（价格×乘数×交易所保证金率，粗算）。\n")
     if PUSH_HIDE:
         lines.append("### 基差源不可用（品种保留、信号照常，侧证不给方向）\n")
         lines.append("| 品种 | 理由 |")
