@@ -1,0 +1,9 @@
+{
+  "_说明": "复制为 push_config.json 后填入密钥。push_config.json 已被 gitignore，不会进公开仓库。channel 可选 none / serverchan / wecom / dingtalk / telegram。",
+  "channel": "none",
+  "serverchan_key": "",
+  "wecom_webhook": "",
+  "dingtalk_token": "",
+  "telegram_token": "",
+  "telegram_chat_id": ""
+}

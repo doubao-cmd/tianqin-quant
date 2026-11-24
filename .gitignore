@@ -323,3 +323,6 @@ workbench.json.bak*
 #    README §六「日线排列 / 仓单同比 / 压榨利润」那一行引用的原始口径文件。
 #    已确认不含本机路径、账户 SID 或身份信息（grep Users.cc / S-1-5-21 / Desktop = 0）。
 !工具/_排列信号/_口径与基线_20261121.md
+
+# 9) ★ 手机推送密钥（webhook / token / sendkey）绝不入库（2026-11-24）
+工具/_排列信号/push_config.json
